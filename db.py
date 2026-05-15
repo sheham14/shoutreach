@@ -270,9 +270,12 @@ def delete_campaign(campaign_id: int):
         conn.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
 
 
-def delete_all_contacts():
+def delete_contacts(ids: list):
+    if not ids:
+        return
+    placeholders = ','.join('?' for _ in ids)
     with get_db() as conn:
-        conn.execute("DELETE FROM contacts")
+        conn.execute(f"DELETE FROM contacts WHERE id IN ({placeholders})", ids)
 
 
 def create_contact(email: str, first_name='', last_name='', company='',

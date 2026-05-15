@@ -307,11 +307,14 @@ def api_import_contacts():
     return jsonify({"ok": True, "inserted": inserted})
 
 
-@app.route("/api/contacts/all", methods=["DELETE"])
-def api_delete_all_contacts():
-    db.delete_all_contacts()
-    db.add_log("All contacts hard-deleted via UI")
-    return jsonify({"ok": True})
+@app.route("/api/contacts/bulk-delete", methods=["POST"])
+def api_bulk_delete_contacts():
+    ids = (request.json or {}).get("ids", [])
+    if not ids:
+        return jsonify({"ok": False, "error": "No IDs provided"}), 400
+    db.delete_contacts(ids)
+    db.add_log(f"Hard-deleted {len(ids)} contacts via UI")
+    return jsonify({"ok": True, "deleted": len(ids)})
 
 
 @app.route("/api/contacts", methods=["POST"])

@@ -13,9 +13,12 @@ let contactHiddenCols  = new Set();
 let contactSortCol     = '';
 let contactSortDir     = 'asc';
 let contactEditId      = null;
+let contactSelectedIds = new Set();
 
 async function loadContacts() {
   allContacts = await api('/api/contacts');
+  contactSelectedIds.clear();
+  _updateDeleteSelectedBtn();
   _renderContactColDropdown();
   renderContactsTable();
 }
@@ -43,10 +46,14 @@ function renderContactsTable() {
   }
 
   const visibleCols = CONTACT_COLS.filter(c => !contactHiddenCols.has(c.key));
+  const allVisibleIds = data.map(c => c.id);
+  const allSelected = allVisibleIds.length > 0 && allVisibleIds.every(id => contactSelectedIds.has(id));
 
   document.getElementById('contacts-count').textContent = `${data.length} contacts`;
 
   document.getElementById('contacts-thead').innerHTML = '<tr>' +
+    `<th style="width:36px"><input type="checkbox" ${allSelected ? 'checked' : ''}
+        onchange="toggleSelectAllContacts(this.checked)" style="cursor:pointer" /></th>` +
     visibleCols.map(col => {
       const active  = contactSortCol === col.key;
       const arrow   = active ? (contactSortDir === 'asc' ? '▲' : '▼') : '⇅';
@@ -60,11 +67,12 @@ function renderContactsTable() {
 
   const tbody = document.getElementById('contacts-table');
   if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="${visibleCols.length + 1}" class="empty-state"><p>No contacts found.</p></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${visibleCols.length + 2}" class="empty-state"><p>No contacts found.</p></td></tr>`;
     return;
   }
 
   tbody.innerHTML = data.map(c => {
+    const checked = contactSelectedIds.has(c.id) ? 'checked' : '';
     const cells = visibleCols.map(col => {
       if (col.key === 'status') return `<td>${contactStatusBadge(c.status)}</td>`;
       if (col.key === 'created_at') {
@@ -75,6 +83,7 @@ function renderContactsTable() {
       return `<td>${esc(c[col.key])}</td>`;
     }).join('');
     return `<tr>
+      <td><input type="checkbox" ${checked} onchange="toggleContactSelect(${c.id}, this.checked)" style="cursor:pointer" /></td>
       ${cells}
       <td style="white-space:nowrap">
         <button class="btn btn-ghost btn-sm" onclick="openEditContactModal(${c.id})" title="Edit">✎</button>
@@ -122,13 +131,59 @@ document.addEventListener('click', e => {
   }
 });
 
-async function clearAllContacts() {
-  const first = confirm('Delete ALL contacts?\n\nThis is permanent and cannot be undone.');
-  if (!first) return;
-  const second = confirm('Are you sure? This will hard-delete every contact in the database.');
-  if (!second) return;
-  await api('/api/contacts/all', 'DELETE');
-  toast('All contacts deleted');
+function toggleContactSelect(id, checked) {
+  if (checked) contactSelectedIds.add(id);
+  else contactSelectedIds.delete(id);
+  _updateDeleteSelectedBtn();
+  _rerenderSelectAll();
+}
+
+function toggleSelectAllContacts(checked) {
+  const showDeleted = document.getElementById('contacts-show-deleted')?.checked;
+  const q = (document.getElementById('contacts-search')?.value || '').toLowerCase();
+  allContacts
+    .filter(c => {
+      if (!showDeleted && c.status === 'deleted') return false;
+      if (!q) return true;
+      return (c.email || '').toLowerCase().includes(q) ||
+             (c.first_name || '').toLowerCase().includes(q) ||
+             (c.last_name || '').toLowerCase().includes(q) ||
+             (c.company || '').toLowerCase().includes(q);
+    })
+    .forEach(c => checked ? contactSelectedIds.add(c.id) : contactSelectedIds.delete(c.id));
+  _updateDeleteSelectedBtn();
+  renderContactsTable();
+}
+
+function _rerenderSelectAll() {
+  const showDeleted = document.getElementById('contacts-show-deleted')?.checked;
+  const q = (document.getElementById('contacts-search')?.value || '').toLowerCase();
+  const visible = allContacts.filter(c => {
+    if (!showDeleted && c.status === 'deleted') return false;
+    if (!q) return true;
+    return (c.email || '').toLowerCase().includes(q) ||
+           (c.first_name || '').toLowerCase().includes(q) ||
+           (c.last_name || '').toLowerCase().includes(q) ||
+           (c.company || '').toLowerCase().includes(q);
+  });
+  const cb = document.querySelector('#contacts-thead input[type=checkbox]');
+  if (cb) cb.checked = visible.length > 0 && visible.every(c => contactSelectedIds.has(c.id));
+}
+
+function _updateDeleteSelectedBtn() {
+  const btn = document.getElementById('contacts-delete-selected-btn');
+  if (!btn) return;
+  const n = contactSelectedIds.size;
+  btn.disabled = n === 0;
+  btn.textContent = n > 0 ? `✕ Delete Selected (${n})` : '✕ Delete Selected';
+}
+
+async function deleteSelectedContacts() {
+  const n = contactSelectedIds.size;
+  if (!n) return;
+  if (!confirm(`Permanently delete ${n} contact${n > 1 ? 's' : ''}? This cannot be undone.`)) return;
+  await api('/api/contacts/bulk-delete', 'POST', { ids: [...contactSelectedIds] });
+  toast(`Deleted ${n} contact${n > 1 ? 's' : ''}`);
   loadContacts();
 }
 
