@@ -1,0 +1,17 @@
+<div class="modal-overlay" id="modal-enroll">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-enroll')">✕</button>
+    <h2>Enroll Contacts</h2>
+    <p class="text-muted text-small" style="margin-bottom:18px">Select contacts from your database to add to this campaign. Contacts already enrolled or with status bounced/unsubscribed are automatically skipped.</p>
+    <div class="form-group">
+      <label>Filter by company</label>
+      <input id="enroll-filter" placeholder="Search..." oninput="filterEnrollList()" />
+    </div>
+    <div id="enroll-list" style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;margin-bottom:16px"></div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="enrollSelected()">Enroll Selected</button>
+      <button class="btn btn-ghost" onclick="enrollAll()">Enroll All Active</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-enroll')">Cancel</button>
+    </div>
+  </div>
+</div>

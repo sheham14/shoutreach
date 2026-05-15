@@ -1,0 +1,80 @@
+<div class="section" id="section-scraper">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Lead Scraper</div>
+      <div class="page-sub">Google Maps → emails → contacts</div>
+    </div>
+  </div>
+
+  <div class="warning-box" style="margin-bottom:24px">
+    ⚠ The scraper opens a Chrome window on the machine running this app.
+    Works when running locally — not available on cloud deployments.
+    After scraping, contacts with emails are imported automatically.
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px">
+    <div class="card" style="padding:24px">
+      <div class="card-title" style="margin-bottom:20px">Search Settings</div>
+      <div class="form-group">
+        <label>Niche / Business Type</label>
+        <input id="sc-niche" placeholder="dental clinics" />
+      </div>
+      <div class="form-group">
+        <label>City + Country</label>
+        <input id="sc-city" placeholder="Brampton Canada" />
+      </div>
+      <div class="form-group">
+        <label>Max Results</label>
+        <input id="sc-max" type="number" value="50" min="5" max="200" />
+        <div class="form-hint">Google Maps typically returns 60–80 per search.</div>
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:10px">
+        <input type="checkbox" id="sc-autoimport" checked style="width:auto;margin:0" />
+        <label style="margin:0;font-size:13px;color:var(--text)">Auto-import contacts with emails into the database</label>
+      </div>
+      <div class="flex gap-2" style="margin-top:8px">
+        <button class="btn btn-primary" id="sc-start-btn" onclick="startScraper()">▶ Start</button>
+        <button class="btn btn-danger"  id="sc-stop-btn"  onclick="stopScraper()"  style="display:none">⏹ Stop</button>
+      </div>
+    </div>
+
+    <div class="card" style="padding:24px">
+      <div class="card-title" style="margin-bottom:12px">Progress</div>
+      <div id="sc-progress-bar-wrap" style="background:var(--bg3);border-radius:6px;height:8px;margin-bottom:12px;overflow:hidden">
+        <div id="sc-progress-bar" style="height:100%;background:var(--green);width:0%;transition:width .4s"></div>
+      </div>
+      <div id="sc-progress-text" class="mono text-muted" style="font-size:12px;margin-bottom:16px">Idle</div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">
+        <div class="stat-card" style="padding:12px">
+          <div class="stat-label">Found</div>
+          <div class="stat-value green" id="sc-found" style="font-size:22px">—</div>
+        </div>
+        <div class="stat-card" style="padding:12px">
+          <div class="stat-label">Scraped</div>
+          <div class="stat-value" id="sc-scraped" style="font-size:22px">—</div>
+        </div>
+        <div class="stat-card" style="padding:12px">
+          <div class="stat-label">Imported</div>
+          <div class="stat-value blue" id="sc-imported" style="font-size:22px">—</div>
+        </div>
+      </div>
+
+      <div id="sc-captcha-box" style="display:none;background:rgba(245,166,35,.1);border:1px solid var(--amber);border-radius:8px;padding:14px;margin-bottom:12px">
+        <div style="color:var(--amber);font-weight:600;margin-bottom:8px">⚠ CAPTCHA detected</div>
+        <div style="color:var(--muted);font-size:12px;margin-bottom:10px">Solve it in the Chrome window on your machine, then click Resume.</div>
+        <button class="btn btn-amber btn-sm" onclick="resumeScraper()">✓ Resume</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Live Log</div>
+      <button class="btn btn-ghost btn-sm" onclick="loadScraper()">↻ Refresh</button>
+    </div>
+    <div id="sc-log-feed" style="max-height:320px;overflow-y:auto;font-family:var(--mono);font-size:12px">
+      <div class="empty-state"><p>Start a scrape to see live output here.</p></div>
+    </div>
+  </div>
+</div>

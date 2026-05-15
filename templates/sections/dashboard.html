@@ -1,0 +1,34 @@
+<div class="section active" id="section-dashboard">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Dashboard</div>
+      <div class="page-sub">Overview across all campaigns</div>
+    </div>
+    <button class="btn btn-ghost btn-sm" onclick="refreshDashboard()">↻ Refresh</button>
+  </div>
+
+  <div class="stat-grid" id="global-stats">
+    <div class="stat-card"><div class="stat-label">Total Contacts</div><div class="stat-value blue" id="s-total">—</div></div>
+    <div class="stat-card"><div class="stat-label">Emails Sent</div><div class="stat-value" id="s-sent">—</div></div>
+    <div class="stat-card"><div class="stat-label">Replies</div><div class="stat-value green" id="s-replied">—</div></div>
+    <div class="stat-card"><div class="stat-label">Reply Rate</div><div class="stat-value green" id="s-rrate">—</div></div>
+    <div class="stat-card"><div class="stat-label">Sent Today</div><div class="stat-value amber" id="s-today">—</div></div>
+    <div class="stat-card"><div class="stat-label">Bounced</div><div class="stat-value red" id="s-bounced">—</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Active Campaigns</div>
+      <button class="btn btn-primary btn-sm" onclick="showSection('campaigns')">View All →</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Campaign</th><th>Status</th><th>Contacts</th>
+          <th>Sent</th><th>Reply Rate</th><th>Daily Limit</th><th></th>
+        </tr></thead>
+        <tbody id="dashboard-campaigns"></tbody>
+      </table>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,25 @@
+<div class="modal-overlay" id="modal-step">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-step')">✕</button>
+    <h2 id="step-modal-title">Edit Step</h2>
+    <input type="hidden" id="step-num-input" />
+    <div class="form-group">
+      <label>Delay (days since previous step)</label>
+      <input id="step-delay" type="number" value="0" min="0" />
+      <div class="form-hint">Step 1 = 0 (send immediately). Step 2+ = days to wait after previous step was sent.</div>
+    </div>
+    <div class="form-group">
+      <label>Subject — use {{first_name}}, {{company}}, {{full_name}}</label>
+      <input id="step-subject" placeholder="Quick question about {{company}}" />
+    </div>
+    <div class="form-group">
+      <label>Body (HTML or plain text)</label>
+      <textarea id="step-body" style="min-height:220px" placeholder="Hi {{first_name}},&#10;&#10;..."></textarea>
+      <div class="form-hint">Variables: {{first_name}} {{last_name}} {{full_name}} {{company}} {{email}} — unsubscribe link is added automatically.</div>
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="saveStep()">Save Step</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-step')">Cancel</button>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,50 @@
+<div class="section" id="section-campaigns">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Campaigns</div>
+      <div class="page-sub">Manage your outreach sequences</div>
+    </div>
+    <button class="btn btn-primary" onclick="openNewCampaignModal()">+ New Campaign</button>
+  </div>
+  <div id="campaigns-list"></div>
+</div>
+
+<div class="section" id="section-campaign-detail">
+  <div class="page-header">
+    <div>
+      <button class="btn btn-ghost btn-sm" onclick="showSection('campaigns')">← Back</button>
+    </div>
+    <div id="campaign-actions" class="flex gap-2"></div>
+  </div>
+
+  <div id="campaign-detail-title" style="margin-bottom:24px">
+    <div class="page-title" id="cd-name"></div>
+  </div>
+
+  <div class="stat-grid" id="cd-stats" style="grid-template-columns:repeat(5,1fr)"></div>
+
+  <div class="section-gap"></div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+    <div>
+      <div class="flex items-center" style="margin-bottom:14px">
+        <div class="card-title">Email Sequence</div>
+        <button class="btn btn-ghost btn-sm ml-auto" onclick="addStepUI()">+ Add Step</button>
+      </div>
+      <div id="steps-container"></div>
+    </div>
+
+    <div>
+      <div class="flex items-center" style="margin-bottom:14px">
+        <div class="card-title">Enrolled Contacts</div>
+        <button class="btn btn-ghost btn-sm ml-auto" onclick="openEnrollModal()">+ Enroll</button>
+      </div>
+      <div class="card" style="max-height:480px;overflow-y:auto">
+        <table>
+          <thead><tr><th>Email</th><th>Name</th><th>Step</th><th>Status</th></tr></thead>
+          <tbody id="cd-contacts"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>

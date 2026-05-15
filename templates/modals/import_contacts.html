@@ -1,0 +1,22 @@
+<div class="modal-overlay" id="modal-import">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-import')">✕</button>
+    <h2>Import Contacts</h2>
+    <p class="text-muted text-small" style="margin-bottom:18px">
+      CSV columns: <span class="mono">email, first_name, last_name, company</span> (email is required, others optional).
+    </p>
+    <div class="form-group">
+      <label>Upload CSV File</label>
+      <input type="file" id="import-file" accept=".csv" style="color:var(--text)" />
+    </div>
+    <hr />
+    <div class="form-group">
+      <label>Or paste emails (one per line)</label>
+      <textarea id="import-paste" placeholder="name@clinic.com&#10;doctor@hospital.org&#10;..."></textarea>
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="importContacts()">Import</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-import')">Cancel</button>
+    </div>
+  </div>
+</div>
