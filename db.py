@@ -264,6 +264,17 @@ def get_contact_by_email(email_addr: str):
         return dict(row) if row else None
 
 
+def delete_campaign(campaign_id: int):
+    with get_db() as conn:
+        conn.execute("DELETE FROM sends WHERE campaign_id=?", (campaign_id,))
+        conn.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
+
+
+def delete_all_contacts():
+    with get_db() as conn:
+        conn.execute("DELETE FROM contacts")
+
+
 def create_contact(email: str, first_name='', last_name='', company='',
                    website='', address='', status='active'):
     email = email.strip().lower()

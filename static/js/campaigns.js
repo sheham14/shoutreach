@@ -18,10 +18,18 @@ async function loadCampaigns() {
           ${c.status === 'active'
             ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${c.id})">⏸ Pause</button>`
             : `<button class="btn btn-primary btn-sm" onclick="activateCampaign(${c.id})">▶ Activate</button>`}
+          <button class="btn btn-danger btn-sm" onclick="deleteCampaign(${c.id}, '${esc(c.name)}')">✕</button>
         </div>
       </div>
     </div>
   `).join('');
+}
+
+async function deleteCampaign(id, name) {
+  if (!confirm(`Delete campaign "${name}"?\n\nThis will permanently remove the campaign, all its steps, enrollments, and send history.`)) return;
+  await api(`/api/campaigns/${id}`, 'DELETE');
+  toast('Campaign deleted');
+  loadCampaigns();
 }
 
 function openNewCampaignModal() { openModal('modal-new-campaign'); }

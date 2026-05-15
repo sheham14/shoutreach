@@ -216,6 +216,13 @@ def api_get_campaign(cid):
     return jsonify(c)
 
 
+@app.route("/api/campaigns/<int:cid>", methods=["DELETE"])
+def api_delete_campaign(cid):
+    db.delete_campaign(cid)
+    db.add_log(f"Campaign {cid} deleted")
+    return jsonify({"ok": True})
+
+
 @app.route("/api/campaigns/<int:cid>", methods=["PATCH"])
 def api_update_campaign(cid):
     d = request.json or {}
@@ -298,6 +305,13 @@ def api_import_contacts():
 
     inserted = db.upsert_contacts(rows)
     return jsonify({"ok": True, "inserted": inserted})
+
+
+@app.route("/api/contacts/all", methods=["DELETE"])
+def api_delete_all_contacts():
+    db.delete_all_contacts()
+    db.add_log("All contacts hard-deleted via UI")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/contacts", methods=["POST"])

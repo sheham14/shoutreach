@@ -9,7 +9,7 @@ const CONTACT_COLS = [
   { key: 'created_at', label: 'Added' },
 ];
 
-let contactHiddenCols  = new Set(['website', 'address']);
+let contactHiddenCols  = new Set();
 let contactSortCol     = '';
 let contactSortDir     = 'asc';
 let contactEditId      = null;
@@ -121,6 +121,16 @@ document.addEventListener('click', e => {
     if (dd) dd.style.display = 'none';
   }
 });
+
+async function clearAllContacts() {
+  const first = confirm('Delete ALL contacts?\n\nThis is permanent and cannot be undone.');
+  if (!first) return;
+  const second = confirm('Are you sure? This will hard-delete every contact in the database.');
+  if (!second) return;
+  await api('/api/contacts/all', 'DELETE');
+  toast('All contacts deleted');
+  loadContacts();
+}
 
 // ── Import ────────────────────────────────────────────────────────────────────
 
