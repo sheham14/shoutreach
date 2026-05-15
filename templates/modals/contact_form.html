@@ -1,0 +1,32 @@
+<div class="modal-overlay" id="modal-contact">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-contact')">✕</button>
+    <h2 id="contact-modal-title">Add Contact</h2>
+    <div class="form-group">
+      <label>Email *</label>
+      <input id="cf-email" type="email" placeholder="name@company.com" />
+    </div>
+    <div class="form-grid">
+      <div class="form-group"><label>First Name</label><input id="cf-first" placeholder="Jane" /></div>
+      <div class="form-group"><label>Last Name</label><input id="cf-last" placeholder="Smith" /></div>
+    </div>
+    <div class="form-group"><label>Company</label><input id="cf-company" placeholder="Acme Corp" /></div>
+    <div class="form-grid">
+      <div class="form-group"><label>Website</label><input id="cf-website" placeholder="https://acme.com" /></div>
+      <div class="form-group"><label>Address</label><input id="cf-address" placeholder="123 Main St, City" /></div>
+    </div>
+    <div class="form-group">
+      <label>Status</label>
+      <select id="cf-status">
+        <option value="active">active</option>
+        <option value="unsubscribed">unsubscribed</option>
+        <option value="bounced">bounced</option>
+        <option value="deleted">deleted</option>
+      </select>
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="saveContact()">Save Contact</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-contact')">Cancel</button>
+    </div>
+  </div>
+</div>

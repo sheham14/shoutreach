@@ -300,6 +300,38 @@ def api_import_contacts():
     return jsonify({"ok": True, "inserted": inserted})
 
 
+@app.route("/api/contacts", methods=["POST"])
+def api_add_contact():
+    d = request.json or {}
+    contact_id, err = db.create_contact(
+        email      = d.get('email', ''),
+        first_name = d.get('first_name', ''),
+        last_name  = d.get('last_name', ''),
+        company    = d.get('company', ''),
+        website    = d.get('website', ''),
+        address    = d.get('address', ''),
+        status     = d.get('status', 'active'),
+    )
+    if err:
+        return jsonify({'ok': False, 'error': err}), 400
+    return jsonify({'ok': True, 'id': contact_id})
+
+
+@app.route("/api/contacts/<int:cid>", methods=["PUT"])
+def api_update_contact(cid):
+    d = request.json or {}
+    ok, err = db.update_contact(cid, d)
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+    return jsonify({'ok': True})
+
+
+@app.route("/api/contacts/<int:cid>", methods=["DELETE"])
+def api_delete_contact(cid):
+    db.delete_contact(cid)
+    return jsonify({'ok': True})
+
+
 @app.route("/api/campaigns/<int:cid>/contacts", methods=["POST"])
 def api_enroll_contacts(cid):
     """
@@ -529,8 +561,8 @@ if __name__ == "__main__":
     print("  Press Ctrl+C to stop")
     print("─" * 60 + "\n")
     app.run(
-        debug=False,
+        debug=True,
         host=os.environ.get("HOST", "127.0.0.1"),
         port=int(os.environ.get("PORT", 5000)),
-        use_reloader=False,
+        use_reloader=True,
     )

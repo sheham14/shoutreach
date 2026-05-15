@@ -1,21 +1,128 @@
+const CONTACT_COLS = [
+  { key: 'email',      label: 'Email' },
+  { key: 'first_name', label: 'First Name' },
+  { key: 'last_name',  label: 'Last Name' },
+  { key: 'company',    label: 'Company' },
+  { key: 'website',    label: 'Website' },
+  { key: 'address',    label: 'Address' },
+  { key: 'status',     label: 'Status' },
+  { key: 'created_at', label: 'Added' },
+];
+
+let contactHiddenCols  = new Set(['website', 'address']);
+let contactSortCol     = '';
+let contactSortDir     = 'asc';
+let contactEditId      = null;
+
 async function loadContacts() {
   allContacts = await api('/api/contacts');
+  _renderContactColDropdown();
+  renderContactsTable();
+}
+
+function renderContactsTable() {
+  const showDeleted = document.getElementById('contacts-show-deleted')?.checked;
+  const q = (document.getElementById('contacts-search')?.value || '').toLowerCase();
+
+  let data = allContacts.filter(c => {
+    if (!showDeleted && c.status === 'deleted') return false;
+    if (!q) return true;
+    return (c.email || '').toLowerCase().includes(q) ||
+           (c.first_name || '').toLowerCase().includes(q) ||
+           (c.last_name || '').toLowerCase().includes(q) ||
+           (c.company || '').toLowerCase().includes(q);
+  });
+
+  if (contactSortCol) {
+    data = [...data].sort((a, b) => {
+      const av = (a[contactSortCol] || '').toString().toLowerCase();
+      const bv = (b[contactSortCol] || '').toString().toLowerCase();
+      const cmp = av.localeCompare(bv);
+      return contactSortDir === 'asc' ? cmp : -cmp;
+    });
+  }
+
+  const visibleCols = CONTACT_COLS.filter(c => !contactHiddenCols.has(c.key));
+
+  document.getElementById('contacts-count').textContent = `${data.length} contacts`;
+
+  document.getElementById('contacts-thead').innerHTML = '<tr>' +
+    visibleCols.map(col => {
+      const active  = contactSortCol === col.key;
+      const arrow   = active ? (contactSortDir === 'asc' ? '▲' : '▼') : '⇅';
+      const nextDir = (active && contactSortDir === 'asc') ? 'desc' : 'asc';
+      return `<th style="cursor:pointer;user-select:none;white-space:nowrap"
+                  onclick="contactSort('${col.key}','${nextDir}')">
+                ${col.label}&nbsp;<span style="opacity:0.45;font-size:10px">${arrow}</span>
+              </th>`;
+    }).join('') +
+    '<th style="width:80px"></th></tr>';
+
   const tbody = document.getElementById('contacts-table');
-  if (!allContacts.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><p>No contacts yet. Import a CSV.</p></td></tr>';
+  if (!data.length) {
+    tbody.innerHTML = `<tr><td colspan="${visibleCols.length + 1}" class="empty-state"><p>No contacts found.</p></td></tr>`;
     return;
   }
-  tbody.innerHTML = allContacts.slice(0, 300).map(c => `
-    <tr>
-      <td class="mono" style="font-size:12px">${esc(c.email)}</td>
-      <td>${esc(c.first_name)}</td>
-      <td>${esc(c.last_name)}</td>
-      <td>${esc(c.company)}</td>
-      <td>${contactStatusBadge(c.status)}</td>
-      <td class="mono text-muted" style="font-size:11px">${c.created_at?.split('T')[0] || c.created_at?.split(' ')[0]}</td>
-    </tr>
+
+  tbody.innerHTML = data.map(c => {
+    const cells = visibleCols.map(col => {
+      if (col.key === 'status') return `<td>${contactStatusBadge(c.status)}</td>`;
+      if (col.key === 'created_at') {
+        const d = (c.created_at || '').split('T')[0] || (c.created_at || '').split(' ')[0];
+        return `<td class="mono text-muted" style="font-size:11px">${esc(d)}</td>`;
+      }
+      if (col.key === 'email') return `<td class="mono" style="font-size:12px">${esc(c.email)}</td>`;
+      return `<td>${esc(c[col.key])}</td>`;
+    }).join('');
+    return `<tr>
+      ${cells}
+      <td style="white-space:nowrap">
+        <button class="btn btn-ghost btn-sm" onclick="openEditContactModal(${c.id})" title="Edit">✎</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteContact(${c.id})" title="Delete">✕</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function contactSort(col, dir) {
+  contactSortCol = col;
+  contactSortDir = dir;
+  renderContactsTable();
+}
+
+function _renderContactColDropdown() {
+  const dd = document.getElementById('contacts-col-dropdown');
+  if (!dd) return;
+  dd.innerHTML = CONTACT_COLS.map(col => `
+    <label style="display:flex;align-items:center;gap:8px;padding:5px 14px;cursor:pointer;
+                  white-space:nowrap;font-size:13px;color:var(--text)">
+      <input type="checkbox" ${contactHiddenCols.has(col.key) ? '' : 'checked'}
+             onchange="contactToggleCol('${col.key}',this.checked)" style="cursor:pointer">
+      ${col.label}
+    </label>
   `).join('');
 }
+
+function contactToggleCol(col, visible) {
+  if (visible) contactHiddenCols.delete(col);
+  else contactHiddenCols.add(col);
+  renderContactsTable();
+}
+
+function contactsToggleColDropdown() {
+  const dd = document.getElementById('contacts-col-dropdown');
+  dd.style.display = dd.style.display === 'none' ? 'block' : 'none';
+}
+
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('contacts-col-toggle-wrap');
+  if (wrap && !wrap.contains(e.target)) {
+    const dd = document.getElementById('contacts-col-dropdown');
+    if (dd) dd.style.display = 'none';
+  }
+});
+
+// ── Import ────────────────────────────────────────────────────────────────────
 
 function openImportModal() { openModal('modal-import'); }
 
@@ -26,7 +133,7 @@ async function importContacts() {
   if (fileInput.files.length) {
     const form = new FormData();
     form.append('file', fileInput.files[0]);
-    const res = await fetch('/api/contacts/import', { method: 'POST', body: form });
+    const res  = await fetch('/api/contacts/import', { method: 'POST', body: form });
     const data = await res.json();
     toast(`Imported ${data.inserted} contacts ✓`);
     closeModal('modal-import');
@@ -46,6 +153,78 @@ async function importContacts() {
   toast('Select a file or paste emails', 'err');
 }
 
+// ── Add / Edit ────────────────────────────────────────────────────────────────
+
+function openAddContactModal() {
+  contactEditId = null;
+  document.getElementById('contact-modal-title').textContent = 'Add Contact';
+  document.getElementById('cf-email').value      = '';
+  document.getElementById('cf-first').value      = '';
+  document.getElementById('cf-last').value       = '';
+  document.getElementById('cf-company').value    = '';
+  document.getElementById('cf-website').value    = '';
+  document.getElementById('cf-address').value    = '';
+  document.getElementById('cf-status').value     = 'active';
+  document.getElementById('cf-email').disabled   = false;
+  openModal('modal-contact');
+}
+
+function openEditContactModal(id) {
+  const c = allContacts.find(x => x.id === id);
+  if (!c) return;
+  contactEditId = id;
+  document.getElementById('contact-modal-title').textContent = 'Edit Contact';
+  document.getElementById('cf-email').value    = c.email    || '';
+  document.getElementById('cf-first').value    = c.first_name || '';
+  document.getElementById('cf-last').value     = c.last_name  || '';
+  document.getElementById('cf-company').value  = c.company  || '';
+  document.getElementById('cf-website').value  = c.website  || '';
+  document.getElementById('cf-address').value  = c.address  || '';
+  document.getElementById('cf-status').value   = c.status   || 'active';
+  document.getElementById('cf-email').disabled = false;
+  openModal('modal-contact');
+}
+
+async function saveContact() {
+  const payload = {
+    email:      document.getElementById('cf-email').value.trim(),
+    first_name: document.getElementById('cf-first').value.trim(),
+    last_name:  document.getElementById('cf-last').value.trim(),
+    company:    document.getElementById('cf-company').value.trim(),
+    website:    document.getElementById('cf-website').value.trim(),
+    address:    document.getElementById('cf-address').value.trim(),
+    status:     document.getElementById('cf-status').value,
+  };
+
+  if (!payload.email) { toast('Email is required', 'err'); return; }
+
+  let res;
+  if (contactEditId) {
+    res = await api(`/api/contacts/${contactEditId}`, 'PUT', payload);
+  } else {
+    res = await api('/api/contacts', 'POST', payload);
+  }
+
+  if (!res.ok) { toast(res.error || 'Failed to save contact', 'err'); return; }
+
+  toast(contactEditId ? 'Contact updated ✓' : 'Contact added ✓');
+  closeModal('modal-contact');
+  loadContacts();
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+
+async function deleteContact(id) {
+  const c = allContacts.find(x => x.id === id);
+  const label = c ? c.email : `#${id}`;
+  if (!confirm(`Delete ${label}?\n\nThis is a soft delete — the record is kept but marked as deleted.`)) return;
+  await api(`/api/contacts/${id}`, 'DELETE');
+  toast('Contact deleted');
+  loadContacts();
+}
+
+// ── Enroll ────────────────────────────────────────────────────────────────────
+
 async function openEnrollModal() {
   allContacts = await api('/api/contacts');
   renderEnrollList(allContacts);
@@ -54,11 +233,12 @@ async function openEnrollModal() {
 
 function renderEnrollList(contacts) {
   const el = document.getElementById('enroll-list');
-  if (!contacts.length) {
+  const active = contacts.filter(c => c.status === 'active');
+  if (!active.length) {
     el.innerHTML = '<div class="empty-state"><p>No active contacts</p></div>';
     return;
   }
-  el.innerHTML = contacts.filter(c => c.status === 'active').map(c => `
+  el.innerHTML = active.map(c => `
     <label style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer">
       <input type="checkbox" value="${c.id}" class="enroll-cb" />
       <div>

@@ -264,6 +264,47 @@ def get_contact_by_email(email_addr: str):
         return dict(row) if row else None
 
 
+def create_contact(email: str, first_name='', last_name='', company='',
+                   website='', address='', status='active'):
+    email = email.strip().lower()
+    if not email or '@' not in email:
+        return None, 'Invalid email address'
+    try:
+        with get_db() as conn:
+            cur = conn.execute(
+                "INSERT INTO contacts(email,first_name,last_name,company,website,address,status) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (email, first_name, last_name, company, website, address, status)
+            )
+            return cur.lastrowid, None
+    except sqlite3.IntegrityError:
+        return None, 'A contact with that email already exists'
+
+
+def update_contact(contact_id: int, fields: dict):
+    allowed = {'email', 'first_name', 'last_name', 'company', 'website', 'address', 'status'}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return True, None
+    if 'email' in updates:
+        updates['email'] = updates['email'].strip().lower()
+    set_clause = ', '.join(f'{k}=?' for k in updates)
+    try:
+        with get_db() as conn:
+            conn.execute(
+                f'UPDATE contacts SET {set_clause} WHERE id=?',
+                (*updates.values(), contact_id)
+            )
+        return True, None
+    except sqlite3.IntegrityError:
+        return False, 'A contact with that email already exists'
+
+
+def delete_contact(contact_id: int):
+    with get_db() as conn:
+        conn.execute("UPDATE contacts SET status='deleted' WHERE id=?", (contact_id,))
+
+
 def unsubscribe_contact(email):
     with get_db() as conn:
         conn.execute("UPDATE contacts SET status='unsubscribed' WHERE email=?", (email.lower(),))
