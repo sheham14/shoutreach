@@ -1,0 +1,1492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Outreach System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:       #080c10;
+    --bg2:      #0e1419;
+    --bg3:      #141c24;
+    --border:   #1e2c38;
+    --border2:  #243444;
+    --text:     #c8d8e8;
+    --muted:    #5a7a90;
+    --green:    #00e87a;
+    --green-d:  #00a855;
+    --amber:    #f5a623;
+    --red:      #ff4c4c;
+    --blue:     #4da6ff;
+    --purple:   #a78bfa;
+    --font:     'Space Grotesk', sans-serif;
+    --mono:     'JetBrains Mono', monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* ── Layout ────────────────────────────────────────── */
+  .shell { display: flex; min-height: 100vh; }
+
+  .sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    padding: 24px 0;
+    position: fixed;
+    top: 0; bottom: 0; left: 0;
+    display: flex; flex-direction: column;
+    z-index: 100;
+  }
+
+  .logo {
+    padding: 0 20px 24px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+  .logo-mark {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--green);
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .logo h1 { font-size: 16px; font-weight: 700; color: #fff; letter-spacing: -.3px; }
+
+  nav a {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 20px;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    border-left: 2px solid transparent;
+    transition: all .15s;
+  }
+  nav a:hover, nav a.active {
+    color: var(--text);
+    background: var(--bg3);
+    border-left-color: var(--green);
+  }
+  nav a .icon { font-size: 15px; width: 18px; text-align: center; }
+
+  .scheduler-pill {
+    margin: auto 20px 20px;
+    padding: 8px 12px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: var(--mono);
+  }
+  .scheduler-pill .dot {
+    display: inline-block; width: 7px; height: 7px;
+    border-radius: 50%; margin-right: 7px;
+    background: var(--muted);
+  }
+  .scheduler-pill.running .dot {
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  .main {
+    margin-left: 220px;
+    flex: 1;
+    padding: 32px 36px;
+    max-width: 1200px;
+  }
+
+  /* ── Sections ──────────────────────────────────────── */
+  .section { display: none; }
+  .section.active { display: block; }
+
+  .page-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 28px;
+  }
+  .page-title { font-size: 22px; font-weight: 700; color: #fff; }
+  .page-sub   { color: var(--muted); font-size: 13px; margin-top: 2px; }
+
+  /* ── Stat cards ────────────────────────────────────── */
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 14px;
+    margin-bottom: 32px;
+  }
+  .stat-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    transition: border-color .2s;
+  }
+  .stat-card:hover { border-color: var(--border2); }
+  .stat-label { font-size: 11px; font-family: var(--mono); color: var(--muted); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 8px; }
+  .stat-value { font-size: 28px; font-weight: 700; color: #fff; font-family: var(--mono); }
+  .stat-value.green  { color: var(--green); }
+  .stat-value.amber  { color: var(--amber); }
+  .stat-value.red    { color: var(--red);   }
+  .stat-value.blue   { color: var(--blue);  }
+
+  /* ── Buttons ────────────────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: none;
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all .15s;
+    text-decoration: none;
+  }
+  .btn-primary   { background: var(--green); color: #000; }
+  .btn-primary:hover { background: #00ff88; }
+  .btn-ghost     { background: transparent; color: var(--text); border: 1px solid var(--border2); }
+  .btn-ghost:hover { background: var(--bg3); }
+  .btn-danger    { background: transparent; color: var(--red); border: 1px solid var(--red); }
+  .btn-danger:hover { background: rgba(255,76,76,.1); }
+  .btn-amber     { background: transparent; color: var(--amber); border: 1px solid var(--amber); }
+  .btn-sm        { padding: 5px 10px; font-size: 12px; }
+
+  /* ── Table ──────────────────────────────────────────── */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left; font-family: var(--mono); font-size: 11px;
+    color: var(--muted); letter-spacing: .08em; text-transform: uppercase;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    vertical-align: middle;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--bg3); }
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .card-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .card-title { font-size: 14px; font-weight: 600; color: #fff; }
+
+  /* ── Status badges ──────────────────────────────────── */
+  .badge {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-family: var(--mono);
+    font-weight: 500;
+  }
+  .badge-green  { background: rgba(0,232,122,.12); color: var(--green); }
+  .badge-amber  { background: rgba(245,166,35,.12); color: var(--amber); }
+  .badge-red    { background: rgba(255,76,76,.12); color: var(--red); }
+  .badge-blue   { background: rgba(77,166,255,.12); color: var(--blue); }
+  .badge-gray   { background: rgba(90,122,144,.12); color: var(--muted); }
+  .badge-purple { background: rgba(167,139,250,.12); color: var(--purple); }
+
+  /* ── Forms ──────────────────────────────────────────── */
+  .form-grid  { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .form-group { margin-bottom: 16px; }
+  .form-group label {
+    display: block; font-size: 12px; font-family: var(--mono);
+    color: var(--muted); margin-bottom: 6px; letter-spacing: .06em;
+  }
+  .form-group input, .form-group select, .form-group textarea {
+    width: 100%;
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    padding: 9px 12px;
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+    border-color: var(--green);
+  }
+  .form-group textarea { min-height: 160px; resize: vertical; font-family: var(--mono); font-size: 12px; }
+  .form-hint { font-size: 11px; color: var(--muted); margin-top: 5px; }
+
+  /* ── Modal ──────────────────────────────────────────── */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.7); z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 14px;
+    width: 600px;
+    max-width: 95vw;
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 28px;
+    position: relative;
+  }
+  .modal h2 { font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 20px; }
+  .modal-close {
+    position: absolute; top: 20px; right: 20px;
+    background: none; border: none; color: var(--muted);
+    font-size: 20px; cursor: pointer;
+  }
+  .modal-close:hover { color: var(--text); }
+
+  /* ── Step editor ─────────────────────────────────────── */
+  .step-card {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 14px;
+    position: relative;
+  }
+  .step-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px;
+    background: var(--green);
+    color: #000;
+    border-radius: 50%;
+    font-size: 12px;
+    font-weight: 700;
+    font-family: var(--mono);
+    margin-bottom: 14px;
+  }
+  .step-connector {
+    text-align: center;
+    color: var(--muted);
+    font-size: 11px;
+    font-family: var(--mono);
+    padding: 6px 0;
+  }
+  .step-connector::before { content: "↓  "; }
+
+  /* ── Log feed ────────────────────────────────────────── */
+  .log-entry {
+    display: flex; gap: 12px; align-items: flex-start;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .log-entry:last-child { border-bottom: none; }
+  .log-time  { color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+  .log-msg   { color: var(--text); }
+  .log-INFO  .log-msg { color: var(--text); }
+  .log-WARN  .log-msg { color: var(--amber); }
+  .log-ERROR .log-msg { color: var(--red);   }
+
+  /* ── Toast ───────────────────────────────────────────── */
+  #toast {
+    position: fixed; bottom: 24px; right: 24px;
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 8px;
+    padding: 12px 18px;
+    font-size: 13px;
+    z-index: 9999;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: all .25s;
+    max-width: 320px;
+  }
+  #toast.show { opacity: 1; transform: translateY(0); }
+  #toast.ok   { border-color: var(--green); color: var(--green); }
+  #toast.err  { border-color: var(--red);   color: var(--red);   }
+
+  /* ── Misc ────────────────────────────────────────────── */
+  .section-gap { height: 24px; }
+  .flex        { display: flex; }
+  .gap-2       { gap: 8px; }
+  .gap-3       { gap: 12px; }
+  .items-center{ align-items: center; }
+  .ml-auto     { margin-left: auto; }
+  .text-muted  { color: var(--muted); }
+  .text-small  { font-size: 12px; }
+  .mono        { font-family: var(--mono); }
+  .empty-state {
+    text-align: center; padding: 48px 24px;
+    color: var(--muted);
+  }
+  .empty-state .icon { font-size: 36px; margin-bottom: 12px; }
+  .empty-state p     { font-size: 14px; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+  .full-span { grid-column: 1 / -1; }
+  .warning-box {
+    background: rgba(245,166,35,.08);
+    border: 1px solid rgba(245,166,35,.25);
+    border-radius: 8px;
+    padding: 12px 16px;
+    color: var(--amber);
+    font-size: 13px;
+    margin-bottom: 20px;
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+<!-- ── Sidebar ─────────────────────────────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="logo">
+    <div class="logo-mark">◈ System</div>
+    <h1>Outreach</h1>
+  </div>
+  <nav>
+    <a href="#" class="active" data-section="dashboard"><span class="icon">◉</span> Dashboard</a>
+    <a href="#" data-section="campaigns"><span class="icon">⚡</span> Campaigns</a>
+    <a href="#" data-section="contacts"><span class="icon">⊕</span> Contacts</a>
+    <a href="#" data-section="logs"><span class="icon">▤</span> Activity Log</a>
+    <a href="#" data-section="settings"><span class="icon">⚙</span> Settings</a>
+    <a href="#" data-section="scraper"><span class="icon">⊗</span> Scraper</a>
+    <a href="#" data-section="database"><span class="icon">◧</span> Database</a>
+  </nav>
+  <div class="scheduler-pill" id="scheduler-pill">
+    <span class="dot"></span><span id="scheduler-label">Scheduler offline</span>
+  </div>
+</aside>
+
+<!-- ── Main ──────────────────────────────────────────────────────────────────── -->
+<main class="main">
+
+  <!-- DASHBOARD -->
+  <div class="section active" id="section-dashboard">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Dashboard</div>
+        <div class="page-sub">Overview across all campaigns</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="refreshDashboard()">↻ Refresh</button>
+    </div>
+
+    <div class="stat-grid" id="global-stats">
+      <div class="stat-card"><div class="stat-label">Total Contacts</div><div class="stat-value blue" id="s-total">—</div></div>
+      <div class="stat-card"><div class="stat-label">Emails Sent</div><div class="stat-value" id="s-sent">—</div></div>
+      <div class="stat-card"><div class="stat-label">Replies</div><div class="stat-value green" id="s-replied">—</div></div>
+      <div class="stat-card"><div class="stat-label">Reply Rate</div><div class="stat-value green" id="s-rrate">—</div></div>
+      <div class="stat-card"><div class="stat-label">Sent Today</div><div class="stat-value amber" id="s-today">—</div></div>
+      <div class="stat-card"><div class="stat-label">Bounced</div><div class="stat-value red" id="s-bounced">—</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Active Campaigns</div>
+        <button class="btn btn-primary btn-sm" onclick="showSection('campaigns')">View All →</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Campaign</th><th>Status</th><th>Contacts</th>
+            <th>Sent</th><th>Reply Rate</th><th>Daily Limit</th><th></th>
+          </tr></thead>
+          <tbody id="dashboard-campaigns"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- CAMPAIGNS -->
+  <div class="section" id="section-campaigns">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Campaigns</div>
+        <div class="page-sub">Manage your outreach sequences</div>
+      </div>
+      <button class="btn btn-primary" onclick="openNewCampaignModal()">+ New Campaign</button>
+    </div>
+    <div id="campaigns-list"></div>
+  </div>
+
+  <!-- CAMPAIGN DETAIL (sub-view) -->
+  <div class="section" id="section-campaign-detail">
+    <div class="page-header">
+      <div>
+        <button class="btn btn-ghost btn-sm" onclick="showSection('campaigns')">← Back</button>
+      </div>
+      <div id="campaign-actions" class="flex gap-2"></div>
+    </div>
+
+    <div id="campaign-detail-title" style="margin-bottom:24px">
+      <div class="page-title" id="cd-name"></div>
+    </div>
+
+    <!-- Stats row -->
+    <div class="stat-grid" id="cd-stats" style="grid-template-columns:repeat(5,1fr)"></div>
+
+    <div class="section-gap"></div>
+
+    <!-- Two-column layout -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+
+      <!-- Sequence -->
+      <div>
+        <div class="flex items-center" style="margin-bottom:14px">
+          <div class="card-title">Email Sequence</div>
+          <button class="btn btn-ghost btn-sm ml-auto" onclick="addStepUI()">+ Add Step</button>
+        </div>
+        <div id="steps-container"></div>
+      </div>
+
+      <!-- Contacts -->
+      <div>
+        <div class="flex items-center" style="margin-bottom:14px">
+          <div class="card-title">Enrolled Contacts</div>
+          <button class="btn btn-ghost btn-sm ml-auto" onclick="openEnrollModal()">+ Enroll</button>
+        </div>
+        <div class="card" style="max-height:480px;overflow-y:auto">
+          <table>
+            <thead><tr><th>Email</th><th>Name</th><th>Step</th><th>Status</th></tr></thead>
+            <tbody id="cd-contacts"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- CONTACTS -->
+  <div class="section" id="section-contacts">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Contacts</div>
+        <div class="page-sub">Your global contact database</div>
+      </div>
+      <button class="btn btn-primary" onclick="openImportModal()">⬆ Import CSV</button>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Email</th><th>First Name</th><th>Last Name</th><th>Company</th><th>Status</th><th>Added</th></tr></thead>
+          <tbody id="contacts-table"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- LOGS -->
+  <div class="section" id="section-logs">
+    <div class="page-header">
+      <div class="page-title">Activity Log</div>
+      <button class="btn btn-ghost btn-sm" onclick="loadLogs()">↻ Refresh</button>
+    </div>
+    <div class="card">
+      <div id="log-feed"></div>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="section" id="section-settings">
+    <div class="page-header">
+      <div class="page-title">Settings</div>
+    </div>
+
+    <div class="warning-box">
+      ⚠ Before activating any campaign, ensure your domain has SPF, DKIM, and DMARC records configured.
+      Without these, emails will land in spam or be rejected. See README.md for a setup checklist.
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+
+      <!-- SMTP -->
+      <div class="card" style="padding:24px">
+        <div class="card-title" style="margin-bottom:20px">SMTP — Outbound</div>
+        <div class="form-group"><label>Host</label><input id="cfg-smtp-host" placeholder="smtp.gmail.com" /></div>
+        <div class="form-grid">
+          <div class="form-group"><label>Port</label><input id="cfg-smtp-port" value="587" /></div>
+          <div class="form-group"><label>Username</label><input id="cfg-smtp-user" placeholder="you@yourdomain.com" /></div>
+        </div>
+        <div class="form-group"><label>Password / App Password</label><input id="cfg-smtp-pass" type="password" placeholder="●●●●●●●●" /></div>
+        <div class="form-grid">
+          <div class="form-group"><label>From Name</label><input id="cfg-from-name" placeholder="Your Name" /></div>
+          <div class="form-group"><label>From Email</label><input id="cfg-from-email" placeholder="you@yourdomain.com" /></div>
+        </div>
+        <div class="flex gap-2">
+          <button class="btn btn-primary" onclick="saveSettings()">Save SMTP</button>
+          <button class="btn btn-ghost" onclick="testSMTP()">Test Connection</button>
+        </div>
+        <div id="smtp-test-result" style="margin-top:10px;font-family:var(--mono);font-size:12px"></div>
+      </div>
+
+      <!-- IMAP -->
+      <div class="card" style="padding:24px">
+        <div class="card-title" style="margin-bottom:6px">IMAP — Reply Detection</div>
+        <p class="text-muted text-small" style="margin-bottom:18px">When a contact replies, their sequence automatically stops.</p>
+        <div class="form-group"><label>IMAP Host</label><input id="cfg-imap-host" placeholder="imap.gmail.com" /></div>
+        <div class="form-group"><label>Username</label><input id="cfg-imap-user" placeholder="you@yourdomain.com" /></div>
+        <div class="form-group"><label>Password / App Password</label><input id="cfg-imap-pass" type="password" placeholder="●●●●●●●●" /></div>
+        <div class="flex gap-2" style="margin-top:8px">
+          <button class="btn btn-primary" onclick="saveSettings()">Save IMAP</button>
+          <button class="btn btn-ghost" onclick="testIMAP()">Test Connection</button>
+        </div>
+        <div id="imap-test-result" style="margin-top:10px;font-family:var(--mono);font-size:12px"></div>
+      </div>
+
+      <!-- Sending Rules -->
+      <div class="card" style="padding:24px">
+        <div class="card-title" style="margin-bottom:20px">Global Sending Rules</div>
+        <div class="form-group">
+          <label>Global Daily Cap (all campaigns combined)</label>
+          <input id="cfg-global-cap" type="number" value="200" min="1" max="2000" />
+          <div class="form-hint">Hard limit across all campaigns per day. Recommended ≤ 200 for domain health.</div>
+        </div>
+        <div class="form-group">
+          <label>App Base URL (for unsubscribe links)</label>
+          <input id="cfg-base-url" value="http://localhost:5000" />
+          <div class="form-hint">If running on a server, set to your public domain.</div>
+        </div>
+        <button class="btn btn-primary" onclick="saveSettings()">Save Rules</button>
+      </div>
+
+      <!-- Warmup tips -->
+      <div class="card" style="padding:24px">
+        <div class="card-title" style="margin-bottom:12px">📈 Domain Warmup Schedule</div>
+        <p class="text-muted text-small" style="margin-bottom:14px">Follow this ramp-up to avoid hitting spam filters on a new domain.</p>
+        <table>
+          <thead><tr><th>Week</th><th>Daily Limit</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>Week 1</td><td class="mono">10–20</td><td><span class="badge badge-amber">Warmup</span></td></tr>
+            <tr><td>Week 2</td><td class="mono">20–40</td><td><span class="badge badge-amber">Warmup</span></td></tr>
+            <tr><td>Week 3</td><td class="mono">40–60</td><td><span class="badge badge-amber">Ramping</span></td></tr>
+            <tr><td>Week 4</td><td class="mono">60–80</td><td><span class="badge badge-blue">Ramping</span></td></tr>
+            <tr><td>Month 2+</td><td class="mono">80–150</td><td><span class="badge badge-green">Cruising</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- SCRAPER -->
+  <div class="section" id="section-scraper">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Lead Scraper</div>
+        <div class="page-sub">Google Maps → emails → contacts</div>
+      </div>
+    </div>
+
+    <div class="warning-box" style="margin-bottom:24px">
+      ⚠ The scraper opens a Chrome window on the machine running this app.
+      Works when running locally — not available on cloud deployments.
+      After scraping, contacts with emails are imported automatically.
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px">
+      <div class="card" style="padding:24px">
+        <div class="card-title" style="margin-bottom:20px">Search Settings</div>
+        <div class="form-group">
+          <label>Niche / Business Type</label>
+          <input id="sc-niche" placeholder="dental clinics" />
+        </div>
+        <div class="form-group">
+          <label>City + Country</label>
+          <input id="sc-city" placeholder="Brampton Canada" />
+        </div>
+        <div class="form-group">
+          <label>Max Results</label>
+          <input id="sc-max" type="number" value="50" min="5" max="200" />
+          <div class="form-hint">Google Maps typically returns 60–80 per search.</div>
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:10px">
+          <input type="checkbox" id="sc-autoimport" checked style="width:auto;margin:0" />
+          <label style="margin:0;font-size:13px;color:var(--text)">Auto-import contacts with emails into the database</label>
+        </div>
+        <div class="flex gap-2" style="margin-top:8px">
+          <button class="btn btn-primary" id="sc-start-btn" onclick="startScraper()">▶ Start</button>
+          <button class="btn btn-danger"  id="sc-stop-btn"  onclick="stopScraper()"  style="display:none">⏹ Stop</button>
+        </div>
+      </div>
+
+      <div class="card" style="padding:24px">
+        <div class="card-title" style="margin-bottom:12px">Progress</div>
+        <div id="sc-progress-bar-wrap" style="background:var(--bg3);border-radius:6px;height:8px;margin-bottom:12px;overflow:hidden">
+          <div id="sc-progress-bar" style="height:100%;background:var(--green);width:0%;transition:width .4s"></div>
+        </div>
+        <div id="sc-progress-text" class="mono text-muted" style="font-size:12px;margin-bottom:16px">Idle</div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">
+          <div class="stat-card" style="padding:12px">
+            <div class="stat-label">Found</div>
+            <div class="stat-value green" id="sc-found" style="font-size:22px">—</div>
+          </div>
+          <div class="stat-card" style="padding:12px">
+            <div class="stat-label">Scraped</div>
+            <div class="stat-value" id="sc-scraped" style="font-size:22px">—</div>
+          </div>
+          <div class="stat-card" style="padding:12px">
+            <div class="stat-label">Imported</div>
+            <div class="stat-value blue" id="sc-imported" style="font-size:22px">—</div>
+          </div>
+        </div>
+
+        <div id="sc-captcha-box" style="display:none;background:rgba(245,166,35,.1);border:1px solid var(--amber);border-radius:8px;padding:14px;margin-bottom:12px">
+          <div style="color:var(--amber);font-weight:600;margin-bottom:8px">⚠ CAPTCHA detected</div>
+          <div style="color:var(--muted);font-size:12px;margin-bottom:10px">Solve it in the Chrome window on your machine, then click Resume.</div>
+          <button class="btn btn-amber btn-sm" onclick="resumeScraper()">✓ Resume</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Live Log</div>
+        <button class="btn btn-ghost btn-sm" onclick="loadScraper()">↻ Refresh</button>
+      </div>
+      <div id="sc-log-feed" style="max-height:320px;overflow-y:auto;font-family:var(--mono);font-size:12px">
+        <div class="empty-state"><p>Start a scrape to see live output here.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DATABASE VIEWER -->
+  <div class="section" id="section-database">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Database</div>
+        <div class="page-sub">Read-only view — passwords are masked</div>
+      </div>
+    </div>
+
+    <div id="db-table-pills" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px"></div>
+
+    <div id="db-table-view" style="display:none">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title" id="db-table-name"></div>
+          <div class="flex gap-2 items-center">
+            <input id="db-search"
+              placeholder="Search..."
+              oninput="dbSearch()"
+              style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+                     padding:6px 12px;color:var(--text);font-size:13px;outline:none;width:200px;
+                     font-family:var(--font)" />
+            <div id="db-col-toggle-wrap" style="position:relative">
+              <button class="btn btn-ghost btn-sm" onclick="dbToggleColDropdown()">⊞ Columns</button>
+              <div id="db-col-dropdown"
+                   style="display:none;position:absolute;top:calc(100% + 4px);right:0;z-index:200;
+                          background:var(--bg2);border:1px solid var(--border2);border-radius:8px;
+                          padding:6px 0;min-width:160px;max-height:280px;overflow-y:auto;
+                          box-shadow:0 4px 20px rgba(0,0,0,.5)"></div>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="dbExport()">⬇ Export CSV</button>
+            <span id="db-row-count" class="text-muted text-small mono"></span>
+          </div>
+        </div>
+        <div class="table-wrap" style="max-height:540px;overflow-y:auto">
+          <table>
+            <thead id="db-thead"></thead>
+            <tbody id="db-tbody"></tbody>
+          </table>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:12px 16px;border-top:1px solid var(--border)">
+          <button class="btn btn-ghost btn-sm" id="db-prev" onclick="dbPage(-1)">← Prev</button>
+          <span id="db-page-label" class="text-muted text-small mono"></span>
+          <button class="btn btn-ghost btn-sm" id="db-next" onclick="dbPage(1)">Next →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+</div>
+
+<!-- ── Toast ───────────────────────────────────────────────────────────────── -->
+<div id="toast"></div>
+
+<!-- ── Modals ──────────────────────────────────────────────────────────────── -->
+
+<!-- New Campaign -->
+<div class="modal-overlay" id="modal-new-campaign">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-new-campaign')">✕</button>
+    <h2>New Campaign</h2>
+    <div class="form-group"><label>Campaign Name</label><input id="nc-name" placeholder="Clinic Outreach – May 2025" /></div>
+    <div class="form-grid">
+      <div class="form-group"><label>Daily Email Limit</label><input id="nc-limit" type="number" value="30" min="1" max="500" /><div class="form-hint">Start low while warming up (10–30/day)</div></div>
+      <div class="form-group"><label>Min Delay Between Sends (sec)</label><input id="nc-mindelay" type="number" value="45" /></div>
+    </div>
+    <div class="form-grid">
+      <div class="form-group"><label>Send Window — Start Hour (UTC)</label><input id="nc-start" type="number" value="9" min="0" max="23" /></div>
+      <div class="form-group"><label>Send Window — End Hour (UTC)</label><input id="nc-end" type="number" value="17" min="1" max="24" /></div>
+    </div>
+    <div class="form-group"><label>Max Delay Between Sends (sec)</label><input id="nc-maxdelay" type="number" value="120" /></div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="createCampaign()">Create Campaign</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-new-campaign')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Import Contacts -->
+<div class="modal-overlay" id="modal-import">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-import')">✕</button>
+    <h2>Import Contacts</h2>
+    <p class="text-muted text-small" style="margin-bottom:18px">
+      CSV columns: <span class="mono">email, first_name, last_name, company</span> (email is required, others optional).
+    </p>
+    <div class="form-group">
+      <label>Upload CSV File</label>
+      <input type="file" id="import-file" accept=".csv" style="color:var(--text)" />
+    </div>
+    <hr />
+    <div class="form-group">
+      <label>Or paste emails (one per line)</label>
+      <textarea id="import-paste" placeholder="name@clinic.com&#10;doctor@hospital.org&#10;..."></textarea>
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="importContacts()">Import</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-import')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Step Editor -->
+<div class="modal-overlay" id="modal-step">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-step')">✕</button>
+    <h2 id="step-modal-title">Edit Step</h2>
+    <input type="hidden" id="step-num-input" />
+    <div class="form-group">
+      <label>Delay (days since previous step)</label>
+      <input id="step-delay" type="number" value="0" min="0" />
+      <div class="form-hint">Step 1 = 0 (send immediately). Step 2+ = days to wait after previous step was sent.</div>
+    </div>
+    <div class="form-group">
+      <label>Subject — use {{first_name}}, {{company}}, {{full_name}}</label>
+      <input id="step-subject" placeholder="Quick question about {{company}}" />
+    </div>
+    <div class="form-group">
+      <label>Body (HTML or plain text)</label>
+      <textarea id="step-body" style="min-height:220px" placeholder="Hi {{first_name}},&#10;&#10;..."></textarea>
+      <div class="form-hint">Variables: {{first_name}} {{last_name}} {{full_name}} {{company}} {{email}} — unsubscribe link is added automatically.</div>
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="saveStep()">Save Step</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-step')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Enroll Contacts -->
+<div class="modal-overlay" id="modal-enroll">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-enroll')">✕</button>
+    <h2>Enroll Contacts</h2>
+    <p class="text-muted text-small" style="margin-bottom:18px">Select contacts from your database to add to this campaign. Contacts already enrolled or with status bounced/unsubscribed are automatically skipped.</p>
+    <div class="form-group">
+      <label>Filter by company</label>
+      <input id="enroll-filter" placeholder="Search..." oninput="filterEnrollList()" />
+    </div>
+    <div id="enroll-list" style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;margin-bottom:16px"></div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="enrollSelected()">Enroll Selected</button>
+      <button class="btn btn-ghost" onclick="enrollAll()">Enroll All Active</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-enroll')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+let currentCampaignId = null;
+let allContacts = [];
+
+// ── Nav ──────────────────────────────────────────────────────────────────────
+function showSection(name) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+  document.getElementById('section-' + name)?.classList.add('active');
+  document.querySelector(`nav a[data-section="${name}"]`)?.classList.add('active');
+
+  if (name === 'dashboard')  refreshDashboard();
+  if (name === 'campaigns')  loadCampaigns();
+  if (name === 'contacts')   loadContacts();
+  if (name === 'logs')       loadLogs();
+  if (name === 'settings')   loadSettings();
+  if (name === 'scraper')    loadScraper();
+  if (name === 'database')   loadDbTables();
+}
+
+document.querySelectorAll('nav a').forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    showSection(a.dataset.section);
+  });
+});
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg, type = 'ok') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `show ${type}`;
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.className = '', 3000);
+}
+
+// ── Modal ─────────────────────────────────────────────────────────────────────
+function openModal(id)  { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+async function api(path, method = 'GET', body = null) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
+  return res.json();
+}
+
+// ── Scheduler status ──────────────────────────────────────────────────────────
+async function pollScheduler() {
+  const data = await api('/api/scheduler/status');
+  const pill  = document.getElementById('scheduler-pill');
+  const label = document.getElementById('scheduler-label');
+  if (data.running) {
+    pill.classList.add('running');
+    label.textContent = 'Scheduler running';
+  } else {
+    pill.classList.remove('running');
+    label.textContent = 'Scheduler offline';
+  }
+}
+setInterval(pollScheduler, 10000);
+pollScheduler();
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+async function refreshDashboard() {
+  const s = await api('/api/stats');
+  document.getElementById('s-total').textContent   = s.total;
+  document.getElementById('s-sent').textContent    = s.sent;
+  document.getElementById('s-replied').textContent = s.replied;
+  document.getElementById('s-rrate').textContent   = s.reply_rate + '%';
+  document.getElementById('s-today').textContent   = s.today;
+  document.getElementById('s-bounced').textContent = s.bounced;
+
+  const campaigns = await api('/api/campaigns');
+  const tbody = document.getElementById('dashboard-campaigns');
+  if (!campaigns.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><p>No campaigns yet</p></td></tr>';
+    return;
+  }
+  tbody.innerHTML = campaigns.map(c => `
+    <tr>
+      <td><strong>${esc(c.name)}</strong></td>
+      <td>${statusBadge(c.status)}</td>
+      <td class="mono">${c.contact_count}</td>
+      <td class="mono">${c.sent_count}</td>
+      <td class="mono">${c.reply_rate}%</td>
+      <td class="mono">${c.daily_limit}/day</td>
+      <td><button class="btn btn-ghost btn-sm" onclick="openCampaign(${c.id})">Open →</button></td>
+    </tr>
+  `).join('');
+}
+
+// ── Campaigns ─────────────────────────────────────────────────────────────────
+async function loadCampaigns() {
+  const campaigns = await api('/api/campaigns');
+  const el = document.getElementById('campaigns-list');
+  if (!campaigns.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">⚡</div><p>No campaigns yet. Create your first one.</p></div>';
+    return;
+  }
+  el.innerHTML = campaigns.map(c => `
+    <div class="card" style="margin-bottom:14px;padding:20px">
+      <div class="flex items-center gap-3">
+        <div>
+          <div style="font-weight:600;font-size:15px;color:#fff">${esc(c.name)}</div>
+          <div class="text-muted text-small mono">${c.contact_count} contacts · ${c.step_count} steps · ${c.daily_limit}/day limit</div>
+        </div>
+        <div class="ml-auto flex gap-2 items-center">
+          ${statusBadge(c.status)}
+          <button class="btn btn-ghost btn-sm" onclick="openCampaign(${c.id})">Manage →</button>
+          ${c.status === 'active'
+            ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${c.id})">⏸ Pause</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="activateCampaign(${c.id})">▶ Activate</button>`}
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function openNewCampaignModal() { openModal('modal-new-campaign'); }
+
+async function createCampaign() {
+  const name = document.getElementById('nc-name').value.trim();
+  if (!name) { toast('Enter a campaign name', 'err'); return; }
+  const res = await api('/api/campaigns', 'POST', {
+    name,
+    daily_limit:     +document.getElementById('nc-limit').value,
+    send_start_hour: +document.getElementById('nc-start').value,
+    send_end_hour:   +document.getElementById('nc-end').value,
+    min_delay_secs:  +document.getElementById('nc-mindelay').value,
+    max_delay_secs:  +document.getElementById('nc-maxdelay').value,
+  });
+  closeModal('modal-new-campaign');
+  toast('Campaign created ✓');
+  loadCampaigns();
+  openCampaign(res.id);
+}
+
+async function activateCampaign(id) {
+  const res = await api(`/api/campaigns/${id}/activate`, 'POST');
+  if (!res.ok) { toast(res.error, 'err'); return; }
+  toast('Campaign activated ▶');
+  loadCampaigns();
+}
+
+async function pauseCampaign(id) {
+  await api(`/api/campaigns/${id}/pause`, 'POST');
+  toast('Campaign paused ⏸');
+  loadCampaigns();
+}
+
+// ── Campaign Detail ────────────────────────────────────────────────────────────
+async function openCampaign(id) {
+  currentCampaignId = id;
+  const c = await api(`/api/campaigns/${id}`);
+
+  document.getElementById('cd-name').textContent = c.name;
+
+  // Stats
+  const s = c.stats;
+  document.getElementById('cd-stats').innerHTML = [
+    ['Enrolled', s.total, ''],
+    ['Sent',     s.sent,  ''],
+    ['Replies',  s.replied, 'green'],
+    ['Bounced',  s.bounced, s.bounced > 0 ? 'red' : ''],
+    ['Queued',   s.queued,  'blue'],
+  ].map(([label, val, cls]) => `
+    <div class="stat-card">
+      <div class="stat-label">${label}</div>
+      <div class="stat-value ${cls}">${val}</div>
+    </div>
+  `).join('');
+
+  // Action buttons
+  document.getElementById('campaign-actions').innerHTML = `
+    <span class="mono text-muted" style="font-size:12px;padding:8px">${statusBadge(c.status)}</span>
+    ${c.status === 'active'
+      ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${id});openCampaign(${id})">⏸ Pause</button>`
+      : `<button class="btn btn-primary btn-sm" onclick="activateCampaign(${id});openCampaign(${id})">▶ Activate</button>`}
+  `;
+
+  // Steps
+  renderSteps(c.steps);
+
+  // Contacts
+  renderCampaignContacts(c.contacts);
+
+  showSection('campaign-detail');
+}
+
+function renderSteps(steps) {
+  const container = document.getElementById('steps-container');
+  if (!steps.length) {
+    container.innerHTML = '<div class="empty-state"><p>No steps yet. Add your first email.</p></div>';
+    return;
+  }
+  container.innerHTML = steps.map((s, i) => `
+    ${i > 0 ? `<div class="step-connector">Wait ${s.delay_days} day${s.delay_days !== 1 ? 's' : ''}</div>` : ''}
+    <div class="step-card">
+      <div class="step-num">${s.step_num}</div>
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px">${esc(s.subject)}</div>
+      <div class="text-muted text-small" style="font-family:var(--mono)">${esc(s.body_html.replace(/<[^>]+>/g,'').substring(0,80))}...</div>
+      <div class="flex gap-2" style="margin-top:12px">
+        <button class="btn btn-ghost btn-sm" onclick="editStep(${s.step_num})">Edit</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteStep(${s.step_num})">Delete</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderCampaignContacts(contacts) {
+  const tbody = document.getElementById('cd-contacts');
+  if (!contacts.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-state"><p>No contacts enrolled</p></td></tr>';
+    return;
+  }
+  tbody.innerHTML = contacts.slice(0, 100).map(c => `
+    <tr>
+      <td class="mono" style="font-size:12px">${esc(c.email)}</td>
+      <td>${esc(c.first_name)} ${esc(c.last_name)}</td>
+      <td class="mono">${c.current_step}</td>
+      <td>${enrollBadge(c.status)}</td>
+    </tr>
+  `).join('');
+}
+
+// ── Steps ─────────────────────────────────────────────────────────────────────
+function addStepUI() {
+  const steps = document.querySelectorAll('.step-card');
+  const nextNum = steps.length + 1;
+  document.getElementById('step-modal-title').textContent = `Add Step ${nextNum}`;
+  document.getElementById('step-num-input').value = nextNum;
+  document.getElementById('step-delay').value = nextNum === 1 ? 0 : 3;
+  document.getElementById('step-subject').value = '';
+  document.getElementById('step-body').value = '';
+  openModal('modal-step');
+}
+
+async function editStep(stepNum) {
+  const steps = await api(`/api/campaigns/${currentCampaignId}/steps`);
+  const s = steps.find(x => x.step_num === stepNum);
+  if (!s) return;
+  document.getElementById('step-modal-title').textContent = `Edit Step ${stepNum}`;
+  document.getElementById('step-num-input').value  = stepNum;
+  document.getElementById('step-delay').value      = s.delay_days;
+  document.getElementById('step-subject').value    = s.subject;
+  document.getElementById('step-body').value       = s.body_html;
+  openModal('modal-step');
+}
+
+async function saveStep() {
+  const stepNum  = +document.getElementById('step-num-input').value;
+  const subject  = document.getElementById('step-subject').value.trim();
+  const body     = document.getElementById('step-body').value.trim();
+  const delay    = +document.getElementById('step-delay').value;
+
+  if (!subject || !body) { toast('Subject and body are required', 'err'); return; }
+
+  await api(`/api/campaigns/${currentCampaignId}/steps`, 'POST', {
+    step_num: stepNum, subject, body_html: body, delay_days: delay
+  });
+  closeModal('modal-step');
+  toast('Step saved ✓');
+  openCampaign(currentCampaignId);
+}
+
+async function deleteStep(stepNum) {
+  if (!confirm(`Delete step ${stepNum}?`)) return;
+  await api(`/api/campaigns/${currentCampaignId}/steps/${stepNum}`, 'DELETE');
+  toast('Step deleted');
+  openCampaign(currentCampaignId);
+}
+
+// ── Contacts ──────────────────────────────────────────────────────────────────
+async function loadContacts() {
+  allContacts = await api('/api/contacts');
+  const tbody = document.getElementById('contacts-table');
+  if (!allContacts.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><p>No contacts yet. Import a CSV.</p></td></tr>';
+    return;
+  }
+  tbody.innerHTML = allContacts.slice(0, 300).map(c => `
+    <tr>
+      <td class="mono" style="font-size:12px">${esc(c.email)}</td>
+      <td>${esc(c.first_name)}</td>
+      <td>${esc(c.last_name)}</td>
+      <td>${esc(c.company)}</td>
+      <td>${contactStatusBadge(c.status)}</td>
+      <td class="mono text-muted" style="font-size:11px">${c.created_at?.split('T')[0] || c.created_at?.split(' ')[0]}</td>
+    </tr>
+  `).join('');
+}
+
+function openImportModal() { openModal('modal-import'); }
+
+async function importContacts() {
+  const fileInput = document.getElementById('import-file');
+  const paste     = document.getElementById('import-paste').value.trim();
+
+  if (fileInput.files.length) {
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    const res = await fetch('/api/contacts/import', { method: 'POST', body: form });
+    const data = await res.json();
+    toast(`Imported ${data.inserted} contacts ✓`);
+    closeModal('modal-import');
+    loadContacts();
+    return;
+  }
+
+  if (paste) {
+    const rows = paste.split('\n').map(line => ({ email: line.trim() })).filter(r => r.email);
+    const data = await api('/api/contacts/import', 'POST', { rows });
+    toast(`Imported ${data.inserted} contacts ✓`);
+    closeModal('modal-import');
+    loadContacts();
+    return;
+  }
+
+  toast('Select a file or paste emails', 'err');
+}
+
+// ── Enroll ────────────────────────────────────────────────────────────────────
+async function openEnrollModal() {
+  allContacts = await api('/api/contacts');
+  renderEnrollList(allContacts);
+  openModal('modal-enroll');
+}
+
+function renderEnrollList(contacts) {
+  const el = document.getElementById('enroll-list');
+  if (!contacts.length) {
+    el.innerHTML = '<div class="empty-state"><p>No active contacts</p></div>';
+    return;
+  }
+  el.innerHTML = contacts.filter(c => c.status === 'active').map(c => `
+    <label style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer">
+      <input type="checkbox" value="${c.id}" class="enroll-cb" />
+      <div>
+        <div style="font-size:13px">${esc(c.first_name)} ${esc(c.last_name)} <span class="text-muted mono" style="font-size:11px">${esc(c.email)}</span></div>
+        ${c.company ? `<div class="text-muted" style="font-size:11px">${esc(c.company)}</div>` : ''}
+      </div>
+    </label>
+  `).join('');
+}
+
+function filterEnrollList() {
+  const q = document.getElementById('enroll-filter').value.toLowerCase();
+  const filtered = allContacts.filter(c =>
+    c.email.toLowerCase().includes(q) ||
+    (c.company || '').toLowerCase().includes(q) ||
+    (c.first_name || '').toLowerCase().includes(q)
+  );
+  renderEnrollList(filtered);
+}
+
+async function enrollSelected() {
+  const ids = [...document.querySelectorAll('.enroll-cb:checked')].map(cb => +cb.value);
+  if (!ids.length) { toast('Select at least one contact', 'err'); return; }
+  const res = await api(`/api/campaigns/${currentCampaignId}/contacts`, 'POST', { contact_ids: ids });
+  toast(`Enrolled ${res.enrolled} contacts ✓`);
+  closeModal('modal-enroll');
+  openCampaign(currentCampaignId);
+}
+
+async function enrollAll() {
+  const res = await api(`/api/campaigns/${currentCampaignId}/contacts`, 'POST', { all: true });
+  toast(`Enrolled ${res.enrolled} contacts ✓`);
+  closeModal('modal-enroll');
+  openCampaign(currentCampaignId);
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+async function loadSettings() {
+  const s = await api('/api/settings');
+  document.getElementById('cfg-smtp-host').value = s.smtp_host || '';
+  document.getElementById('cfg-smtp-port').value = s.smtp_port || '587';
+  document.getElementById('cfg-smtp-user').value = s.smtp_user || '';
+  document.getElementById('cfg-smtp-pass').value = s.smtp_pass || '';
+  document.getElementById('cfg-from-name').value = s.smtp_from_name || '';
+  document.getElementById('cfg-from-email').value = s.smtp_from_email || '';
+  document.getElementById('cfg-imap-host').value = s.imap_host || '';
+  document.getElementById('cfg-imap-user').value = s.imap_user || '';
+  document.getElementById('cfg-imap-pass').value = s.imap_pass || '';
+  document.getElementById('cfg-global-cap').value = s.global_daily_cap || '200';
+  document.getElementById('cfg-base-url').value = s.app_base_url || 'http://localhost:5000';
+}
+
+async function saveSettings() {
+  await api('/api/settings', 'POST', {
+    smtp_host:       document.getElementById('cfg-smtp-host').value,
+    smtp_port:       document.getElementById('cfg-smtp-port').value,
+    smtp_user:       document.getElementById('cfg-smtp-user').value,
+    smtp_pass:       document.getElementById('cfg-smtp-pass').value,
+    smtp_from_name:  document.getElementById('cfg-from-name').value,
+    smtp_from_email: document.getElementById('cfg-from-email').value,
+    imap_host:       document.getElementById('cfg-imap-host').value,
+    imap_user:       document.getElementById('cfg-imap-user').value,
+    imap_pass:       document.getElementById('cfg-imap-pass').value,
+    global_daily_cap: document.getElementById('cfg-global-cap').value,
+    app_base_url:    document.getElementById('cfg-base-url').value,
+  });
+  toast('Settings saved ✓');
+}
+
+async function testSMTP() {
+  const el = document.getElementById('smtp-test-result');
+  el.textContent = 'Testing...';
+  el.style.color = 'var(--muted)';
+  const res = await api('/api/settings/test-smtp', 'POST');
+  el.textContent = res.message;
+  el.style.color = res.ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function testIMAP() {
+  const el = document.getElementById('imap-test-result');
+  el.textContent = 'Testing...';
+  el.style.color = 'var(--muted)';
+  const res = await api('/api/settings/test-imap', 'POST');
+  el.textContent = res.message;
+  el.style.color = res.ok ? 'var(--green)' : 'var(--red)';
+}
+
+// ── Logs ──────────────────────────────────────────────────────────────────────
+async function loadLogs() {
+  const logs = await api('/api/logs');
+  const el = document.getElementById('log-feed');
+  if (!logs.length) {
+    el.innerHTML = '<div class="empty-state"><p>No activity yet</p></div>';
+    return;
+  }
+  el.innerHTML = logs.map(l => `
+    <div class="log-entry log-${l.level}">
+      <span class="log-time">${(l.created_at||'').replace('T',' ').substring(0,19)}</span>
+      <span class="log-msg">${esc(l.message)}</span>
+    </div>
+  `).join('');
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function statusBadge(s) {
+  const map = {
+    active: 'badge-green', draft: 'badge-gray', paused: 'badge-amber',
+    completed: 'badge-blue', error: 'badge-red'
+  };
+  return `<span class="badge ${map[s]||'badge-gray'}">${s}</span>`;
+}
+
+function enrollBadge(s) {
+  const map = {
+    queued: 'badge-blue', completed: 'badge-green', replied: 'badge-purple',
+    bounced: 'badge-red', unsubscribed: 'badge-gray'
+  };
+  return `<span class="badge ${map[s]||'badge-gray'}">${s}</span>`;
+}
+
+function contactStatusBadge(s) {
+  const map = { active: 'badge-green', bounced: 'badge-red', unsubscribed: 'badge-gray' };
+  return `<span class="badge ${map[s]||'badge-gray'}">${s}</span>`;
+}
+
+// ── Scraper ───────────────────────────────────────────────────────────────────
+let _scraperPoll = null;
+
+async function loadScraper() {
+  await pollScraperStatus();
+}
+
+async function startScraper() {
+  const niche      = document.getElementById('sc-niche').value.trim();
+  const city       = document.getElementById('sc-city').value.trim();
+  const maxResults = +document.getElementById('sc-max').value;
+  const autoImport = document.getElementById('sc-autoimport').checked;
+  if (!niche || !city) { toast('Enter a niche and city', 'err'); return; }
+  const res = await api('/api/scraper/start', 'POST',
+    { niche, city, max_results: maxResults, auto_import: autoImport });
+  if (!res.ok) { toast(res.error || 'Failed to start scraper', 'err'); return; }
+  document.getElementById('sc-log-feed').innerHTML = '';
+  _setScraperUI('running');
+  clearInterval(_scraperPoll);
+  _scraperPoll = setInterval(pollScraperStatus, 2000);
+}
+
+async function stopScraper() {
+  await api('/api/scraper/stop', 'POST');
+}
+
+async function resumeScraper() {
+  await api('/api/scraper/resume', 'POST');
+}
+
+async function pollScraperStatus() {
+  const d = await api('/api/scraper/status');
+  const pct = d.total ? Math.round(d.progress / d.total * 100) : 0;
+  document.getElementById('sc-progress-bar').style.width = pct + '%';
+  document.getElementById('sc-progress-text').textContent =
+    d.total ? `${d.progress} / ${d.total} businesses` : (d.status === 'idle' ? 'Idle' : d.status);
+  document.getElementById('sc-found').textContent    = d.found    ?? '—';
+  document.getElementById('sc-scraped').textContent  = d.progress ?? '—';
+  document.getElementById('sc-imported').textContent = d.imported ?? '—';
+  document.getElementById('sc-captcha-box').style.display =
+    d.status === 'captcha' ? 'block' : 'none';
+
+  if (d.logs && d.logs.length) {
+    const levelColor = { INFO: 'var(--text)', WARN: 'var(--amber)', ERROR: 'var(--red)' };
+    document.getElementById('sc-log-feed').innerHTML = [...d.logs].reverse().map(l =>
+      `<div style="padding:6px 14px;border-bottom:1px solid var(--border);color:${levelColor[l.level]||'var(--text)'}">${esc(l.msg)}</div>`
+    ).join('');
+  }
+
+  _setScraperUI(d.status || 'idle');
+  if (['done','stopped','error','idle'].includes(d.status)) {
+    clearInterval(_scraperPoll);
+  }
+}
+
+function _setScraperUI(status) {
+  const running = status === 'running' || status === 'captcha';
+  document.getElementById('sc-start-btn').disabled = running;
+  document.getElementById('sc-stop-btn').style.display = running ? 'inline-flex' : 'none';
+}
+
+// ── Database Viewer ───────────────────────────────────────────────────────────
+let dbCurrentTable = null;
+let dbCurrentPage  = 1;
+let dbSearchTimer  = null;
+let dbSortCol      = '';
+let dbSortDir      = 'desc';
+let dbHiddenCols   = new Set();
+
+async function loadDbTables() {
+  const tables = await api('/api/db/tables');
+  const el = document.getElementById('db-table-pills');
+  el.innerHTML = tables.map(t => `
+    <button class="btn btn-ghost" id="dbtab-${t.name}" onclick="openDbTable('${t.name}')">
+      ${esc(t.name)}
+      <span class="badge badge-gray" style="margin-left:6px">${t.count}</span>
+    </button>
+  `).join('');
+  if (tables.length) openDbTable(tables[0].name);
+}
+
+async function openDbTable(name) {
+  dbCurrentTable = name;
+  dbCurrentPage  = 1;
+  dbSortCol      = '';
+  dbSortDir      = 'desc';
+  dbHiddenCols   = new Set();
+  document.getElementById('db-search').value = '';
+  document.getElementById('db-col-dropdown').innerHTML = '';
+  document.querySelectorAll('[id^="dbtab-"]').forEach(b => {
+    b.classList.remove('btn-primary');
+    b.classList.add('btn-ghost');
+  });
+  const tab = document.getElementById(`dbtab-${name}`);
+  if (tab) { tab.classList.remove('btn-ghost'); tab.classList.add('btn-primary'); }
+  document.getElementById('db-table-view').style.display = 'block';
+  document.getElementById('db-table-name').textContent = name;
+  await fetchDbPage();
+}
+
+async function fetchDbPage() {
+  const q = encodeURIComponent(document.getElementById('db-search').value.trim());
+  let url = `/api/db/table/${dbCurrentTable}?page=${dbCurrentPage}&q=${q}`;
+  if (dbSortCol) url += `&sort_col=${encodeURIComponent(dbSortCol)}&sort_dir=${dbSortDir}`;
+  const data = await api(url);
+
+  document.getElementById('db-row-count').textContent = `${data.total} rows`;
+  document.getElementById('db-page-label').textContent =
+    `Page ${data.page} of ${data.pages}`;
+  document.getElementById('db-prev').disabled = data.page <= 1;
+  document.getElementById('db-next').disabled = data.page >= data.pages;
+
+  const visibleCols = data.columns.filter(c => !dbHiddenCols.has(c));
+
+  document.getElementById('db-thead').innerHTML = '<tr>' + visibleCols.map(c => {
+    const isSorted = data.sort_col === c;
+    const arrow    = isSorted ? (data.sort_dir === 'asc' ? '▲' : '▼') : '⇅';
+    const nextDir  = (isSorted && data.sort_dir === 'asc') ? 'desc' : 'asc';
+    return `<th style="cursor:pointer;user-select:none;white-space:nowrap"
+                onclick="dbSort('${c}','${nextDir}')">
+              ${esc(c)}&nbsp;<span style="opacity:0.45;font-size:10px">${arrow}</span>
+            </th>`;
+  }).join('') + '</tr>';
+
+  if (!data.rows.length) {
+    document.getElementById('db-tbody').innerHTML =
+      `<tr><td colspan="${visibleCols.length}"><div class="empty-state"><p>No rows</p></div></td></tr>`;
+    _renderColDropdown(data.columns);
+    return;
+  }
+
+  document.getElementById('db-tbody').innerHTML = data.rows.map(row =>
+    '<tr>' + visibleCols.map(col => {
+      const raw     = row[col] ?? '';
+      const str     = String(raw);
+      const display = str.length > 80 ? str.slice(0, 80) + '…' : str;
+      return `<td class="mono" style="font-size:12px;max-width:280px;overflow:hidden;
+              text-overflow:ellipsis;white-space:nowrap" title="${esc(str)}">${esc(display)}</td>`;
+    }).join('') + '</tr>'
+  ).join('');
+
+  _renderColDropdown(data.columns);
+}
+
+function _renderColDropdown(allCols) {
+  const dd = document.getElementById('db-col-dropdown');
+  if (!dd) return;
+  dd.innerHTML = allCols.map(c => `
+    <label style="display:flex;align-items:center;gap:8px;padding:5px 14px;cursor:pointer;
+                  white-space:nowrap;font-size:13px;color:var(--text)">
+      <input type="checkbox" ${dbHiddenCols.has(c) ? '' : 'checked'}
+             onchange="dbToggleCol('${c}',this.checked)" style="cursor:pointer">
+      ${esc(c)}
+    </label>
+  `).join('');
+}
+
+function dbToggleCol(col, visible) {
+  if (visible) dbHiddenCols.delete(col);
+  else dbHiddenCols.add(col);
+  fetchDbPage();
+}
+
+function dbToggleColDropdown() {
+  const dd = document.getElementById('db-col-dropdown');
+  dd.style.display = dd.style.display === 'none' ? 'block' : 'none';
+}
+
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('db-col-toggle-wrap');
+  if (wrap && !wrap.contains(e.target)) {
+    const dd = document.getElementById('db-col-dropdown');
+    if (dd) dd.style.display = 'none';
+  }
+});
+
+function dbSort(col, dir) {
+  dbSortCol = col;
+  dbSortDir = dir;
+  dbCurrentPage = 1;
+  fetchDbPage();
+}
+
+function dbPage(dir) {
+  dbCurrentPage = Math.max(1, dbCurrentPage + dir);
+  fetchDbPage();
+}
+
+function dbSearch() {
+  clearTimeout(dbSearchTimer);
+  dbSearchTimer = setTimeout(() => { dbCurrentPage = 1; fetchDbPage(); }, 300);
+}
+
+function dbExport() {
+  window.location.href = `/api/db/table/${dbCurrentTable}/export`;
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+refreshDashboard();
+</script>
+</body>
+</html>

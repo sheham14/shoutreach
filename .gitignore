@@ -1,0 +1,26 @@
+# Database — contains SMTP credentials and contact data
+outreach.db
+outreach.db-shm
+outreach.db-wal
+
+# Scraped data and browser cookies
+*.csv
+cookies_*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Environment variables (if you add one later)
+.env
+
+# Local Claude Code config
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

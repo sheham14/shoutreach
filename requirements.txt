@@ -1,0 +1,6 @@
+flask>=3.0
+gunicorn>=21.0
+requests>=2.31
+beautifulsoup4>=4.12
+playwright>=1.40
+playwright-stealth>=1.0
