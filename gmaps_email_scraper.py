@@ -143,6 +143,13 @@ EMAIL_BLACKLIST = {
     "w3.org", "jquery.com", "cloudflare.com", "amazonaws.com",
 }
 
+# File extensions that look like TLDs but are never real email domains
+_FAKE_TLDS = {
+    "webp", "png", "jpg", "jpeg", "gif", "svg", "ico", "bmp",
+    "pdf", "zip", "js", "css", "html", "xml", "json", "woff",
+    "woff2", "ttf", "eot", "mp4", "mp3", "wav", "webm",
+}
+
 # Status constants written to the email_status CSV column
 STATUS_FOUND      = "found"
 STATUS_NO_WEBSITE = "no_website"
@@ -492,11 +499,16 @@ def fetch_emails_from_url(url: str) -> tuple:
         | set(EMAIL_REGEX.findall(resp.text))
     )
 
-    clean = {
-        e.lower() for e in raw
-        if e.split("@")[-1].lower() not in EMAIL_BLACKLIST
-        and not e.endswith((".png", ".jpg", ".gif", ".svg", ".css", ".js"))
-    }
+    clean = set()
+    for e in raw:
+        e = e.lower()
+        domain = e.split("@")[-1]
+        tld = domain.rsplit(".", 1)[-1]
+        if tld in _FAKE_TLDS:
+            continue
+        if any(domain == b or domain.endswith("." + b) for b in EMAIL_BLACKLIST):
+            continue
+        clean.add(e)
 
     if clean:
         return clean, STATUS_FOUND
