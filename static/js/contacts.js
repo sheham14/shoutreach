@@ -22,6 +22,7 @@ async function loadContacts() {
   _renderContactColDropdown();
   renderContactsTable();
   loadUnsubscribed();
+  loadInvalidMx();
 }
 
 let _unsubscribed = [];
@@ -55,6 +56,43 @@ function exportUnsubscribed() {
   const blob = new Blob([csv], { type: 'text/csv' });
   const a    = Object.assign(document.createElement('a'), {
     href: URL.createObjectURL(blob), download: 'unsubscribed.csv',
+  });
+  a.click();
+}
+
+// ── Invalid MX ────────────────────────────────────────────────────────────────
+
+let _invalidMx = [];
+
+async function loadInvalidMx() {
+  _invalidMx = await api('/api/contacts/invalid-mx');
+  const countEl = document.getElementById('invalid-mx-count');
+  const tbody   = document.getElementById('invalid-mx-table');
+  if (!countEl || !tbody) return;
+  countEl.textContent = _invalidMx.length ? `${_invalidMx.length} contacts` : '';
+  if (!_invalidMx.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-state"><p>No invalid emails found yet</p></td></tr>';
+    return;
+  }
+  tbody.innerHTML = _invalidMx.map(c => `<tr>
+    <td class="mono" style="font-size:12px">${esc(c.email || '—')}</td>
+    <td>${esc(c.company || '—')}</td>
+    <td class="mono text-muted" style="font-size:12px">${esc(c.website || '—')}</td>
+    <td class="mono text-muted" style="font-size:11px">${(c.created_at || '').substring(0, 10)}</td>
+  </tr>`).join('');
+}
+
+function exportInvalidMx() {
+  if (!_invalidMx.length) { toast('No invalid emails to export', 'err'); return; }
+  const rows = [['Email','Company','Website','Address','Date']];
+  _invalidMx.forEach(c => rows.push([
+    c.email || '', c.company || '', c.website || '',
+    c.address || '', (c.created_at || '').substring(0, 10),
+  ]));
+  const csv  = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a    = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(blob), download: 'invalid-mx-emails.csv',
   });
   a.click();
 }
@@ -242,7 +280,8 @@ async function importContacts() {
     form.append('file', fileInput.files[0]);
     const res  = await fetch('/api/contacts/import', { method: 'POST', body: form });
     const data = await res.json();
-    toast(`Imported ${data.inserted} contacts ✓`);
+    const inv = data.invalid_mx ? ` (${data.invalid_mx} invalid MX — see Invalid Emails list)` : '';
+    toast(`Imported ${data.inserted} contacts ✓${inv}`);
     closeModal('modal-import');
     loadContacts();
     return;
@@ -251,7 +290,8 @@ async function importContacts() {
   if (paste) {
     const rows = paste.split('\n').map(line => ({ email: line.trim() })).filter(r => r.email);
     const data = await api('/api/contacts/import', 'POST', { rows });
-    toast(`Imported ${data.inserted} contacts ✓`);
+    const inv = data.invalid_mx ? ` (${data.invalid_mx} invalid MX — see Invalid Emails list)` : '';
+    toast(`Imported ${data.inserted} contacts ✓${inv}`);
     closeModal('modal-import');
     loadContacts();
     return;

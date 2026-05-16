@@ -32,51 +32,33 @@
 
   <div class="section-gap"></div>
 
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-    <div>
-      <div class="flex items-center" style="margin-bottom:14px">
-        <div class="card-title">Email Sequence</div>
-        <button class="btn btn-ghost btn-sm ml-auto" onclick="addStepUI()">+ Add Step</button>
-      </div>
-      <div id="steps-container"></div>
+  <div>
+    <div class="flex items-center" style="margin-bottom:14px">
+      <div class="card-title">Email Sequence</div>
+      <button class="btn btn-ghost btn-sm ml-auto" onclick="addStepUI()">+ Add Step</button>
     </div>
-
-    <div>
-      <div class="flex items-center" style="margin-bottom:14px">
-        <div class="card-title">Enrolled Contacts</div>
-        <div class="flex gap-2 ml-auto">
-          <button id="enroll-remove-selected-btn" class="btn btn-danger btn-sm" onclick="removeSelectedEnrolled()" disabled>✕ Remove Selected</button>
-          <button class="btn btn-ghost btn-sm" onclick="openEnrollModal()">+ Enroll</button>
-        </div>
-      </div>
-      <div class="card" style="max-height:480px;overflow-y:auto">
-        <table>
-          <thead><tr>
-            <th style="width:36px"><input type="checkbox" id="enroll-select-all" onchange="toggleSelectAllEnrolled(this.checked)" style="cursor:pointer"/></th>
-            <th>Email</th><th>Name</th><th>Step</th><th>Variant</th><th>Status</th><th></th>
-          </tr></thead>
-          <tbody id="cd-contacts"></tbody>
-        </table>
-      </div>
-    </div>
+    <div id="steps-container"></div>
   </div>
 
   <div class="section-gap"></div>
 
   <div>
     <div class="flex items-center" style="margin-bottom:14px">
-      <div class="card-title">Contact Report</div>
+      <div class="card-title">Contacts</div>
       <div class="flex gap-2 ml-auto items-center">
         <span id="report-count" class="text-muted text-small"></span>
+        <button id="enroll-remove-selected-btn" class="btn btn-danger btn-sm" onclick="removeSelectedEnrolled()" disabled>✕ Remove Selected</button>
+        <button class="btn btn-ghost btn-sm" onclick="openEnrollModal()">+ Enroll</button>
         <a id="report-export-btn" class="btn btn-ghost btn-sm" href="#" target="_blank">⬇ Export Excel</a>
       </div>
     </div>
-    <div class="card" style="max-height:400px;overflow-y:auto">
+    <div class="card" style="max-height:480px;overflow-y:auto">
       <table>
         <thead><tr>
+          <th style="width:36px"><input type="checkbox" id="enroll-select-all" onchange="toggleSelectAllEnrolled(this.checked)" style="cursor:pointer"/></th>
           <th>Email</th><th>Name</th><th>Company</th>
-          <th>Variant</th><th>Steps Sent</th><th>Current Step</th>
-          <th>Status</th><th>Next Send</th>
+          <th>Variant</th><th>Sent</th><th>Step</th>
+          <th>Status</th><th>Next Send</th><th></th>
         </tr></thead>
         <tbody id="cd-report"></tbody>
       </table>

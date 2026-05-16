@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShoutReach — Cold outreach that you actually own</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b0f14;--bg2:#111827;--bg3:#1a2435;
+  --border:#1e2a38;--border2:#253345;
+  --green:#00e5a0;--green-dim:rgba(0,229,160,.12);
+  --text:#e2e8f0;--muted:#6b7280;--sub:#94a3b8;
+  --blue:#3b82f6;--amber:#f59e0b;--red:#ef4444;
+  --font:'Inter',system-ui,sans-serif;
+  --mono:'JetBrains Mono',monospace;
+}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:var(--font);line-height:1.6;font-size:15px}
+
+/* ── Nav ── */
+nav{position:sticky;top:0;z-index:100;display:flex;align-items:center;
+  padding:0 48px;height:64px;background:rgba(11,15,20,.88);
+  backdrop-filter:blur(14px);border-bottom:1px solid var(--border)}
+.nav-logo{display:flex;align-items:center;gap:10px;text-decoration:none}
+.nav-dot{width:10px;height:10px;background:var(--green);border-radius:50%;
+  box-shadow:0 0 10px var(--green)}
+.nav-wordmark{font-size:18px;font-weight:800;color:var(--text);letter-spacing:-.3px}
+.nav-links{display:flex;gap:28px;margin-left:40px;list-style:none}
+.nav-links a{color:var(--muted);text-decoration:none;font-size:14px;font-weight:500;transition:color .2s}
+.nav-links a:hover{color:var(--text)}
+.nav-right{margin-left:auto;display:flex;gap:12px;align-items:center}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 18px;border-radius:7px;
+  font-size:14px;font-weight:600;cursor:pointer;text-decoration:none;border:none;
+  font-family:var(--font);transition:all .2s}
+.btn-primary{background:var(--green);color:#0b0f14}
+.btn-primary:hover{background:#00ffb3;box-shadow:0 0 22px rgba(0,229,160,.45)}
+.btn-ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover{border-color:#4a5568}
+.btn-lg{padding:13px 28px;font-size:16px}
+
+/* ── Layout ── */
+.wrap{max-width:1160px;margin:0 auto;padding:0 48px}
+section{padding:96px 48px;max-width:1160px;margin:0 auto}
+.sec-label{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:700;
+  color:var(--green);text-transform:uppercase;letter-spacing:.1em;margin-bottom:14px}
+.sec-label::before{content:'';width:18px;height:1px;background:var(--green)}
+h1{font-size:clamp(38px,5.5vw,66px);font-weight:900;line-height:1.06;letter-spacing:-1.8px}
+h2{font-size:clamp(26px,3.2vw,44px);font-weight:800;line-height:1.14;letter-spacing:-.8px}
+h3{font-size:18px;font-weight:700;letter-spacing:-.2px;margin-bottom:8px;color:var(--text)}
+p{color:var(--sub)}
+
+/* ── Hero ── */
+#hero{min-height:calc(100vh - 64px);display:flex;align-items:center;gap:64px;
+  padding-top:72px;padding-bottom:72px}
+.hero-left{flex:1;min-width:0}
+.hero-badge{display:inline-flex;align-items:center;gap:9px;padding:6px 14px;
+  border-radius:999px;border:1px solid rgba(0,229,160,.3);background:rgba(0,229,160,.07);
+  color:var(--green);font-size:13px;font-weight:500;margin-bottom:22px}
+.badge-dot{width:6px;height:6px;background:var(--green);border-radius:50%;
+  animation:blink 2s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.5}}
+.hero-title{margin-bottom:22px}
+.hero-title .g{color:var(--green)}
+.hero-sub{font-size:17px;color:var(--sub);line-height:1.7;margin-bottom:34px;max-width:510px}
+.hero-ctas{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:44px}
+.hero-stats{display:flex;gap:32px;padding-top:28px;border-top:1px solid var(--border)}
+.hs-val{font-size:22px;font-weight:800;color:var(--text);letter-spacing:-.5px}
+.hs-val.g{color:var(--green)}
+.hs-lbl{font-size:12px;color:var(--muted);margin-top:2px}
+
+/* ── Dashboard Mockup ── */
+.hero-right{flex:1.15;min-width:0;perspective:1300px}
+.mock-tilt{transform:rotateY(-9deg) rotateX(4deg);transition:transform .4s ease}
+.mock-tilt:hover{transform:rotateY(-4deg) rotateX(2deg)}
+.dmock{background:#0d1117;border:1px solid #2a3747;border-radius:12px;overflow:hidden;
+  display:flex;font-size:11px;
+  box-shadow:0 40px 90px rgba(0,0,0,.75),0 0 0 1px rgba(255,255,255,.04)}
+.msb{width:150px;background:#0d1117;border-right:1px solid #1a2538;
+  display:flex;flex-direction:column;flex-shrink:0;padding:14px 0}
+.msb-top{padding:0 12px 14px;border-bottom:1px solid #1a2538;margin-bottom:10px}
+.msb-sys{font-size:9px;color:#00e5a0;font-family:monospace;letter-spacing:.06em;margin-bottom:3px}
+.msb-name{font-size:15px;font-weight:700;color:#e2e8f0}
+.mni{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:11px;color:#6b7280;cursor:default}
+.mni.on{background:#151c25;color:#e2e8f0;border-right:2px solid #00e5a0}
+.mni-ic{width:12px;text-align:center;font-size:10px;flex-shrink:0}
+.msb-foot{margin-top:auto;padding:10px 12px;border-top:1px solid #1a2538}
+.sched{display:flex;align-items:center;gap:6px;background:rgba(0,229,160,.1);
+  border-radius:5px;padding:5px 8px;font-size:9px;color:#00e5a0;font-family:monospace}
+.sched-dot{width:5px;height:5px;background:#00e5a0;border-radius:50%;animation:blink 2s infinite}
+.mmain{flex:1;min-width:0;padding:14px;background:#10161f}
+.mm-hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:13px}
+.mm-title{font-size:17px;font-weight:700;color:#e2e8f0;line-height:1}
+.mm-sub{font-size:9px;color:#6b7280;margin-top:3px}
+.mm-btn{background:#1a2435;border:1px solid #1e2a38;border-radius:5px;
+  padding:3px 9px;color:#94a3b8;font-size:9px}
+.stat-row{display:grid;grid-template-columns:repeat(6,1fr);gap:5px;margin-bottom:12px}
+.sc{background:#151c25;border:1px solid #1e2a38;border-radius:7px;padding:8px 7px}
+.sc-l{font-size:7.5px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
+.sc-v{font-size:17px;font-weight:800;line-height:1}
+.mc{background:#151c25;border:1px solid #1e2a38;border-radius:7px;padding:10px}
+.mc-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.mc-t{font-size:11px;font-weight:600;color:#e2e8f0}
+.mc-va{background:#00e5a0;color:#0b0f14;border-radius:4px;padding:2px 7px;font-size:8.5px;font-weight:700}
+.mt{width:100%;border-collapse:collapse}
+.mt th{font-size:7.5px;color:#6b7280;text-align:left;padding:3px 5px;
+  border-bottom:1px solid #1e2a38;text-transform:uppercase;letter-spacing:.04em}
+.mt td{font-size:9.5px;color:#94a3b8;padding:5px 5px;border-bottom:1px solid #161e2a}
+.mt tr:last-child td{border:none}
+.mb{display:inline-block;padding:1px 6px;border-radius:3px;font-size:8px;font-weight:600}
+.mb-g{background:rgba(0,229,160,.15);color:#00e5a0}
+.mb-gr{background:rgba(107,114,128,.15);color:#6b7280}
+.mo{background:#1a2435;border:1px solid #1e2a38;border-radius:3px;
+  padding:2px 7px;color:#94a3b8;font-size:8.5px}
+
+/* ── Numbers bar ── */
+.numbar{background:var(--bg2);border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.numbar-in{max-width:1160px;margin:0 auto;padding:40px 48px;
+  display:flex;justify-content:space-around;flex-wrap:wrap;gap:20px}
+.num-val{display:block;font-size:34px;font-weight:900;color:var(--green);
+  letter-spacing:-1px;line-height:1}
+.num-lbl{font-size:13px;color:var(--muted);margin-top:4px}
+
+/* ── Problem ── */
+.prob-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:44px}
+.prob-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:28px}
+.prob-icon{font-size:26px;margin-bottom:14px}
+.prob-title{font-size:17px;font-weight:700;color:var(--text);margin-bottom:8px;letter-spacing:-.2px}
+.prob-desc{font-size:14px;color:var(--muted);line-height:1.65}
+
+/* ── Features ── */
+.feat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-top:44px}
+.feat-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;
+  padding:22px;transition:border-color .2s,transform .2s}
+.feat-card:hover{border-color:rgba(0,229,160,.35);transform:translateY(-3px)}
+.feat-ic{font-size:22px;display:block;margin-bottom:12px}
+.feat-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:7px}
+.feat-desc{font-size:12.5px;color:var(--muted);line-height:1.6}
+.feat-tag{display:inline-block;margin-top:10px;padding:2px 8px;border-radius:4px;
+  font-size:10px;font-weight:700;background:var(--green-dim);color:var(--green)}
+code{font-family:var(--mono);font-size:12px;background:var(--green-dim);
+  color:var(--green);padding:1px 6px;border-radius:4px}
+
+/* ── Comparison ── */
+.cmp-wrap{margin-top:44px;border:1px solid var(--border);border-radius:12px;overflow-x:auto}
+.cmp{width:100%;border-collapse:collapse;min-width:720px}
+.cmp th{padding:15px 18px;text-align:center;font-size:13px;font-weight:700;
+  border-bottom:1px solid var(--border);background:var(--bg2);color:var(--sub)}
+.cmp th.you{color:var(--green);background:rgba(0,229,160,.05);border-bottom:2px solid var(--green)}
+.cmp th:first-child{text-align:left;font-size:12px;color:var(--muted);font-weight:600}
+.cmp td{padding:11px 18px;text-align:center;font-size:13px;
+  border-bottom:1px solid var(--border);color:var(--muted)}
+.cmp td:first-child{text-align:left;color:var(--text);font-weight:500}
+.cmp td.you{background:rgba(0,229,160,.03);color:var(--text);font-weight:600}
+.cmp tr:last-child td{border:none}
+.cmp tr:hover td{background:rgba(255,255,255,.018)}
+.cmp tr:hover td.you{background:rgba(0,229,160,.06)}
+.ck{color:var(--green)}
+.cx{color:var(--red)}
+.cp{color:var(--amber)}
+.uniq{font-size:10px;color:var(--green);margin-left:4px}
+
+/* ── AI Section ── */
+.ai-wrap{background:linear-gradient(135deg,rgba(0,229,160,.05),rgba(59,130,246,.04));
+  border:1px solid rgba(0,229,160,.2);border-radius:16px;padding:56px;
+  display:flex;gap:56px;align-items:center}
+.ai-l,.ai-r{flex:1}
+.ai-providers{display:flex;gap:10px;margin-top:22px;flex-wrap:wrap}
+.ai-p{display:flex;align-items:center;gap:8px;padding:9px 15px;background:var(--bg3);
+  border:1px solid var(--border);border-radius:8px;font-size:13px;font-weight:600;color:var(--text)}
+.ai-preview{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:20px}
+.ai-score{font-size:38px;font-weight:900;color:var(--green);line-height:1}
+.atag{display:inline-block;padding:2px 9px;border-radius:4px;font-size:11px;font-weight:600;margin:2px}
+.atag-g{background:rgba(0,229,160,.15);color:var(--green)}
+.atag-a{background:rgba(245,158,11,.15);color:var(--amber)}
+
+/* ── How it works ── */
+.steps{display:flex;gap:0;margin-top:52px;position:relative}
+.steps::before{content:'';position:absolute;top:31px;left:80px;right:80px;height:1px;
+  background:linear-gradient(to right,var(--border),var(--green),var(--border))}
+.step{flex:1;text-align:center;padding:0 28px;position:relative}
+.step-n{width:62px;height:62px;border-radius:50%;background:var(--bg2);
+  border:2px solid var(--green);display:flex;align-items:center;justify-content:center;
+  font-size:22px;font-weight:900;color:var(--green);margin:0 auto 18px;position:relative;z-index:1}
+.step h3{font-size:16px;margin-bottom:8px}
+.step p{font-size:13.5px;color:var(--muted)}
+.step-code{display:inline-block;margin-top:12px;padding:5px 12px;background:var(--bg2);
+  border:1px solid var(--border);border-radius:6px;font-family:var(--mono);
+  font-size:11px;color:var(--green)}
+
+/* ── CTA banner ── */
+.cta-bar{background:var(--bg2);border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.cta-in{max-width:1160px;margin:0 auto;padding:88px 48px;text-align:center}
+.cta-in h2{margin-bottom:14px}
+.cta-in p{font-size:17px;margin-bottom:34px}
+.cta-btns{display:flex;gap:14px;justify-content:center}
+
+/* ── Footer ── */
+footer{max-width:1160px;margin:0 auto;padding:36px 48px;
+  display:flex;justify-content:space-between;align-items:center;
+  border-top:1px solid var(--border)}
+.foot-logo{display:flex;align-items:center;gap:10px}
+.foot-dot{width:8px;height:8px;background:var(--green);border-radius:50%}
+.foot-word{font-size:16px;font-weight:800;color:var(--text)}
+.foot-tag{font-size:12px;color:var(--muted);margin-top:3px}
+.foot-links{display:flex;gap:24px;list-style:none}
+.foot-links a{color:var(--muted);text-decoration:none;font-size:14px;transition:color .2s}
+.foot-links a:hover{color:var(--text)}
+
+/* ── Responsive ── */
+@media(max-width:960px){
+  #hero{flex-direction:column}
+  .hero-right{display:none}
+  .prob-grid,.feat-grid{grid-template-columns:repeat(2,1fr)}
+  .ai-wrap{flex-direction:column}
+  .steps::before{display:none}
+  .steps{flex-direction:column;gap:32px}
+}
+@media(max-width:600px){
+  nav,.wrap,section{padding-left:20px;padding-right:20px}
+  .prob-grid,.feat-grid{grid-template-columns:1fr}
+  h1{font-size:36px}
+  .numbar-in{padding:32px 20px}
+  footer{flex-direction:column;gap:24px;text-align:center}
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="#" class="nav-logo">
+    <div class="nav-dot"></div>
+    <span class="nav-wordmark">ShoutReach</span>
+  </a>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#compare">Compare</a></li>
+    <li><a href="#ai">AI Review</a></li>
+    <li><a href="#how">How it works</a></li>
+  </ul>
+  <div class="nav-right">
+    <a href="#" class="btn btn-ghost">GitHub</a>
+    <a href="#how" class="btn btn-primary">Get Started →</a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section id="hero">
+  <div class="hero-left">
+    <div class="hero-badge">
+      <div class="badge-dot"></div>
+      Self-hosted cold email platform
+    </div>
+    <h1 class="hero-title">
+      Cold outreach<br>that you<br><span class="g">actually own.</span>
+    </h1>
+    <p class="hero-sub">
+      Stop paying $100/month for a tool that holds your data hostage.
+      ShoutReach runs on your server, your SMTP, and your terms —
+      unlimited contacts, unlimited campaigns, forever.
+    </p>
+    <div class="hero-ctas">
+      <a href="#how" class="btn btn-primary btn-lg">Self-host in minutes →</a>
+      <a href="#compare" class="btn btn-ghost btn-lg">See how it compares</a>
+    </div>
+    <div class="hero-stats">
+      <div><div class="hs-val g">$0</div><div class="hs-lbl">per seat / per month</div></div>
+      <div><div class="hs-val">∞</div><div class="hs-lbl">contacts &amp; campaigns</div></div>
+      <div><div class="hs-val">100%</div><div class="hs-lbl">your data, your server</div></div>
+    </div>
+  </div>
+
+  <div class="hero-right">
+    <div class="mock-tilt">
+      <div class="dmock">
+        <!-- Sidebar -->
+        <div class="msb">
+          <div class="msb-top">
+            <div class="msb-sys">◆ SYSTEM</div>
+            <div class="msb-name">ShoutReach</div>
+          </div>
+          <div class="mni on"><span class="mni-ic">◎</span> Dashboard</div>
+          <div class="mni"><span class="mni-ic">⚡</span> Campaigns</div>
+          <div class="mni"><span class="mni-ic">⊕</span> Contacts</div>
+          <div class="mni"><span class="mni-ic">≡</span> Activity Log</div>
+          <div class="mni"><span class="mni-ic">◌</span> Settings</div>
+          <div class="mni"><span class="mni-ic">⊗</span> Scraper</div>
+          <div class="mni"><span class="mni-ic">▣</span> Database</div>
+          <div class="mni"><span class="mni-ic">?</span> Help &amp; Guide</div>
+          <div class="msb-foot">
+            <div class="sched"><div class="sched-dot"></div>Scheduler running</div>
+          </div>
+        </div>
+        <!-- Main -->
+        <div class="mmain">
+          <div class="mm-hdr">
+            <div>
+              <div class="mm-title">Dashboard</div>
+              <div class="mm-sub">Overview across all campaigns</div>
+            </div>
+            <div class="mm-btn">↺ Refresh</div>
+          </div>
+          <div class="stat-row">
+            <div class="sc"><div class="sc-l">Total Contacts</div><div class="sc-v" style="color:#3b82f6">847</div></div>
+            <div class="sc"><div class="sc-l">Emails Sent</div><div class="sc-v" style="color:#e2e8f0">2,341</div></div>
+            <div class="sc"><div class="sc-l">Replies</div><div class="sc-v" style="color:#00e5a0">47</div></div>
+            <div class="sc"><div class="sc-l">Reply Rate</div><div class="sc-v" style="color:#00e5a0">2.0%</div></div>
+            <div class="sc"><div class="sc-l">Sent Today</div><div class="sc-v" style="color:#f59e0b">23</div></div>
+            <div class="sc"><div class="sc-l">Bounced</div><div class="sc-v" style="color:#ef4444">3</div></div>
+          </div>
+          <div class="mc">
+            <div class="mc-hdr">
+              <div class="mc-t">Active Campaigns</div>
+              <div class="mc-va">View All →</div>
+            </div>
+            <table class="mt">
+              <thead><tr>
+                <th>CAMPAIGN</th><th>STATUS</th><th>CONTACTS</th>
+                <th>SENT</th><th>REPLY RATE</th><th>DAILY LIMIT</th><th></th>
+              </tr></thead>
+              <tbody>
+                <tr>
+                  <td style="color:#e2e8f0;font-weight:600">Dental — Toronto Q2</td>
+                  <td><span class="mb mb-g">active</span></td>
+                  <td>124</td><td>87</td>
+                  <td style="color:#00e5a0">3.4%</td><td>25/day</td>
+                  <td><div class="mo">Open →</div></td>
+                </tr>
+                <tr>
+                  <td style="color:#e2e8f0;font-weight:600">HVAC — Brampton</td>
+                  <td><span class="mb mb-gr">draft</span></td>
+                  <td>312</td><td>0</td><td>0%</td><td>30/day</td>
+                  <td><div class="mo">Open →</div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- NUMBERS BAR -->
+<div class="numbar">
+  <div class="numbar-in">
+    <div class="num-item"><span class="num-val">$0</span><div class="num-lbl">per seat, forever</div></div>
+    <div class="num-item"><span class="num-val">∞</span><div class="num-lbl">contacts &amp; campaigns</div></div>
+    <div class="num-item"><span class="num-val">3</span><div class="num-lbl">AI providers supported</div></div>
+    <div class="num-item"><span class="num-val">5 min</span><div class="num-lbl">reply detection interval</div></div>
+    <div class="num-item"><span class="num-val">100%</span><div class="num-lbl">data ownership</div></div>
+  </div>
+</div>
+
+<!-- PROBLEM -->
+<section id="problem">
+  <div class="sec-label">The problem</div>
+  <h2>Cold outreach SaaS is broken.<br>Here's why.</h2>
+  <div class="prob-grid">
+    <div class="prob-card">
+      <div class="prob-icon">💸</div>
+      <div class="prob-title">You're renting, not owning</div>
+      <div class="prob-desc">Instantly starts at $97/month. Smartlead at $94. Apollo at $99. They can hike prices, change plans, or shut down — and your entire outreach stack goes with them.</div>
+    </div>
+    <div class="prob-card">
+      <div class="prob-icon">🔒</div>
+      <div class="prob-title">Your data lives on their servers</div>
+      <div class="prob-desc">Every contact, reply, and campaign lives on someone else's infrastructure. Export limits, account bans, or a billing hiccup can lock you out of your own business overnight.</div>
+    </div>
+    <div class="prob-card">
+      <div class="prob-icon">🤖</div>
+      <div class="prob-title">Locked into their AI at their markup</div>
+      <div class="prob-desc">When platforms add "AI features," they proxy your requests and charge a premium on top. You don't choose the model, the provider, or the cost. You just pay their rate.</div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section id="features" style="padding-top:0">
+  <div class="sec-label">Features</div>
+  <h2>Everything you need.<br>Nothing you don't.</h2>
+  <div class="feat-grid">
+    <div class="feat-card">
+      <span class="feat-ic">⚡</span>
+      <div class="feat-title">Multi-Inbox Rotation</div>
+      <div class="feat-desc">Assign multiple SMTP accounts per campaign. Sends rotate round-robin automatically — no manual switching, no warm-up conflicts.</div>
+    </div>
+    <div class="feat-card">
+      <span class="feat-ic">{}</span>
+      <div class="feat-title">Campaign Variables</div>
+      <div class="feat-desc">Define <code>{{location}}</code> once per campaign. Run identical sequences across Toronto, Brampton, Mississauga — one template, unlimited cities.</div>
+      <div class="feat-tag">Unique to ShoutReach</div>
+    </div>
+    <div class="feat-card">
+      <span class="feat-ic">✓</span>
+      <div class="feat-title">MX Validation + Sales Signal</div>
+      <div class="feat-desc">Every imported email is validated against live DNS. Invalid emails aren't discarded — they're flagged: this business has outdated tech, and that's a door opener.</div>
+      <div class="feat-tag">Unique to ShoutReach</div>
+    </div>
+    <div class="feat-card">
+      <span class="feat-ic">🕐</span>
+      <div class="feat-title">Timezone-Aware Sending</div>
+      <div class="feat-desc">Set a timezone per campaign. 9–5 sends land during local business hours — not at 3am because your VPS happens to be in UTC.</div>
+    </div>
+    <div class="feat-card">
+      <span class="feat-ic">◈</span>
+      <div class="feat-title">A/B Variant Testing</div>
+      <div class="feat-desc">Weighted split testing per step. Contacts are assigned variants at enrollment. Reply rates tracked side-by-side so you know what's actually working.</div>
+    </div>
+    <div class="feat-card">
+      <span class="feat-ic">↩</span>
+      <div class="feat-title">Smart Reply Detection</div>
+      <div class="feat-desc">IMAP scans every 5 minutes. Distinguishes real replies from OOO auto-replies using RFC 3834 headers — sequences only stop for genuine responses.</div>
+    </div>
+    <div class="feat-card">
+      <span class="feat-ic">✦</span>
+      <div class="feat-title">AI Copy Review (BYOK)</div>
+      <div class="feat-desc">Score, critique, and rewrite emails with Claude, Gemini, or GPT. Connect your own API key — no markup, no middleman, no vendor lock-in.</div>
+    </div>
+    <div class="feat-card">
+      <span class="feat-ic">🔍</span>
+      <div class="feat-title">Google Maps Scraper</div>
+      <div class="feat-desc">Scrape businesses by niche and city. Emails, websites, addresses — imported directly into your contacts with MX validation on the way in.</div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPARISON -->
+<section id="compare">
+  <div class="sec-label">Comparison</div>
+  <h2>How ShoutReach stacks up.</h2>
+  <p style="margin-top:10px;font-size:14px">Pricing from public sources, 2025. ✓ = included &nbsp;✗ = not available &nbsp;~ = limited</p>
+  <div class="cmp-wrap">
+    <table class="cmp">
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th class="you">ShoutReach</th>
+          <th>Instantly</th>
+          <th>Smartlead</th>
+          <th>Apollo</th>
+          <th>Lemlist</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Monthly cost</td><td class="you" style="color:var(--green)">~$5 VPS</td><td>$97–$358</td><td>$94–$174</td><td>$49–$99</td><td>$59–$99</td></tr>
+        <tr><td>Contacts limit</td><td class="you" style="color:var(--green)">Unlimited</td><td>Capped</td><td>Capped</td><td>Capped</td><td>Capped</td></tr>
+        <tr><td>Custom SMTP / IMAP</td><td class="you"><span class="ck">✓</span> Any provider</td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="cx">✗</span></td><td><span class="ck">✓</span></td></tr>
+        <tr><td>Multi-inbox rotation</td><td class="you"><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="cx">✗</span></td></tr>
+        <tr><td>Campaign-level variables</td><td class="you"><span class="ck">✓</span><span class="uniq">(unique)</span></td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td></tr>
+        <tr><td>Contact custom fields</td><td class="you"><span class="ck">✓</span> Any CSV column</td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="cp">~</span></td></tr>
+        <tr><td>Timezone-aware sending</td><td class="you"><span class="ck">✓</span> Per campaign</td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+        <tr><td>OOO auto-reply filtering</td><td class="you"><span class="ck">✓</span> RFC 3834</td><td><span class="cp">~</span></td><td><span class="cp">~</span></td><td><span class="cp">~</span></td><td><span class="cp">~</span></td></tr>
+        <tr><td>MX email validation</td><td class="you"><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="cx">✗</span></td></tr>
+        <tr><td>Invalid email as sales lead</td><td class="you"><span class="ck">✓</span><span class="uniq">(unique)</span></td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td></tr>
+        <tr><td>AI copy review</td><td class="you"><span class="ck">✓</span> BYOK, 3 providers</td><td><span class="cp">~</span> Basic</td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="cp">~</span> Basic</td></tr>
+        <tr><td>Built-in contact scraper</td><td class="you"><span class="ck">✓</span> Google Maps</td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="ck">✓</span> Apollo DB</td><td><span class="cx">✗</span></td></tr>
+        <tr><td>100% data ownership</td><td class="you"><span class="ck">✓</span> Your server</td><td><span class="cx">✗</span> Cloud</td><td><span class="cx">✗</span> Cloud</td><td><span class="cx">✗</span> Cloud</td><td><span class="cx">✗</span> Cloud</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- AI SECTION -->
+<section id="ai" style="padding-top:0">
+  <div class="ai-wrap">
+    <div class="ai-l">
+      <div class="sec-label">AI Copy Review</div>
+      <h2>Bring your own key.<br>Keep your costs.</h2>
+      <p style="margin-top:16px;font-size:15px;line-height:1.75">
+        Most tools proxy your AI calls and pocket the difference. ShoutReach connects directly to your provider of choice. You pay the model at cost. We take nothing.
+      </p>
+      <div class="ai-providers">
+        <div class="ai-p"><span style="color:#00e5a0">✦</span> Claude (Anthropic)</div>
+        <div class="ai-p"><span style="color:#3b82f6">◎</span> Gemini (Google)</div>
+        <div class="ai-p"><span style="color:#f59e0b">⬡</span> GPT (OpenAI)</div>
+      </div>
+    </div>
+    <div class="ai-r">
+      <div class="ai-preview">
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
+          <div class="ai-score">8/10</div>
+          <div>
+            <div style="font-size:13px;color:#e2e8f0;font-weight:600">Strong opener, subject could be sharper</div>
+            <div style="font-size:11px;color:#6b7280;margin-top:3px">Deliverability risk: <span style="color:#00e5a0">Low</span></div>
+          </div>
+        </div>
+        <div style="margin-bottom:10px">
+          <div style="font-size:10px;font-weight:700;color:#00e5a0;margin-bottom:5px;letter-spacing:.05em">STRENGTHS</div>
+          <span class="atag atag-g">Concise</span>
+          <span class="atag atag-g">Personal opener</span>
+          <span class="atag atag-g">Clear CTA</span>
+        </div>
+        <div style="margin-bottom:14px">
+          <div style="font-size:10px;font-weight:700;color:#f59e0b;margin-bottom:5px;letter-spacing:.05em">SUGGESTIONS</div>
+          <span class="atag atag-a">Sharpen subject line</span>
+          <span class="atag atag-a">Add social proof</span>
+        </div>
+        <div style="border-top:1px solid #1e2a38;padding-top:12px">
+          <div style="font-size:10px;font-weight:600;color:#6b7280;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Suggested Rewrite</div>
+          <div style="font-size:12px;color:#94a3b8;font-style:italic;line-height:1.65">Hi {{first_name}}, I noticed {{company}} is expanding in {{location}} — wanted to reach out about...</div>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button style="background:#00e5a0;color:#0b0f14;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer">Apply Rewrite</button>
+            <button style="background:transparent;color:#6b7280;border:1px solid #1e2a38;border-radius:5px;padding:5px 12px;font-size:11px;cursor:pointer">Dismiss</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how">
+  <div class="sec-label">How it works</div>
+  <h2 style="text-align:center">Up and running in minutes.</h2>
+  <div class="steps">
+    <div class="step">
+      <div class="step-n">1</div>
+      <h3>Deploy on any server</h3>
+      <p>One Python process. Runs on any $5 Linux VPS — DigitalOcean, Hetzner, Vultr, or your own machine. No Docker required.</p>
+      <div class="step-code">python app.py</div>
+    </div>
+    <div class="step">
+      <div class="step-n">2</div>
+      <h3>Add SMTP &amp; contacts</h3>
+      <p>Connect any sending account. Import contacts from CSV or scrape them from Google Maps by niche and city. MX-validated on import.</p>
+      <div class="step-code">Import CSV → validated</div>
+    </div>
+    <div class="step">
+      <div class="step-n">3</div>
+      <h3>Build sequences &amp; activate</h3>
+      <p>Write your steps, set your send window and timezone, and hit Activate. The scheduler handles everything while you sleep.</p>
+      <div class="step-code">▶ Campaign activated</div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<div class="cta-bar">
+  <div class="cta-in">
+    <div class="sec-label" style="justify-content:center">Get started</div>
+    <h2>Your outreach. Your server.<br>Your rules.</h2>
+    <p>Stop renting tools you don't control. Self-host ShoutReach and own your cold email stack — permanently.</p>
+    <div class="cta-btns">
+      <a href="#" class="btn btn-primary btn-lg">Self-host ShoutReach →</a>
+      <a href="#" class="btn btn-ghost btn-lg">View Documentation</a>
+    </div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div>
+    <div class="foot-logo">
+      <div class="foot-dot"></div>
+      <div class="foot-word">ShoutReach</div>
+    </div>
+    <div class="foot-tag">Cold outreach that you actually own.</div>
+  </div>
+  <ul class="foot-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#compare">Compare</a></li>
+    <li><a href="#how">How it works</a></li>
+    <li><a href="#">GitHub</a></li>
+  </ul>
+</footer>
+
+</body>
+</html>

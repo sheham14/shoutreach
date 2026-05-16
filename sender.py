@@ -41,21 +41,29 @@ _EMAIL_RE = re.compile(
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _render(template: str, contact: dict) -> str:
-    """Replace {{variable}} placeholders with contact values."""
-    fields = {
-        "first_name": contact.get("first_name", ""),
-        "last_name":  contact.get("last_name", ""),
-        "company":    contact.get("company", ""),
-        "email":      contact.get("email", ""),
-        "full_name":  f"{contact.get('first_name','')} {contact.get('last_name','')}".strip(),
-    }
-    # also merge any extra JSON fields
+def _render(template: str, contact: dict, campaign_vars: dict = None) -> str:
+    """Replace {{variable}} placeholders with contact values.
+
+    Priority (highest wins): standard contact fields > contact extra JSON > campaign variables.
+    """
+    fields = {}
+    # 1. Campaign variables — lowest priority
+    if campaign_vars:
+        fields.update(campaign_vars)
+    # 2. Contact-level extra JSON fields
     try:
         extra = json.loads(contact.get("extra", "{}") or "{}")
         fields.update(extra)
     except Exception:
         pass
+    # 3. Standard contact fields — highest priority
+    fields.update({
+        "first_name": contact.get("first_name", ""),
+        "last_name":  contact.get("last_name", ""),
+        "company":    contact.get("company", ""),
+        "email":      contact.get("email", ""),
+        "full_name":  f"{contact.get('first_name','')} {contact.get('last_name','')}".strip(),
+    })
 
     for k, v in fields.items():
         template = template.replace("{{" + k + "}}", str(v))
@@ -140,8 +148,15 @@ def _unsubscribe_footer_html(contact_email: str, settings: dict) -> str:
 # ── Business hours check ──────────────────────────────────────────────────────
 
 def is_business_hours(campaign: dict) -> bool:
-    """Returns True only if current UTC hour is within campaign send window (Mon–Fri)."""
-    now = datetime.datetime.utcnow()
+    """Returns True only if current hour is within campaign send window (Mon–Fri).
+    Uses campaign timezone if set, otherwise UTC."""
+    tz_name = (campaign.get("timezone") or "").strip()
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name) if tz_name else datetime.timezone.utc
+    except Exception:
+        tz = datetime.timezone.utc
+    now = datetime.datetime.now(tz)
     if now.weekday() >= 5:   # Saturday=5, Sunday=6
         return False
     h = now.hour
@@ -202,6 +217,7 @@ def send_email(
     step_num: int,
     settings: dict,
     account: dict = None,
+    campaign_vars: dict = None,
 ) -> tuple[bool, str, str]:
     """
     Send one email.
@@ -222,8 +238,8 @@ def send_email(
             })
 
         # Render templates
-        subject       = _render(subject_tpl, contact)
-        body_rendered = _render(body_tpl, contact)
+        subject       = _render(subject_tpl, contact, campaign_vars)
+        body_rendered = _render(body_tpl, contact, campaign_vars)
 
         # Build HTML and plain-text parts from the rendered body
         include_unsub = cfg.get("include_unsubscribe", "1") == "1"
@@ -286,6 +302,37 @@ def send_email(
 
 # ── IMAP reply detection ───────────────────────────────────────────────────────
 
+_AUTO_REPLY_SUBJECTS = (
+    "out of office", "automatic reply", "auto-reply", "autoreply",
+    "on vacation", "i am away", "i'm away", "i am out", "i'm out",
+    "away from the office", "on leave", "annual leave", "maternity leave",
+    "currently unavailable", "will be back", "absence notification",
+)
+
+
+def _is_auto_reply(parsed_msg) -> bool:
+    """Return True if email headers indicate an auto-reply / OOO message."""
+    # RFC 3834 standard header — most reliable signal
+    auto_submitted = (parsed_msg.get("Auto-Submitted") or "").lower()
+    if auto_submitted and auto_submitted != "no":
+        return True
+
+    # Non-standard but common headers
+    if parsed_msg.get("X-Autoreply") or parsed_msg.get("X-Auto-Response-Suppress"):
+        return True
+
+    precedence = (parsed_msg.get("Precedence") or "").lower()
+    if precedence in ("auto-reply", "bulk", "junk"):
+        return True
+
+    # Subject line heuristics as a last resort
+    subject = (parsed_msg.get("Subject") or "").lower()
+    if any(phrase in subject for phrase in _AUTO_REPLY_SUBJECTS):
+        return True
+
+    return False
+
+
 def _scan_inbox_for_replies(host: str, user: str, pwd: str):
     if not host or not user or not pwd:
         return
@@ -302,6 +349,13 @@ def _scan_inbox_for_replies(host: str, user: str, pwd: str):
             _, msg_data = M.fetch(num, "(RFC822.HEADER)")
             raw = msg_data[0][1] if msg_data and msg_data[0] else b""
             parsed = emaillib.message_from_bytes(raw)
+
+            if _is_auto_reply(parsed):
+                from_header = parsed.get("From", "")
+                _, from_email = emaillib.utils.parseaddr(from_header)
+                db.add_log(f"↩ Auto-reply ignored from {from_email.lower().strip()}", "INFO")
+                continue
+
             from_header = parsed.get("From", "")
             _, from_email = emaillib.utils.parseaddr(from_header)
             from_email = from_email.lower().strip()

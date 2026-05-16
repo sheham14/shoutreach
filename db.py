@@ -153,6 +153,9 @@ def init_db():
             "ALTER TABLE contacts ADD COLUMN address TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE sends ADD COLUMN account_id INTEGER",
             "ALTER TABLE enrollments ADD COLUMN variant_label TEXT",
+            "ALTER TABLE contacts ADD COLUMN mx_valid INTEGER DEFAULT NULL",
+            "ALTER TABLE campaigns ADD COLUMN timezone TEXT DEFAULT NULL",
+            "ALTER TABLE campaigns ADD COLUMN variables TEXT DEFAULT '{}'",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -242,19 +245,19 @@ def get_campaign(cid):
 
 
 def create_campaign(name, daily_limit=30, start_hour=9, end_hour=17,
-                    min_delay=45, max_delay=120):
+                    min_delay=45, max_delay=120, timezone=None, variables='{}'):
     with get_db() as conn:
         cur = conn.execute(
             "INSERT INTO campaigns(name,daily_limit,send_start_hour,send_end_hour,"
-            "min_delay_secs,max_delay_secs) VALUES(?,?,?,?,?,?)",
-            (name, daily_limit, start_hour, end_hour, min_delay, max_delay)
+            "min_delay_secs,max_delay_secs,timezone,variables) VALUES(?,?,?,?,?,?,?,?)",
+            (name, daily_limit, start_hour, end_hour, min_delay, max_delay, timezone, variables)
         )
         return cur.lastrowid
 
 
 def update_campaign(cid, **fields):
     allowed = {"name", "daily_limit", "send_start_hour", "send_end_hour",
-               "min_delay_secs", "max_delay_secs", "bounce_pause_pct", "status"}
+               "min_delay_secs", "max_delay_secs", "bounce_pause_pct", "status", "timezone", "variables"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return
@@ -306,15 +309,17 @@ def upsert_contacts(rows):
             status = r.get("status", "active")
 
             if email and "@" in email:
+                mx_valid = r.get("mx_valid")  # None = unchecked, 1 = valid, 0 = invalid
                 conn.execute("""
-                    INSERT INTO contacts(email,first_name,last_name,company,website,address,extra,status)
-                    VALUES(:email,:first_name,:last_name,:company,:website,:address,:extra,:status)
+                    INSERT INTO contacts(email,first_name,last_name,company,website,address,extra,status,mx_valid)
+                    VALUES(:email,:first_name,:last_name,:company,:website,:address,:extra,:status,:mx_valid)
                     ON CONFLICT(email) WHERE email IS NOT NULL AND email != '' DO UPDATE SET
                         first_name=COALESCE(NULLIF(excluded.first_name,''), contacts.first_name),
                         last_name=COALESCE(NULLIF(excluded.last_name,''),   contacts.last_name),
                         company=COALESCE(NULLIF(excluded.company,''),       contacts.company),
                         website=COALESCE(NULLIF(excluded.website,''),       contacts.website),
-                        address=COALESCE(NULLIF(excluded.address,''),       contacts.address)
+                        address=COALESCE(NULLIF(excluded.address,''),       contacts.address),
+                        mx_valid=COALESCE(excluded.mx_valid,                contacts.mx_valid)
                 """, {
                     "email":      email,
                     "first_name": r.get("first_name", ""),
@@ -324,6 +329,7 @@ def upsert_contacts(rows):
                     "address":    r.get("address", ""),
                     "extra":      json.dumps(r.get("extra", {})),
                     "status":     status,
+                    "mx_valid":   mx_valid,
                 })
                 inserted += 1
             elif website and status in ("form_only", "no_email"):
@@ -435,6 +441,16 @@ def get_unsubscribed_contacts():
         """).fetchall()]
 
 
+def get_invalid_mx_contacts():
+    with get_db() as conn:
+        return [dict(r) for r in conn.execute("""
+            SELECT email, company, website, address, created_at
+            FROM contacts
+            WHERE mx_valid = 0
+            ORDER BY created_at DESC
+        """).fetchall()]
+
+
 def mark_bounced(email):
     with get_db() as conn:
         conn.execute("UPDATE contacts SET status='bounced' WHERE email=?", (email.lower(),))
@@ -541,6 +557,7 @@ def get_campaign_contact_report(campaign_id: int):
     with get_db() as conn:
         rows = conn.execute("""
             SELECT
+                e.id AS enroll_id,
                 c.email,
                 c.first_name,
                 c.last_name,
@@ -644,6 +661,14 @@ def mark_enrollment_replied(campaign_id, contact_id):
             UPDATE enrollments SET status='replied'
             WHERE campaign_id=? AND contact_id=? AND status='queued'
         """, (campaign_id, contact_id))
+
+
+def set_enrollment_status(enroll_id, status):
+    allowed = {"queued", "paused", "replied", "completed"}
+    if status not in allowed:
+        raise ValueError(f"Invalid status: {status}")
+    with get_db() as conn:
+        conn.execute("UPDATE enrollments SET status=? WHERE id=?", (status, enroll_id))
 
 
 # ── Sends & Counts ────────────────────────────────────────────────────────────

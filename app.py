@@ -362,6 +362,11 @@ def api_unsubscribed():
     return jsonify(db.get_unsubscribed_contacts())
 
 
+@app.route("/api/contacts/invalid-mx", methods=["GET"])
+def api_invalid_mx():
+    return jsonify(db.get_invalid_mx_contacts())
+
+
 # ── API: Preview ─────────────────────────────────────────────────────────────
 
 @app.route("/api/preview", methods=["POST"])
@@ -373,6 +378,177 @@ def api_preview():
     subject  = email_sender._render(subject_tpl, contact)
     body_html = email_sender._plain_to_html(email_sender._render(body_tpl, contact))
     return jsonify({"subject": subject, "body_html": body_html})
+
+
+# ── API: AI Review ────────────────────────────────────────────────────────────
+
+_REVIEW_PROMPT = """You are an expert cold-email copywriter. Review this outreach email and respond with ONLY valid JSON (no markdown, no extra text).
+
+Subject: {subject}
+
+Body:
+{body}
+
+Respond with this exact JSON structure:
+{{
+  "score": <integer 1-10>,
+  "summary": "<one sentence overall verdict>",
+  "strengths": ["<strength 1>", "<strength 2>"],
+  "issues": ["<issue 1>", "<issue 2>"],
+  "suggestions": ["<suggestion 1>", "<suggestion 2>"],
+  "deliverability_risk": "<low|medium|high>",
+  "rewrite": {{
+    "subject": "<improved subject line, preserving any {{{{variable}}}} placeholders>",
+    "body": "<improved full body, preserving any {{{{variable}}}} placeholders>"
+  }}
+}}"""
+
+
+_CLAUDE_DEFAULT  = "claude-haiku-4-5-20251001"
+_GEMINI_DEFAULT  = "gemini-1.5-flash"
+_OPENAI_DEFAULT  = "gpt-4o-mini"
+
+
+def _ai_http_post(url: str, payload: bytes, headers: dict) -> dict:
+    """POST to an AI provider and return parsed JSON.
+    Raises ValueError with a user-friendly message on any failure."""
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        try:
+            body = json.loads(exc.read())
+            msg = (
+                (body.get("error") or {}).get("message")
+                or body.get("message")
+                or ""
+            )
+        except Exception:
+            msg = ""
+        if status == 401:
+            raise ValueError("Invalid API key — check your key in Settings") from exc
+        if status == 403:
+            raise ValueError(msg or "Access denied — your key may lack permissions") from exc
+        if status == 404:
+            raise ValueError("Model not found — the selected model ID may be incorrect or not yet available") from exc
+        if status == 429:
+            raise ValueError(msg or "Rate limit hit or credits exhausted — check your account balance") from exc
+        if status >= 500:
+            raise ValueError(f"Provider server error (HTTP {status}) — try again in a moment") from exc
+        raise ValueError(msg or f"API error (HTTP {status})") from exc
+    except urllib.error.URLError as exc:
+        reason = str(exc.reason)
+        if "timed out" in reason.lower():
+            raise ValueError("Request timed out — the provider took too long to respond") from exc
+        raise ValueError(f"Network error — could not reach provider ({reason})") from exc
+
+
+def _strip_code_fence(text: str) -> str:
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+    return text.strip()
+
+
+def _parse_ai_json(text: str) -> dict:
+    text = _strip_code_fence(text.strip())
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"AI returned a non-JSON response — try again or switch models") from exc
+
+
+def _call_claude_review(api_key: str, subject: str, body: str, model: str) -> dict:
+    prompt = _REVIEW_PROMPT.format(subject=subject, body=body)
+    payload = json.dumps({
+        "model": model or _CLAUDE_DEFAULT,
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    data = _ai_http_post(
+        "https://api.anthropic.com/v1/messages",
+        payload,
+        {"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+    )
+    return _parse_ai_json(data["content"][0]["text"])
+
+
+def _call_gemini_review(api_key: str, subject: str, body: str, model: str) -> dict:
+    prompt = _REVIEW_PROMPT.format(subject=subject, body=body)
+    model = model or _GEMINI_DEFAULT
+    payload = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 1024, "temperature": 0.2},
+    }).encode()
+    data = _ai_http_post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+        payload,
+        {"content-type": "application/json"},
+    )
+    text = data["candidates"][0]["content"]["parts"][0]["text"]
+    return _parse_ai_json(text)
+
+
+def _call_openai_review(api_key: str, subject: str, body: str, model: str) -> dict:
+    prompt = _REVIEW_PROMPT.format(subject=subject, body=body)
+    payload = json.dumps({
+        "model": model or _OPENAI_DEFAULT,
+        "max_completion_tokens": 1024,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    data = _ai_http_post(
+        "https://api.openai.com/v1/chat/completions",
+        payload,
+        {"Authorization": f"Bearer {api_key}", "content-type": "application/json"},
+    )
+    text = data["choices"][0]["message"]["content"]
+    return _parse_ai_json(text)
+
+
+_AI_CALLERS = {
+    "claude":  (_call_claude_review,  "anthropic_api_key"),
+    "gemini":  (_call_gemini_review,  "gemini_api_key"),
+    "openai":  (_call_openai_review,  "openai_api_key"),
+}
+
+
+@app.route("/api/ai/review", methods=["POST"])
+def api_ai_review():
+    s = db.get_settings()
+    if s.get("ai_features_enabled") != "1":
+        return jsonify({"error": "AI features are not enabled"}), 403
+
+    provider = s.get("ai_provider", "claude")
+    if provider not in _AI_CALLERS:
+        provider = "claude"
+    caller_fn, key_setting = _AI_CALLERS[provider]
+    api_key = s.get(key_setting, "").strip()
+    if not api_key:
+        return jsonify({"error": f"API key for {provider} is not configured"}), 403
+    model = s.get("ai_model", "").strip()
+
+    d = request.json or {}
+    subject = d.get("subject", "").strip()
+    body    = d.get("body", "").strip()
+    if not subject and not body:
+        return jsonify({"error": "Subject and body are empty"}), 400
+
+    try:
+        result = caller_fn(api_key, subject, body, model)
+        return jsonify(result)
+    except ValueError as exc:
+        # Known, user-facing errors (bad key, model not found, credits, timeout, bad JSON)
+        logging.warning("AI review error: %s", exc)
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        # Unexpected crash — log the full traceback but return a generic message
+        logging.exception("Unexpected AI review error")
+        return jsonify({"error": "Unexpected error — check server logs for details"}), 500
 
 
 # ── API: Stats ────────────────────────────────────────────────────────────────
@@ -413,6 +589,8 @@ def api_create_campaign():
         end_hour    = int(d.get("send_end_hour", 17)),
         min_delay   = int(d.get("min_delay_secs", 45)),
         max_delay   = int(d.get("max_delay_secs", 120)),
+        timezone    = d.get("timezone") or None,
+        variables   = json.dumps(d.get("variables") or {}),
     )
     return jsonify({"ok": True, "id": cid})
 
@@ -422,6 +600,11 @@ def api_get_campaign(cid):
     c = db.get_campaign(cid)
     if not c:
         return jsonify({"error": "Not found"}), 404
+    # Parse variables JSON string into a dict for the frontend
+    try:
+        c["variables"] = json.loads(c.get("variables") or "{}")
+    except Exception:
+        c["variables"] = {}
     steps = db.get_steps(cid)
     for s in steps:
         s["variants"] = db.get_step_variants(s["id"])
@@ -507,6 +690,10 @@ def api_delete_campaign(cid):
 @app.route("/api/campaigns/<int:cid>", methods=["PATCH"])
 def api_update_campaign(cid):
     d = request.json or {}
+    # Serialize variables dict → JSON string for storage
+    if "variables" in d and isinstance(d["variables"], dict):
+        d = dict(d)
+        d["variables"] = json.dumps(d["variables"])
     db.update_campaign(cid, **d)
     return jsonify({"ok": True})
 
@@ -579,6 +766,7 @@ def api_import_contacts():
     Accepts JSON body: { "rows": [...] }
     or multipart form with a CSV file field named 'file'.
     """
+    import email_validator as _ev
     if request.content_type and "multipart" in request.content_type:
         f = request.files.get("file")
         if not f:
@@ -593,8 +781,33 @@ def api_import_contacts():
     if not rows:
         return jsonify({"ok": False, "error": "No rows"}), 400
 
+    # Extract non-standard columns into the `extra` JSON field
+    _STANDARD_COLS = {"email", "first_name", "last_name", "company",
+                      "website", "address", "status", "extra", "mx_valid"}
+    for row in rows:
+        custom = {k: v for k, v in row.items() if k not in _STANDARD_COLS and v not in (None, "")}
+        if custom:
+            existing = row.get("extra") or {}
+            if isinstance(existing, str):
+                try:
+                    existing = json.loads(existing)
+                except Exception:
+                    existing = {}
+            existing.update(custom)
+            row["extra"] = existing
+
+    # MX-validate each row that has an email
+    invalid_mx = 0
+    for row in rows:
+        email = (row.get("email") or "").strip()
+        if email and "@" in email:
+            ok = _ev.check_mx(email)
+            row["mx_valid"] = 1 if ok else 0
+            if not ok:
+                invalid_mx += 1
+
     inserted = db.upsert_contacts(rows)
-    return jsonify({"ok": True, "inserted": inserted})
+    return jsonify({"ok": True, "inserted": inserted, "invalid_mx": invalid_mx})
 
 
 @app.route("/api/contacts/bulk-delete", methods=["POST"])
@@ -671,6 +884,16 @@ def api_campaign_contacts(cid):
 def api_unenroll_contact(enroll_id):
     db.unenroll_contact(enroll_id)
     return jsonify({"ok": True})
+
+
+@app.route("/api/enrollments/<int:enroll_id>/status", methods=["PATCH"])
+def api_set_enrollment_status(enroll_id):
+    status = (request.json or {}).get("status", "")
+    try:
+        db.set_enrollment_status(enroll_id, status)
+        return jsonify({"ok": True})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 # ── API: Logs ─────────────────────────────────────────────────────────────────

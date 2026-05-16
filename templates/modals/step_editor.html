@@ -37,10 +37,16 @@
       </p>
     </div>
 
-    <div class="flex gap-2">
+    <div class="flex gap-2" style="flex-wrap:wrap">
       <button class="btn btn-primary" onclick="saveStep()">Save Step</button>
       <button class="btn btn-ghost" onclick="openStepPreview()">Preview</button>
+      <button class="btn btn-ghost" id="btn-ai-review" onclick="openAIReview()" title="Requires AI features enabled in Settings">AI Review</button>
       <button class="btn btn-ghost" onclick="closeModal('modal-step')">Cancel</button>
+    </div>
+
+    <div id="ai-review-panel" style="display:none;margin-top:16px;padding:14px 16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;font-size:13px">
+      <div id="ai-review-loading" style="display:none;color:var(--muted)">Reviewing…</div>
+      <div id="ai-review-result"></div>
     </div>
   </div>
 </div>

@@ -13,6 +13,7 @@ Anti-spam protections enforced here:
   ✓ Reply detection            — stops sequences for contacts who replied
 """
 
+import json
 import time
 import random
 import datetime
@@ -117,6 +118,12 @@ def process_queue():
                 # to global settings inside send_email when account is None)
                 account = db.get_next_account_for_campaign(cid)
 
+                # Parse campaign-level template variables
+                try:
+                    campaign_vars = json.loads(campaign.get("variables") or "{}")
+                except Exception:
+                    campaign_vars = {}
+
                 success, msg_id, err = email_sender.send_email(
                     contact=contact,
                     subject_tpl=subject_tpl,
@@ -125,6 +132,7 @@ def process_queue():
                     step_num=step_num,
                     settings=settings,
                     account=account,
+                    campaign_vars=campaign_vars,
                 )
 
                 if success:
@@ -132,14 +140,22 @@ def process_queue():
                     next_step = step_num + 1
                     if next_step in steps:
                         delay_days = steps[next_step]["delay_days"]
-                        next_dt = (
-                            datetime.datetime.utcnow() +
-                            datetime.timedelta(days=delay_days)
-                        ).replace(
+                        # Schedule in campaign timezone so send_start_hour is local time
+                        tz_name = (campaign.get("timezone") or "").strip()
+                        try:
+                            from zoneinfo import ZoneInfo
+                            tz = ZoneInfo(tz_name) if tz_name else datetime.timezone.utc
+                        except Exception:
+                            tz = datetime.timezone.utc
+                        now_local = datetime.datetime.now(tz)
+                        next_local = (now_local + datetime.timedelta(days=delay_days)).replace(
                             hour=campaign["send_start_hour"],
-                            minute=random.randint(0, 30),   # jitter ±30 min
-                            second=0
-                        ).strftime("%Y-%m-%d %H:%M:%S")
+                            minute=random.randint(0, 30),
+                            second=0,
+                            microsecond=0,
+                        )
+                        # Store as UTC string for consistent DB comparison
+                        next_dt = next_local.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
                         db.advance_enrollment(enrollment["enroll_id"], next_step, next_dt)
                     else:
                         db.complete_enrollment(enrollment["enroll_id"])
@@ -203,7 +219,7 @@ def _run_loop():
         process_queue()
 
         now = time.time()
-        if now - last_reply_check > 900:  # 15 minutes
+        if now - last_reply_check > 300:  # 5 minutes
             run_reply_check()
             run_bounce_check()
             last_reply_check = now

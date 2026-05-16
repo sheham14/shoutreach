@@ -20,6 +20,7 @@ venv/
 
 # Local Claude Code config
 .claude/
+memory/
 
 # OS
 .DS_Store

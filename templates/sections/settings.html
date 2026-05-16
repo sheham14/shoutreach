@@ -68,6 +68,53 @@
 
   </div>
 
+  <div class="card" style="padding:24px;margin-top:24px">
+    <div class="flex items-center" style="margin-bottom:4px">
+      <div class="card-title">AI Features</div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-left:auto">
+        <input type="checkbox" id="cfg-ai-enabled" style="cursor:pointer" />
+        <span style="font-size:13px;color:var(--muted)">Enable</span>
+      </label>
+    </div>
+    <p class="text-muted text-small" style="margin-bottom:16px">AI-powered copy review scores your email, flags issues, and suggests improvements. Add your API key for whichever provider you prefer — costs fractions of a cent per review.</p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="form-group" style="margin-bottom:0">
+        <label>AI Provider</label>
+        <select id="cfg-ai-provider" onchange="aiProviderChanged()">
+          <option value="claude">Anthropic (Claude)</option>
+          <option value="gemini">Google (Gemini)</option>
+          <option value="openai">OpenAI (ChatGPT)</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label>Model</label>
+        <select id="cfg-ai-model"></select>
+      </div>
+    </div>
+    <div class="form-hint" style="margin-bottom:16px" id="cfg-ai-model-hint"></div>
+
+    <div class="form-group" id="cfg-key-group-claude">
+      <label>Anthropic API Key</label>
+      <input id="cfg-anthropic-key" type="password" placeholder="sk-ant-..." autocomplete="off" />
+      <div class="form-hint">Get a key at <strong>console.anthropic.com</strong> → API Keys. Add $5 credit to get started.</div>
+    </div>
+
+    <div class="form-group" id="cfg-key-group-gemini" style="display:none">
+      <label>Google Gemini API Key</label>
+      <input id="cfg-gemini-key" type="password" placeholder="AIza..." autocomplete="off" />
+      <div class="form-hint">Get a key at <strong>aistudio.google.com</strong> → Get API key. Has a free tier.</div>
+    </div>
+
+    <div class="form-group" id="cfg-key-group-openai" style="display:none">
+      <label>OpenAI API Key</label>
+      <input id="cfg-openai-key" type="password" placeholder="sk-..." autocomplete="off" />
+      <div class="form-hint">Get a key at <strong>platform.openai.com</strong> → API Keys. Add $5 credit to get started.</div>
+    </div>
+
+    <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+  </div>
+
   <div id="settings-users-card" class="card" style="padding:24px;margin-top:24px;display:none">
     <div class="flex items-center" style="margin-bottom:16px">
       <div class="card-title">Users</div>

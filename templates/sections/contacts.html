@@ -61,4 +61,23 @@
       </table>
     </div>
   </div>
+
+  <div style="margin-top:32px">
+    <div class="flex items-center" style="margin-bottom:8px">
+      <div>
+        <div class="card-title">Invalid Emails</div>
+        <p class="text-muted text-small" style="margin-top:2px">Businesses whose email domain has no MX records — their email infrastructure may be broken or misconfigured. A potential sales signal.</p>
+      </div>
+      <div class="flex gap-2 ml-auto items-center">
+        <span id="invalid-mx-count" class="text-muted text-small"></span>
+        <button class="btn btn-ghost btn-sm" onclick="exportInvalidMx()">⬇ Export CSV</button>
+      </div>
+    </div>
+    <div class="card" style="max-height:320px;overflow-y:auto">
+      <table>
+        <thead><tr><th>Email</th><th>Company</th><th>Website</th><th>Found</th></tr></thead>
+        <tbody id="invalid-mx-table"></tbody>
+      </table>
+    </div>
+  </div>
 </div>

@@ -197,7 +197,62 @@ If you're ever interested in [offer], I'm happy to chat.
       </div>
     </div>
 
-    <!-- 5. Email Copy Tips -->
+    <!-- 5. Variables -->
+    <div class="faq-item">
+      <div class="faq-header" onclick="toggleFaq(this)">
+        <span class="faq-icon">&#123;&#125;</span> Using Variables in Templates
+        <span class="faq-chevron">▼</span>
+      </div>
+      <div class="faq-body">
+        <p>Variables let you personalise every email automatically. Write <code>{{variable_name}}</code> anywhere in a subject or body and the system replaces it with real data at send time. There are three layers — each can override the one below it.</p>
+
+        <h4>1. Standard Contact Fields (always available)</h4>
+        <p>These are populated from the contact record:</p>
+        <table>
+          <thead><tr><th>Variable</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td><code>{{first_name}}</code></td><td>Contact's first name</td></tr>
+            <tr><td><code>{{last_name}}</code></td><td>Contact's last name</td></tr>
+            <tr><td><code>{{full_name}}</code></td><td>First + last combined</td></tr>
+            <tr><td><code>{{company}}</code></td><td>Company name</td></tr>
+            <tr><td><code>{{email}}</code></td><td>Contact's email address</td></tr>
+          </tbody>
+        </table>
+
+        <h4>2. Contact-Level Custom Fields (from CSV import)</h4>
+        <p>Any extra column in your CSV that isn't a standard field is stored as a custom field on that contact. You can then use it as a variable with the same column name.</p>
+        <p><strong>Example CSV:</strong></p>
+        <pre><code>email,first_name,company,job_title,industry
+drsmith@dental.com,John,Smith Dental,Owner,Dentistry</code></pre>
+        <p>The columns <code>job_title</code> and <code>industry</code> are non-standard, so they get stored as custom fields. You can now use <code>{{job_title}}</code> and <code>{{industry}}</code> in your templates:</p>
+        <pre><code>Hi {{first_name}},
+
+I noticed you're the {{job_title}} at {{company}} — I work with a lot of {{industry}} practices...</code></pre>
+        <p>Each row can have different values (John might have <code>job_title=Owner</code> while Sarah has <code>job_title=Practice Manager</code>). Each contact's email is personalised with their own data.</p>
+
+        <h4>3. Campaign-Level Variables (same value for all contacts in a campaign)</h4>
+        <p>These are defined per-campaign in <strong>Campaign → ⚙ Settings → Campaign Variables</strong>. They apply to every contact in that campaign and are useful for things that are consistent across a batch — like the city you're targeting, a niche-specific term, or a personalised offer.</p>
+        <p><strong>Example use case:</strong> You're running a campaign targeting dentists in Brampton.</p>
+        <p>In Campaign Settings, add a variable:</p>
+        <pre><code>Key:   location
+Value: Brampton</code></pre>
+        <p>Then use it in your template:</p>
+        <pre><code>Hi {{first_name}},
+
+I came across {{company}} while looking at dental practices in {{location}}...</code></pre>
+        <p>Every contact in this campaign will get "Brampton" for <code>{{location}}</code>. If you run a separate campaign for Mississauga, set <code>location = Mississauga</code> there — same template, different campaign.</p>
+
+        <div class="faq-tip">
+          <strong>Priority order (highest wins):</strong> Standard contact fields &gt; Contact custom fields &gt; Campaign variables.<br>
+          This means if a contact has a custom field named <code>location</code>, it overrides the campaign-level <code>location</code> for that specific contact only.
+        </div>
+
+        <h4>Leaving a variable unreplaced</h4>
+        <p>If a <code>{{variable}}</code> has no matching value (typo in the name, missing from contact data, not defined in campaign), it stays as-is in the email — the literal text <code>{{variable}}</code> will appear. Always preview your emails before activating to catch this.</p>
+      </div>
+    </div>
+
+    <!-- 6. Email Copy Tips -->
     <div class="faq-item">
       <div class="faq-header" onclick="toggleFaq(this)">
         <span class="faq-icon">✉</span> Email Copy Tips
@@ -205,7 +260,7 @@ If you're ever interested in [offer], I'm happy to chat.
       </div>
       <div class="faq-body">
         <h4>Available variables</h4>
-        <p>Use these in any subject or body field — they're replaced with the contact's actual data at send time:</p>
+        <p>Use these in any subject or body field — they're replaced with the contact's actual data at send time. See the <strong>Using Variables in Templates</strong> section above for the full guide including custom fields and campaign variables.</p>
         <table>
           <thead><tr><th>Variable</th><th>Replaced with</th></tr></thead>
           <tbody>
@@ -214,6 +269,8 @@ If you're ever interested in [offer], I'm happy to chat.
             <tr><td><code>{{full_name}}</code></td><td>First + last name combined</td></tr>
             <tr><td><code>{{company}}</code></td><td>Company name</td></tr>
             <tr><td><code>{{email}}</code></td><td>Contact's email address</td></tr>
+            <tr><td><code>{{any_csv_column}}</code></td><td>Custom field from CSV import (e.g. <code>{{job_title}}</code>)</td></tr>
+            <tr><td><code>{{your_key}}</code></td><td>Campaign variable defined in Campaign → ⚙ Settings</td></tr>
           </tbody>
         </table>
 
@@ -241,7 +298,7 @@ If you're ever interested in [offer], I'm happy to chat.
       </div>
     </div>
 
-    <!-- 6. Anti-Spam Protections -->
+    <!-- 7. Anti-Spam Protections -->
     <div class="faq-item">
       <div class="faq-header" onclick="toggleFaq(this)">
         <span class="faq-icon">⊗</span> Built-in Anti-Spam Protections
@@ -268,7 +325,7 @@ If you're ever interested in [offer], I'm happy to chat.
       </div>
     </div>
 
-    <!-- 7. Troubleshooting -->
+    <!-- 8. Troubleshooting -->
     <div class="faq-item">
       <div class="faq-header" onclick="toggleFaq(this)">
         <span class="faq-icon">◧</span> Troubleshooting

@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShoutReach — Portfolio Reference</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b0f14;--bg2:#111827;--bg3:#1a2435;
+  --border:#1e2a38;--green:#00e5a0;--green-dim:rgba(0,229,160,.12);
+  --text:#e2e8f0;--muted:#6b7280;--sub:#94a3b8;
+  --blue:#3b82f6;--amber:#f59e0b;--red:#ef4444;
+  --font:'Inter',system-ui,sans-serif;--mono:'JetBrains Mono',monospace;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--font);line-height:1.6;font-size:14px}
+a{color:var(--green);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* Layout */
+.shell{display:flex;min-height:100vh}
+.sidebar{width:240px;flex-shrink:0;background:var(--bg2);border-right:1px solid var(--border);
+  position:sticky;top:0;height:100vh;overflow-y:auto;padding:24px 0}
+.sb-logo{padding:0 20px 20px;border-bottom:1px solid var(--border);margin-bottom:16px}
+.sb-sys{font-size:10px;color:var(--green);font-family:var(--mono);letter-spacing:.06em;margin-bottom:4px}
+.sb-name{font-size:17px;font-weight:800;color:var(--text)}
+.sb-tag{font-size:11px;color:var(--muted);margin-top:2px}
+.sb-section{padding:4px 20px;font-size:10px;font-weight:700;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.08em;margin-top:14px;margin-bottom:4px}
+.sb-link{display:block;padding:6px 20px;font-size:13px;color:var(--sub);
+  text-decoration:none;transition:color .15s,background .15s;border-radius:0}
+.sb-link:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.sb-link.active{color:var(--green);background:var(--green-dim);border-right:2px solid var(--green)}
+
+.content{flex:1;min-width:0;padding:48px 56px;max-width:860px}
+
+/* Typography */
+h1{font-size:32px;font-weight:900;letter-spacing:-.8px;margin-bottom:6px}
+h2{font-size:22px;font-weight:800;letter-spacing:-.4px;margin:48px 0 16px;
+  padding-bottom:10px;border-bottom:1px solid var(--border);color:var(--text)}
+h2:first-of-type{margin-top:0}
+h3{font-size:16px;font-weight:700;color:var(--text);margin:24px 0 10px}
+h4{font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.06em;margin:20px 0 8px}
+p{color:var(--sub);margin-bottom:12px;font-size:14px;line-height:1.7}
+ul,ol{color:var(--sub);padding-left:20px;margin-bottom:12px}
+li{margin-bottom:5px;font-size:14px;line-height:1.65}
+code{font-family:var(--mono);font-size:12px;background:var(--green-dim);
+  color:var(--green);padding:1px 6px;border-radius:4px}
+pre{background:var(--bg2);border:1px solid var(--border);border-radius:8px;
+  padding:16px 18px;overflow-x:auto;margin-bottom:16px}
+pre code{background:none;color:#94a3b8;font-size:12px;padding:0}
+
+/* Cards */
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;
+  padding:20px;margin-bottom:16px}
+.card-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:8px}
+
+/* Status tags */
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;margin:1px}
+.tag-done{background:rgba(0,229,160,.15);color:var(--green)}
+.tag-pend{background:rgba(245,158,11,.15);color:var(--amber)}
+.tag-idea{background:rgba(107,114,128,.15);color:var(--muted)}
+
+/* Feature checklist */
+.feat-list{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+.feat-row{display:flex;align-items:flex-start;gap:12px;padding:10px 14px;
+  background:var(--bg2);border:1px solid var(--border);border-radius:8px}
+.feat-row .ic{flex-shrink:0;font-size:14px;margin-top:1px}
+.feat-row .body{flex:1;min-width:0}
+.feat-row .ft{font-size:13px;font-weight:600;color:var(--text)}
+.feat-row .fd{font-size:12px;color:var(--muted);margin-top:2px}
+.feat-row .status{flex-shrink:0}
+
+/* Variable table */
+table{width:100%;border-collapse:collapse;margin-bottom:16px;font-size:13px}
+th{text-align:left;padding:10px 14px;font-size:11px;font-weight:700;
+  color:var(--muted);text-transform:uppercase;letter-spacing:.05em;
+  border-bottom:1px solid var(--border);background:var(--bg2)}
+td{padding:10px 14px;border-bottom:1px solid var(--border);color:var(--sub);vertical-align:top}
+td:first-child{color:var(--text);font-weight:500}
+tr:last-child td{border:none}
+
+/* Comparison */
+.cmp{min-width:600px}
+.cmp th.you{color:var(--green);background:rgba(0,229,160,.05)}
+.cmp td.you{background:rgba(0,229,160,.03);color:var(--text);font-weight:600}
+.ck{color:var(--green)}.cx{color:var(--red)}.cp{color:var(--amber)}
+
+/* Info / warn boxes */
+.info{background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.25);
+  border-radius:8px;padding:14px 16px;margin-bottom:14px;font-size:13px;color:var(--sub)}
+.warn{background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);
+  border-radius:8px;padding:14px 16px;margin-bottom:14px;font-size:13px;color:var(--sub)}
+.info strong,.warn strong{color:var(--text)}
+
+/* Date stamp */
+.meta{font-size:12px;color:var(--muted);margin-top:4px}
+
+@media(max-width:768px){
+  .sidebar{display:none}
+  .content{padding:32px 20px}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- SIDEBAR -->
+<nav class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-sys">◆ PORTFOLIO</div>
+    <div class="sb-name">ShoutReach</div>
+    <div class="sb-tag">Project reference</div>
+  </div>
+  <div class="sb-section">Overview</div>
+  <a href="#overview" class="sb-link active">What it is</a>
+  <a href="#stack" class="sb-link">Tech stack</a>
+  <div class="sb-section">Features</div>
+  <a href="#features" class="sb-link">Full feature list</a>
+  <a href="#variables" class="sb-link">Variables system</a>
+  <a href="#ai" class="sb-link">AI review</a>
+  <div class="sb-section">Technical</div>
+  <a href="#architecture" class="sb-link">Architecture</a>
+  <a href="#api" class="sb-link">Key API endpoints</a>
+  <a href="#files" class="sb-link">File map</a>
+  <div class="sb-section">Context</div>
+  <a href="#compare" class="sb-link">Competitor comparison</a>
+  <a href="#roadmap" class="sb-link">Roadmap</a>
+</nav>
+
+<!-- CONTENT -->
+<main class="content">
+
+  <!-- OVERVIEW -->
+  <div id="overview">
+    <h1>ShoutReach</h1>
+    <div class="meta">Personal project · Built May 2026 · Python / Flask / SQLite / Vanilla JS</div>
+    <p style="margin-top:16px;font-size:15px;color:var(--sub)">
+      A self-hosted cold email outreach platform built from scratch as a production-grade alternative
+      to tools like Instantly and Smartlead. Runs as a single Flask process on any Linux server —
+      unlimited contacts, unlimited campaigns, full data ownership, no vendor lock-in.
+    </p>
+    <div class="info">
+      <strong>Why I built it:</strong> Existing tools charged $100+/month, stored my data on their servers,
+      and locked AI features behind a markup. ShoutReach solves all three — self-hosted, bring-your-own SMTP,
+      bring-your-own AI key. Key technical differentiators: campaign-level template variables for city-targeted
+      batches, DNS MX validation with invalid emails surfaced as sales signals, and RFC 3834-compliant
+      auto-reply filtering so OOO replies don't stop sequences.
+    </div>
+  </div>
+
+  <!-- STACK -->
+  <h2 id="stack">Tech Stack</h2>
+  <table>
+    <thead><tr><th>Layer</th><th>Technology</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Backend</td><td>Python 3.9+ / Flask 3.x</td><td>Single process, no async</td></tr>
+      <tr><td>Database</td><td>SQLite 3 (WAL mode)</td><td>File: <code>outreach.db</code></td></tr>
+      <tr><td>Frontend</td><td>Vanilla JS + CSS</td><td>No framework — single page app via JS section switching</td></tr>
+      <tr><td>Email sending</td><td>smtplib (stdlib)</td><td>Supports TLS/STARTTLS, any provider</td></tr>
+      <tr><td>Reply detection</td><td>imaplib (stdlib)</td><td>Scans every 5 minutes</td></tr>
+      <tr><td>MX validation</td><td>dnspython ≥ 2.4</td><td>Domain-level cache, fail-open</td></tr>
+      <tr><td>Scraper</td><td>Playwright + playwright-stealth</td><td>Optional — Google Maps</td></tr>
+      <tr><td>Excel export</td><td>openpyxl</td><td>Optional</td></tr>
+      <tr><td>AI calls</td><td>urllib.request (stdlib)</td><td>No SDK dependencies</td></tr>
+      <tr><td>Scheduler</td><td>threading.Thread daemon</td><td>Starts with Flask</td></tr>
+    </tbody>
+  </table>
+
+  <!-- FEATURES -->
+  <h2 id="features">Full Feature List</h2>
+
+  <h3>Sending Engine</h3>
+  <div class="feat-list">
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Multi-step email sequences</div><div class="fd">Configurable delay between steps (days). Step 1 sends immediately on enrollment.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Multi-inbox round-robin rotation</div><div class="fd">Assign multiple SMTP accounts per campaign; sends rotate automatically.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Business-hours gate</div><div class="fd">Mon–Fri only. Configurable start/end hour. Timezone-aware per campaign.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Random inter-send delay</div><div class="fd">Configurable min/max seconds between sends. Humanises send cadence.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Daily send cap</div><div class="fd">Per-campaign limit + global cap across all campaigns. Hard stops.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Bounce circuit-breaker</div><div class="fd">Auto-pauses campaign when bounce rate exceeds configured threshold (default 5%).</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Send-time jitter</div><div class="fd">±30 min random offset on scheduled follow-up times. Avoids clock-pattern detection.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Multipart HTML + plain-text</div><div class="fd">Every email sends both parts. Better deliverability than HTML-only.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">List-Unsubscribe header</div><div class="fd">RFC compliant. Required by Gmail/Yahoo 2024 bulk sender policy.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+  </div>
+
+  <h3>Contact &amp; Campaign Management</h3>
+  <div class="feat-list">
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">CSV import with custom fields</div><div class="fd">Any non-standard column maps to the contact's <code>extra</code> JSON field and becomes a template variable.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Campaign-level variables</div><div class="fd">Key-value pairs per campaign (e.g. <code>location=Brampton</code>). Available as <code>{{location}}</code> in templates.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">A/B variant testing</div><div class="fd">Weighted split per step. Contacts assigned at enrollment. Stats tracked per variant.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">MX email validation</div><div class="fd">DNS check on CSV import and scraper output. Domain-level cache, fail-open.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Invalid MX list (sales signal)</div><div class="fd">Emails that fail MX are kept in a separate list. "Their email is broken" = opener for a tech offer.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Timezone-aware sending</div><div class="fd">Per-campaign timezone (IANA zone). Send window hours interpreted locally, not UTC.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Manual enrollment status override</div><div class="fd">Status dropdown in contacts table: Queued / Paused / Replied / Completed.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+  </div>
+
+  <h3>Reply &amp; Bounce Handling</h3>
+  <div class="feat-list">
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">IMAP reply detection</div><div class="fd">Scans all configured inboxes every 5 minutes. Stops sequence on genuine reply.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">OOO auto-reply filtering</div><div class="fd">Checks RFC 3834 <code>Auto-Submitted</code> header + subject heuristics. OOO replies don't stop sequences.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Hard &amp; soft bounce handling</div><div class="fd">Hard bounce → marked immediately. Soft bounce → counter; auto-hard after threshold (default 3).</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">HMAC-signed unsubscribe links</div><div class="fd">Every email footer includes a tamper-proof unsubscribe link. Click marks contact as unsubscribed.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+  </div>
+
+  <h3>AI &amp; Tooling</h3>
+  <div class="feat-list">
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">AI copy review — Claude / Gemini / GPT</div><div class="fd">Score (1–10), strengths, issues, suggestions, deliverability risk, full rewrite. Bring your own key.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">One-click rewrite apply</div><div class="fd">AI suggests rewrite → Apply button pastes it directly into subject/body fields.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Google Maps scraper</div><div class="fd">Playwright-based. Input niche + city → emails, websites, addresses scraped and imported.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Email preview (iframe)</div><div class="fd">Live preview with sample contact data. Shows rendered HTML + subject.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Spam word checker</div><div class="fd">Real-time warning on step editor if body/subject contains known spam trigger words.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Excel export</div><div class="fd">Campaign contact report exported as formatted .xlsx. Colour-coded by status.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+  </div>
+
+  <!-- VARIABLES -->
+  <h2 id="variables">Variables System</h2>
+  <p>Variables follow <code>{{variable_name}}</code> syntax. Three layers — highest priority wins:</p>
+
+  <h3>Priority Order (highest → lowest)</h3>
+  <table>
+    <thead><tr><th>Priority</th><th>Source</th><th>Example</th><th>Override</th></tr></thead>
+    <tbody>
+      <tr><td>1 — Highest</td><td>Standard contact fields</td><td><code>{{first_name}}</code>, <code>{{company}}</code></td><td>Always wins</td></tr>
+      <tr><td>2 — Middle</td><td>Contact <code>extra</code> JSON (from CSV columns)</td><td><code>{{job_title}}</code>, <code>{{industry}}</code></td><td>Overrides campaign vars</td></tr>
+      <tr><td>3 — Lowest</td><td>Campaign variables (key-value in settings)</td><td><code>{{location}}</code>, <code>{{niche}}</code></td><td>Falls back if no contact-level value</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Standard Contact Variables</h3>
+  <table>
+    <thead><tr><th>Variable</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td><code>{{first_name}}</code></td><td>Contact's first name</td></tr>
+      <tr><td><code>{{last_name}}</code></td><td>Contact's last name</td></tr>
+      <tr><td><code>{{full_name}}</code></td><td>First + last combined</td></tr>
+      <tr><td><code>{{company}}</code></td><td>Company name</td></tr>
+      <tr><td><code>{{email}}</code></td><td>Contact email address</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Contact Custom Fields (from CSV)</h3>
+  <p>Any non-standard CSV column is stored in the contact's <code>extra</code> JSON field. Example CSV:</p>
+  <pre><code>email,first_name,company,job_title,industry
+drsmith@dental.com,John,Smith Dental,Owner,Dentistry</code></pre>
+  <p>Use in template: <code>{{job_title}}</code>, <code>{{industry}}</code> — each contact has its own value.</p>
+
+  <h3>Campaign Variables</h3>
+  <p>Set in Campaign → ⚙ Settings → Campaign Variables. Useful for city-targeting batches:</p>
+  <pre><code>location = Brampton
+niche    = dental practices</code></pre>
+  <p>Use: <code>Hi {{first_name}}, I came across {{company}} while looking at {{niche}} in {{location}}...</code></p>
+  <div class="warn"><strong>Note:</strong> If a contact has a custom field with the same name as a campaign variable (e.g. <code>location</code> in their CSV row), the contact value wins. Campaign variables are the fallback.</div>
+
+  <!-- AI REVIEW -->
+  <h2 id="ai">AI Copy Review</h2>
+  <table>
+    <thead><tr><th>Provider</th><th>Setting key</th><th>Model key</th><th>Auth</th></tr></thead>
+    <tbody>
+      <tr><td>Anthropic (Claude)</td><td><code>anthropic_api_key</code></td><td><code>ai_model</code></td><td><code>x-api-key</code> header</td></tr>
+      <tr><td>Google (Gemini)</td><td><code>gemini_api_key</code></td><td><code>ai_model</code></td><td><code>?key=</code> query param</td></tr>
+      <tr><td>OpenAI (GPT)</td><td><code>openai_api_key</code></td><td><code>ai_model</code></td><td><code>Authorization: Bearer</code></td></tr>
+    </tbody>
+  </table>
+  <p>Response JSON shape: <code>score</code>, <code>summary</code>, <code>strengths[]</code>, <code>issues[]</code>, <code>suggestions[]</code>, <code>deliverability_risk</code>, <code>rewrite.subject</code>, <code>rewrite.body</code></p>
+  <p>Error handling: HTTP 401 → bad key, 403 → no permissions, 404 → model not found, 429 → rate limit / no credits, 5xx → provider down, timeout → 30s hard limit.</p>
+
+  <!-- ARCHITECTURE -->
+  <h2 id="architecture">Architecture</h2>
+  <pre><code>app.py          Flask app — all HTTP routes, API endpoints
+db.py           SQLite layer — all queries, migrations, schema
+sender.py       Email engine — SMTP send, IMAP scan, bounce parse, _render()
+scheduler.py    Background thread — queue processor (60s), reply check (5m)
+email_validator.py  MX record validation via dnspython, domain cache
+gmaps_email_scraper.py  Playwright scraper — Google Maps → contacts
+
+static/js/
+  main.js       Global helpers: api(), toast(), esc(), showSection()
+  campaigns.js  Campaign UI, step editor, variable editor, AI review
+  contacts.js   Contacts table, CSV import, invalid MX list
+  settings.js   SMTP, IMAP, AI provider/model config
+  dashboard.js  Stats, activity log
+
+templates/
+  index.html    Shell — sidebar, section containers
+  sections/     campaigns.html, contacts.html, settings.html, help.html, ...
+  modals/       step_editor.html, edit_campaign.html, new_campaign.html, ...</code></pre>
+
+  <h3>Scheduler flow</h3>
+  <pre><code>Every 60s → process_queue()
+  → for each active campaign:
+      → is_business_hours(campaign)?  ← timezone-aware
+      → daily cap reached?
+      → bounce rate > threshold?  ← auto-pause
+      → get_due_enrollments()
+      → for each enrollment:
+          → pick step → pick variant
+          → parse campaign variables JSON
+          → send_email(contact, subject_tpl, body_tpl, campaign_vars=...)
+              → _render(template, contact, campaign_vars)
+                  → merge: campaign_vars < extra JSON < std fields
+          → advance or complete enrollment
+          → sleep random(min_delay, max_delay)
+
+Every 5m → check_replies() + check_bounces()
+  → IMAP scan all accounts
+  → _is_auto_reply() filter (RFC 3834)
+  → mark_enrollment_replied() for genuine replies</code></pre>
+
+  <!-- API ENDPOINTS -->
+  <h2 id="api">Key API Endpoints</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>GET</td><td><code>/api/campaigns</code></td><td>List campaigns with step + contact counts</td></tr>
+      <tr><td>POST</td><td><code>/api/campaigns</code></td><td>Create campaign (name, limits, timezone, variables)</td></tr>
+      <tr><td>GET</td><td><code>/api/campaigns/:id</code></td><td>Full detail: steps, variants, stats, report</td></tr>
+      <tr><td>PATCH</td><td><code>/api/campaigns/:id</code></td><td>Update settings incl. variables JSON</td></tr>
+      <tr><td>POST</td><td><code>/api/campaigns/:id/activate</code></td><td>Set status=active</td></tr>
+      <tr><td>POST</td><td><code>/api/campaigns/:id/steps</code></td><td>Upsert step + variants</td></tr>
+      <tr><td>POST</td><td><code>/api/contacts/import</code></td><td>CSV or JSON rows → MX validate → upsert</td></tr>
+      <tr><td>GET</td><td><code>/api/contacts/invalid-mx</code></td><td>List MX-invalid contacts (sales leads)</td></tr>
+      <tr><td>PATCH</td><td><code>/api/enrollments/:id/status</code></td><td>Manual status override</td></tr>
+      <tr><td>DELETE</td><td><code>/api/enrollments/:id</code></td><td>Unenroll contact from campaign</td></tr>
+      <tr><td>POST</td><td><code>/api/ai/review</code></td><td>AI copy review (subject + body)</td></tr>
+      <tr><td>GET</td><td><code>/api/campaigns/:id/export</code></td><td>Download contact report as .xlsx</td></tr>
+      <tr><td>GET/POST</td><td><code>/api/accounts</code></td><td>SMTP account CRUD</td></tr>
+      <tr><td>GET</td><td><code>/unsubscribe/:token</code></td><td>HMAC-verified unsubscribe link</td></tr>
+    </tbody>
+  </table>
+
+  <!-- FILE MAP -->
+  <h2 id="files">File Map</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it owns</th></tr></thead>
+    <tbody>
+      <tr><td><code>db.py</code></td><td>All schema, migrations, queries. Single source of truth for DB shape.</td></tr>
+      <tr><td><code>app.py</code></td><td>All Flask routes. Thin — delegates to db.py and sender.py.</td></tr>
+      <tr><td><code>sender.py</code></td><td><code>_render()</code>, <code>send_email()</code>, IMAP scan, bounce parse, auto-reply detection.</td></tr>
+      <tr><td><code>scheduler.py</code></td><td>Background loop. Queue processing + reply/bounce checks.</td></tr>
+      <tr><td><code>email_validator.py</code></td><td>MX check + domain cache. Used by import endpoint + scraper.</td></tr>
+      <tr><td><code>requirements.txt</code></td><td>flask, dnspython, openpyxl, playwright (optional)</td></tr>
+    </tbody>
+  </table>
+
+  <!-- COMPARISON -->
+  <h2 id="compare">Competitor Comparison</h2>
+  <div style="overflow-x:auto;border:1px solid var(--border);border-radius:10px">
+    <table class="cmp" style="margin:0">
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th class="you">ShoutReach</th>
+          <th>Instantly</th>
+          <th>Smartlead</th>
+          <th>Apollo</th>
+          <th>Lemlist</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Monthly cost</td><td class="you" style="color:var(--green)">~$5 VPS</td><td>$97–$358</td><td>$94–$174</td><td>$49–$99</td><td>$59–$99</td></tr>
+        <tr><td>Contacts</td><td class="you">Unlimited</td><td>Capped</td><td>Capped</td><td>Capped</td><td>Capped</td></tr>
+        <tr><td>Custom SMTP</td><td class="you"><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="cx">✗</span></td><td><span class="ck">✓</span></td></tr>
+        <tr><td>Campaign variables</td><td class="you"><span class="ck">✓</span> Unique</td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td></tr>
+        <tr><td>Invalid MX as lead</td><td class="you"><span class="ck">✓</span> Unique</td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td></tr>
+        <tr><td>OOO auto-reply filter</td><td class="you"><span class="ck">✓</span> RFC 3834</td><td><span class="cp">~</span></td><td><span class="cp">~</span></td><td><span class="cp">~</span></td><td><span class="cp">~</span></td></tr>
+        <tr><td>AI review (BYOK)</td><td class="you"><span class="ck">✓</span> 3 providers</td><td><span class="cp">~</span> Basic</td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="cp">~</span></td></tr>
+        <tr><td>Built-in scraper</td><td class="you"><span class="ck">✓</span> Google Maps</td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="ck">✓</span> DB</td><td><span class="cx">✗</span></td></tr>
+        <tr><td>Data ownership</td><td class="you"><span class="ck">✓</span> Your server</td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="cx">✗</span></td></tr>
+        <tr><td>LinkedIn outreach</td><td class="you"><span class="cx">✗</span></td><td><span class="cx">✗</span></td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="cx">✗</span></td></tr>
+        <tr><td>CRM integrations</td><td class="you"><span class="cx">✗</span></td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td><td><span class="ck">✓</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ROADMAP -->
+  <h2 id="roadmap">Roadmap</h2>
+
+  <h3>Completed</h3>
+  <div class="feat-list">
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Multi-step sequences + A/B testing</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Multi-inbox round-robin</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">AI copy review (Claude / Gemini / GPT)</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">MX validation + invalid email sales signal</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Timezone-aware sending (per campaign)</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">OOO auto-reply filtering (RFC 3834)</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Campaign-level variables ({{location}} etc.)</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Contact custom fields from CSV</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Manual enrollment status override</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Google Maps scraper</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
+  </div>
+
+  <h3>Pending / Next</h3>
+  <div class="feat-list">
+    <div class="feat-row"><span class="ic">○</span><div class="body"><div class="ft">Deployment guide (Docker + VPS)</div><div class="fd">Dockerfile, nginx config, systemd service, env vars.</div></div><span class="status"><span class="tag tag-pend">Pending</span></span></div>
+    <div class="feat-row"><span class="ic">○</span><div class="body"><div class="ft">LinkedIn outreach</div><div class="fd">Big gap vs Smartlead/Apollo. High effort — Playwright-based.</div></div><span class="status"><span class="tag tag-idea">Future</span></span></div>
+    <div class="feat-row"><span class="ic">○</span><div class="body"><div class="ft">CRM sync (HubSpot / Pipedrive)</div><div class="fd">Webhook on reply → push to CRM. Needed for agency use.</div></div><span class="status"><span class="tag tag-idea">Future</span></span></div>
+    <div class="feat-row"><span class="ic">○</span><div class="body"><div class="ft">Contact form / manual custom fields UI</div><div class="fd">Currently custom fields only come from CSV. Add UI for manual entry.</div></div><span class="status"><span class="tag tag-idea">Future</span></span></div>
+  </div>
+
+</main>
+</div>
+</body>
+</html>
