@@ -310,6 +310,8 @@ function _clearStepModal() {
   document.getElementById('step-body').value = '';
   document.getElementById('step-variants-list').innerHTML = '';
   _updateVariantWeightTotal();
+  const sw = document.getElementById('spam-warning');
+  if (sw) sw.style.display = 'none';
 }
 
 function addStepUI() {
@@ -367,6 +369,78 @@ async function deleteStep(stepNum) {
   await api(`/api/campaigns/${currentCampaignId}/steps/${stepNum}`, 'DELETE');
   toast('Step deleted');
   openCampaign(currentCampaignId);
+}
+
+// ── Spam checker ─────────────────────────────────────────────────────────────
+
+const _SPAM_WORDS = [
+  'free','guarantee','guaranteed','winner','won','prize','congratulations',
+  'urgent','act now','limited time','don\'t miss','click here','buy now',
+  'order now','purchase now','earn money','make money','extra income',
+  'work from home','no risk','risk free','risk-free','no cost','no fees',
+  'special offer','special promotion','exclusive deal','discount','lowest price',
+  'best price','cheap','this is not spam','not spam','satisfaction guaranteed',
+  'money back','money-back','increase sales','double your','billion dollar',
+  'weight loss','as seen on','dear friend','apply now','sign up free',
+  'call now','order today','trial offer','while supplies last','incredible deal',
+  'amazing offer','once in a lifetime','you have been selected','you\'ve been chosen',
+];
+
+function _updateSpamWarning() {
+  const text = [
+    document.getElementById('step-subject')?.value || '',
+    document.getElementById('step-body')?.value || '',
+    ...[...document.querySelectorAll('.v-subject')].map(el => el.value),
+    ...[...document.querySelectorAll('.v-body')].map(el => el.value),
+  ].join(' ').toLowerCase();
+
+  const found = _SPAM_WORDS.filter(w => text.includes(w));
+  const el    = document.getElementById('spam-warning');
+  if (!el) return;
+  if (found.length) {
+    document.getElementById('spam-words').textContent = found.map(w => `"${w}"`).join(', ');
+    el.style.display = 'block';
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+// ── Email preview ─────────────────────────────────────────────────────────────
+
+let _previewDebounce = null;
+
+function openStepPreview() {
+  openModal('modal-preview');
+  refreshPreview();
+}
+
+async function refreshPreview() {
+  clearTimeout(_previewDebounce);
+  _previewDebounce = setTimeout(async () => {
+    const subject  = document.getElementById('step-subject')?.value || '';
+    const body     = document.getElementById('step-body')?.value || '';
+    const contact  = {
+      first_name: document.getElementById('preview-first-name').value,
+      last_name:  document.getElementById('preview-last-name').value,
+      company:    document.getElementById('preview-company').value,
+      email:      'preview@example.com',
+    };
+    contact.full_name = `${contact.first_name} ${contact.last_name}`.trim();
+
+    document.getElementById('preview-loading').style.display = 'block';
+    const res = await api('/api/preview', 'POST', { subject, body_html: body, contact });
+    document.getElementById('preview-loading').style.display = 'none';
+
+    document.getElementById('preview-subject').textContent = res.subject || '(no subject)';
+    const iframe = document.getElementById('preview-iframe');
+    iframe.srcdoc = res.body_html || '';
+    // Auto-size iframe to content
+    iframe.onload = () => {
+      try {
+        iframe.style.height = iframe.contentDocument.body.scrollHeight + 32 + 'px';
+      } catch(e) {}
+    };
+  }, 300);
 }
 
 // ── Variant builder ───────────────────────────────────────────────────────────

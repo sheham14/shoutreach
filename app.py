@@ -21,9 +21,10 @@ import logging
 import os
 import sys
 import threading
+from functools import wraps
 from flask import (
     Flask, render_template, request, jsonify,
-    redirect, url_for, make_response, Response
+    redirect, url_for, make_response, Response, session
 )
 
 import db
@@ -50,40 +51,90 @@ app = Flask(__name__)
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 db.init_db()
+db.seed_admin_from_env()
 app.secret_key = os.environ.get("SECRET_KEY") or db.get_or_create_secret()
 
-if not os.environ.get("ADMIN_PASS"):
-    print(
-        "\n  ⚠  No ADMIN_PASS set — dashboard is unprotected.\n"
-        "     Set ADMIN_PASS (and optionally ADMIN_USER) to enable login.\n",
-        file=sys.stderr,
-    )
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+
+_PUBLIC_PATHS = {"/login", "/logout"}
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("user_id"):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Unauthorized"}), 401
+            return redirect("/login")
+        return f(*args, **kwargs)
+    return decorated
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("is_admin"):
+            return jsonify({"error": "Forbidden"}), 403
+        return f(*args, **kwargs)
+    return decorated
 
 
 @app.before_request
 def _ensure_scheduler():
-    """Start the scheduler on first request if it isn't already running."""
     if not scheduler.is_running():
         scheduler.start()
 
 
 @app.before_request
 def _require_login():
-    """HTTP Basic Auth gate. Skips the public unsubscribe endpoint."""
-    admin_pass = os.environ.get("ADMIN_PASS", "")
-    if not admin_pass:
-        return  # No password configured — local/dev mode, allow all
-    if request.path.startswith("/unsubscribe"):
-        return  # Unsubscribe links must stay publicly accessible
-    auth = request.authorization
-    admin_user = os.environ.get("ADMIN_USER", "admin")
-    if not auth or auth.username != admin_user or auth.password != admin_pass:
-        return Response(
-            "Outreach System — authentication required.\n"
-            "Set ADMIN_PASS (and optionally ADMIN_USER) environment variables.",
-            401,
-            {"WWW-Authenticate": 'Basic realm="Outreach System"'},
-        )
+    if request.path in _PUBLIC_PATHS or request.path.startswith("/unsubscribe"):
+        return
+    if not session.get("user_id"):
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Unauthorized"}), 401
+        return redirect("/login")
+
+
+# ── Login / Logout ────────────────────────────────────────────────────────────
+
+@app.route("/login", methods=["GET"])
+def login_page():
+    if session.get("user_id"):
+        return redirect("/")
+    first_run = db.user_count() == 0
+    error = request.args.get("error", "")
+    return render_template("login.html", error=error, first_run=first_run)
+
+
+@app.route("/login", methods=["POST"])
+def login_submit():
+    # First-run: create the initial admin account
+    if db.user_count() == 0:
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        if not username or len(password) < 8:
+            return render_template("login.html", first_run=True,
+                                   error="Username required and password must be at least 8 characters.")
+        db.create_user(username, password, is_admin=True)
+        user = db.authenticate(username, password)
+    else:
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        user = db.authenticate(username, password)
+        if not user:
+            return render_template("login.html", first_run=False,
+                                   error="Invalid username or password.")
+    session.permanent = True
+    session["user_id"]  = user["id"]
+    session["username"] = user["username"]
+    session["is_admin"] = bool(user["is_admin"])
+    return redirect("/")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
 
 
 # ── Pages ─────────────────────────────────────────────────────────────────────
@@ -246,6 +297,82 @@ def api_set_campaign_accounts(cid):
     ids = (request.json or {}).get("account_ids", [])
     db.set_campaign_smtp_accounts(cid, ids)
     return jsonify({"ok": True})
+
+
+# ── API: Users ────────────────────────────────────────────────────────────────
+
+@app.route("/api/users", methods=["GET"])
+@admin_required
+def api_list_users():
+    return jsonify(db.list_users())
+
+
+@app.route("/api/users", methods=["POST"])
+@admin_required
+def api_create_user():
+    d = request.json or {}
+    username = d.get("username", "").strip()
+    password = d.get("password", "")
+    is_admin = bool(d.get("is_admin", False))
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    if db.get_user_by_username(username):
+        return jsonify({"error": "Username already exists"}), 409
+    uid = db.create_user(username, password, is_admin)
+    return jsonify({"ok": True, "id": uid})
+
+
+@app.route("/api/users/<int:uid>", methods=["DELETE"])
+@admin_required
+def api_delete_user(uid):
+    if uid == session["user_id"]:
+        return jsonify({"error": "Cannot delete your own account"}), 400
+    db.delete_user(uid)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/users/<int:uid>/password", methods=["POST"])
+def api_change_password(uid):
+    # Admins can change anyone's password; users can only change their own
+    if not session.get("is_admin") and uid != session.get("user_id"):
+        return jsonify({"error": "Forbidden"}), 403
+    d = request.json or {}
+    new_pass = d.get("password", "")
+    if len(new_pass) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    db.change_password(uid, new_pass)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/users/me", methods=["GET"])
+def api_me():
+    return jsonify({
+        "id":       session.get("user_id"),
+        "username": session.get("username"),
+        "is_admin": session.get("is_admin"),
+    })
+
+
+# ── API: Contacts — Unsubscribed ─────────────────────────────────────────────
+
+@app.route("/api/contacts/unsubscribed", methods=["GET"])
+def api_unsubscribed():
+    return jsonify(db.get_unsubscribed_contacts())
+
+
+# ── API: Preview ─────────────────────────────────────────────────────────────
+
+@app.route("/api/preview", methods=["POST"])
+def api_preview():
+    d = request.json or {}
+    subject_tpl = d.get("subject", "")
+    body_tpl    = d.get("body_html", "")
+    contact     = d.get("contact", {})
+    subject  = email_sender._render(subject_tpl, contact)
+    body_html = email_sender._plain_to_html(email_sender._render(body_tpl, contact))
+    return jsonify({"subject": subject, "body_html": body_html})
 
 
 # ── API: Stats ────────────────────────────────────────────────────────────────

@@ -67,4 +67,15 @@
     </div>
 
   </div>
+
+  <div id="settings-users-card" class="card" style="padding:24px;margin-top:24px;display:none">
+    <div class="flex items-center" style="margin-bottom:16px">
+      <div class="card-title">Users</div>
+      <button class="btn btn-ghost btn-sm ml-auto" onclick="openAddUserModal()">+ Add User</button>
+    </div>
+    <table>
+      <thead><tr><th>Username</th><th>Role</th><th>Created</th><th></th></tr></thead>
+      <tbody id="users-table"><tr><td colspan="4" class="empty-state"><p>Loading...</p></td></tr></tbody>
+    </table>
+  </div>
 </div>

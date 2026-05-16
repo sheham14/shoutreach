@@ -8,7 +8,7 @@ function showSection(name) {
   if (name === 'campaigns')  loadCampaigns();
   if (name === 'contacts')   loadContacts();
   if (name === 'logs')       loadLogs();
-  if (name === 'settings')   { loadSettings(); loadAccounts(); }
+  if (name === 'settings')   { loadSettings(); loadAccounts(); loadUsers(); }
   if (name === 'scraper')    loadScraper();
   if (name === 'database')   loadDbTables();
 }

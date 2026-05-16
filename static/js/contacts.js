@@ -21,6 +21,42 @@ async function loadContacts() {
   _updateDeleteSelectedBtn();
   _renderContactColDropdown();
   renderContactsTable();
+  loadUnsubscribed();
+}
+
+let _unsubscribed = [];
+
+async function loadUnsubscribed() {
+  _unsubscribed = await api('/api/contacts/unsubscribed');
+  const countEl = document.getElementById('unsub-count');
+  const tbody   = document.getElementById('unsub-table');
+  if (!countEl || !tbody) return;
+  countEl.textContent = _unsubscribed.length ? `${_unsubscribed.length} contacts` : '';
+  if (!_unsubscribed.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-state"><p>No unsubscribes yet</p></td></tr>';
+    return;
+  }
+  tbody.innerHTML = _unsubscribed.map(c => `<tr>
+    <td class="mono" style="font-size:12px">${esc(c.email || '—')}</td>
+    <td>${esc([c.first_name, c.last_name].filter(Boolean).join(' ') || '—')}</td>
+    <td>${esc(c.company || '—')}</td>
+    <td class="mono text-muted" style="font-size:11px">${(c.created_at || '').substring(0, 10)}</td>
+  </tr>`).join('');
+}
+
+function exportUnsubscribed() {
+  if (!_unsubscribed.length) { toast('No unsubscribes to export', 'err'); return; }
+  const rows = [['Email','First Name','Last Name','Company','Date']];
+  _unsubscribed.forEach(c => rows.push([
+    c.email || '', c.first_name || '', c.last_name || '',
+    c.company || '', (c.created_at || '').substring(0, 10),
+  ]));
+  const csv  = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a    = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(blob), download: 'unsubscribed.csv',
+  });
+  a.click();
 }
 
 function renderContactsTable() {

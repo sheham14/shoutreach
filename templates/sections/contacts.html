@@ -43,4 +43,22 @@
       </table>
     </div>
   </div>
+
+  <div class="section-gap"></div>
+
+  <div>
+    <div class="flex items-center" style="margin-bottom:14px">
+      <div class="card-title">Unsubscribed</div>
+      <div class="flex gap-2 ml-auto items-center">
+        <span id="unsub-count" class="text-muted text-small"></span>
+        <button class="btn btn-ghost btn-sm" onclick="exportUnsubscribed()">⬇ Export CSV</button>
+      </div>
+    </div>
+    <div class="card" style="max-height:320px;overflow-y:auto">
+      <table>
+        <thead><tr><th>Email</th><th>Name</th><th>Company</th><th>Unsubscribed</th></tr></thead>
+        <tbody id="unsub-table"></tbody>
+      </table>
+    </div>
+  </div>
 </div>

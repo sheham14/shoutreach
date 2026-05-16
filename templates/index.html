@@ -33,6 +33,49 @@
 {% include 'modals/enroll.html' %}
 {% include 'modals/account_form.html' %}
 {% include 'modals/edit_campaign.html' %}
+{% include 'modals/preview.html' %}
+
+<div class="modal-overlay" id="modal-add-user">
+  <div class="modal" style="max-width:380px">
+    <button class="modal-close" onclick="closeModal('modal-add-user')">✕</button>
+    <h2 id="user-modal-title">Add User</h2>
+    <div class="form-group">
+      <label>Username</label>
+      <input id="new-user-username" placeholder="cofounder" autocomplete="off" />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input id="new-user-password" type="password" placeholder="Min 8 characters" />
+    </div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+        <input type="checkbox" id="new-user-admin" style="cursor:pointer" />
+        Admin (can manage users and all settings)
+      </label>
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="saveNewUser()">Create User</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-add-user')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-change-password">
+  <div class="modal" style="max-width:380px">
+    <button class="modal-close" onclick="closeModal('modal-change-password')">✕</button>
+    <h2>Change Password</h2>
+    <p class="text-muted text-small" style="margin-bottom:16px">for <strong id="chpw-username"></strong></p>
+    <input type="hidden" id="chpw-uid" />
+    <div class="form-group">
+      <label>New Password</label>
+      <input id="chpw-password" type="password" placeholder="Min 8 characters" />
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="submitChangePassword()">Save Password</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-change-password')">Cancel</button>
+    </div>
+  </div>
+</div>
 
 <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>

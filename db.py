@@ -8,6 +8,9 @@ import json
 import logging
 import datetime
 import secrets
+import hashlib
+import hmac as _hmac
+import os as _os_auth
 from pathlib import Path
 
 logger = logging.getLogger("db")
@@ -132,6 +135,14 @@ def init_db():
                 body_html TEXT    NOT NULL DEFAULT '',
                 weight    INTEGER NOT NULL DEFAULT 50,
                 UNIQUE(step_id, label)
+            );
+
+            CREATE TABLE IF NOT EXISTS users (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                username      TEXT    NOT NULL UNIQUE,
+                password_hash TEXT    NOT NULL,
+                is_admin      INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
             );
         """)
 
@@ -412,6 +423,16 @@ def unsubscribe_contact(email):
             UPDATE enrollments SET status='unsubscribed'
             WHERE contact_id=(SELECT id FROM contacts WHERE email=?)
         """, (email.lower(),))
+
+
+def get_unsubscribed_contacts():
+    with get_db() as conn:
+        return [dict(r) for r in conn.execute("""
+            SELECT email, first_name, last_name, company, created_at
+            FROM contacts
+            WHERE status = 'unsubscribed'
+            ORDER BY created_at DESC
+        """).fetchall()]
 
 
 def mark_bounced(email):
@@ -822,3 +843,88 @@ def get_logs(limit=50):
         return [dict(r) for r in conn.execute(
             "SELECT * FROM logs ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()]
+
+
+# ── Users & Auth ──────────────────────────────────────────────────────────────
+
+def _hash_password(password: str) -> str:
+    salt = _os_auth.urandom(32)
+    key  = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 260_000)
+    return salt.hex() + ":" + key.hex()
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        salt_hex, key_hex = stored.split(":")
+        salt = bytes.fromhex(salt_hex)
+        key  = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 260_000)
+        return _hmac.compare_digest(key.hex(), key_hex)
+    except Exception:
+        return False
+
+
+def create_user(username: str, password: str, is_admin: bool = False) -> int:
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO users(username, password_hash, is_admin) VALUES(?,?,?)",
+            (username.strip().lower(), _hash_password(password), 1 if is_admin else 0),
+        )
+        return cur.lastrowid
+
+
+def get_user_by_username(username: str):
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE username=?", (username.strip().lower(),)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_id(uid: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_users():
+    with get_db() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT id, username, is_admin, created_at FROM users ORDER BY id"
+        ).fetchall()]
+
+
+def delete_user(uid: int):
+    with get_db() as conn:
+        conn.execute("DELETE FROM users WHERE id=?", (uid,))
+
+
+def change_password(uid: int, new_password: str):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE users SET password_hash=? WHERE id=?",
+            (_hash_password(new_password), uid),
+        )
+
+
+def authenticate(username: str, password: str):
+    """Return user dict if credentials valid, else None."""
+    user = get_user_by_username(username)
+    if user and _verify_password(password, user["password_hash"]):
+        return user
+    return None
+
+
+def user_count() -> int:
+    with get_db() as conn:
+        return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+
+def seed_admin_from_env():
+    """On first run, create an admin account from ADMIN_PASS env var if set."""
+    if user_count() > 0:
+        return
+    password = _os_auth.environ.get("ADMIN_PASS", "")
+    username  = _os_auth.environ.get("ADMIN_USER", "admin")
+    if password:
+        create_user(username, password, is_admin=True)
+        logger.info(f"Created admin user '{username}' from ADMIN_PASS env var")

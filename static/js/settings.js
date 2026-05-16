@@ -16,6 +16,75 @@ async function saveSettings() {
   toast('Settings saved ✓');
 }
 
+// ── Users ─────────────────────────────────────────────────────────────────────
+
+async function loadUsers() {
+  const me = await api('/api/users/me');
+  // Show sidebar username
+  const usernameEl = document.getElementById('sidebar-username');
+  if (usernameEl) usernameEl.textContent = me.username;
+
+  if (!me.is_admin) return; // non-admins don't see the users card
+  document.getElementById('settings-users-card').style.display = 'block';
+
+  const users = await api('/api/users');
+  const tbody = document.getElementById('users-table');
+  tbody.innerHTML = users.map(u => `
+    <tr>
+      <td style="font-weight:500">${esc(u.username)}</td>
+      <td>${u.is_admin ? '<span class="badge badge-blue">Admin</span>' : '<span class="badge">User</span>'}</td>
+      <td class="mono text-muted" style="font-size:11px">${(u.created_at||'').substring(0,10)}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-ghost btn-sm" onclick="openChangePasswordModal(${u.id}, '${esc(u.username)}')">Change password</button>
+        ${u.id !== me.id ? `<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id}, '${esc(u.username)}')">✕</button>` : ''}
+      </td>
+    </tr>
+  `).join('');
+}
+
+function openAddUserModal() {
+  document.getElementById('new-user-username').value = '';
+  document.getElementById('new-user-password').value = '';
+  document.getElementById('new-user-admin').checked  = false;
+  openModal('modal-add-user');
+}
+
+async function saveNewUser() {
+  const username = document.getElementById('new-user-username').value.trim();
+  const password = document.getElementById('new-user-password').value;
+  const is_admin = document.getElementById('new-user-admin').checked;
+  if (!username || !password) { toast('Username and password required', 'err'); return; }
+  const res = await api('/api/users', 'POST', { username, password, is_admin });
+  if (res.error) { toast(res.error, 'err'); return; }
+  toast('User created ✓');
+  closeModal('modal-add-user');
+  loadUsers();
+}
+
+function openChangePasswordModal(uid, username) {
+  document.getElementById('chpw-uid').value      = uid;
+  document.getElementById('chpw-username').textContent = username;
+  document.getElementById('chpw-password').value = '';
+  openModal('modal-change-password');
+}
+
+async function submitChangePassword() {
+  const uid      = +document.getElementById('chpw-uid').value;
+  const password = document.getElementById('chpw-password').value;
+  if (!password) { toast('Enter a new password', 'err'); return; }
+  const res = await api(`/api/users/${uid}/password`, 'POST', { password });
+  if (res.error) { toast(res.error, 'err'); return; }
+  toast('Password changed ✓');
+  closeModal('modal-change-password');
+}
+
+async function deleteUser(uid, username) {
+  if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+  await api(`/api/users/${uid}`, 'DELETE');
+  toast('User deleted');
+  loadUsers();
+}
+
 // ── Email Accounts ────────────────────────────────────────────────────────────
 
 let _accountEditId = null;

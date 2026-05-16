@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sign In — Outreach</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:      #080c10;
+    --bg2:     #0e1419;
+    --bg3:     #141c24;
+    --border:  #1e2c38;
+    --border2: #243444;
+    --text:    #c8d8e8;
+    --text2:   #8aa8c0;
+    --muted:   #5a7a90;
+    --accent:  #3b9eff;
+    --green:   #00e87a;
+    --red:     #ff4d4d;
+    --font:    'Space Grotesk', sans-serif;
+    --mono:    'JetBrains Mono', monospace;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .login-box {
+    width: 100%;
+    max-width: 380px;
+    padding: 0 20px;
+  }
+  .logo {
+    text-align: center;
+    margin-bottom: 36px;
+  }
+  .logo-mark {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--green);
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .logo h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -.5px;
+  }
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 32px;
+  }
+  h2 {
+    font-size: 17px;
+    font-weight: 600;
+    margin-bottom: 24px;
+    color: var(--text);
+  }
+  .form-group { margin-bottom: 18px; }
+  label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    margin-bottom: 6px;
+  }
+  input {
+    width: 100%;
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: var(--text);
+    font-size: 14px;
+    font-family: var(--font);
+    outline: none;
+    transition: border-color .15s;
+  }
+  input:focus { border-color: var(--accent); }
+  .btn {
+    width: 100%;
+    padding: 11px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: var(--font);
+    cursor: pointer;
+    margin-top: 8px;
+    transition: opacity .15s;
+  }
+  .btn:hover { opacity: .88; }
+  .error {
+    background: rgba(255,77,77,.08);
+    border: 1px solid rgba(255,77,77,.25);
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: var(--red);
+    font-size: 13px;
+    margin-bottom: 18px;
+  }
+</style>
+</head>
+<body>
+  <div class="login-box">
+    <div class="logo">
+      <div class="logo-mark">◈ System</div>
+      <h1>Outreach</h1>
+    </div>
+    <div class="card">
+      {% if first_run %}
+        <h2>Create admin account</h2>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:20px">First time setup — create your admin account to get started.</p>
+      {% else %}
+        <h2>Sign in</h2>
+      {% endif %}
+      {% if error %}
+        <div class="error">{{ error }}</div>
+      {% endif %}
+      <form method="POST" action="/login">
+        <div class="form-group">
+          <label>Username</label>
+          <input type="text" name="username" autocomplete="username" autofocus required />
+        </div>
+        <div class="form-group">
+          <label>Password{% if first_run %} <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">(min 8 characters)</span>{% endif %}</label>
+          <input type="password" name="password" autocomplete="{% if first_run %}new-password{% else %}current-password{% endif %}" required />
+        </div>
+        <button type="submit" class="btn">{% if first_run %}Create account & sign in{% else %}Sign in{% endif %}</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>
