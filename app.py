@@ -7,6 +7,13 @@ Then open: http://localhost:5000
 import csv
 import io
 import json
+
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    _OPENPYXL = True
+except ImportError:
+    _OPENPYXL = False
 import base64
 import hashlib
 import hmac
@@ -163,6 +170,84 @@ def api_test_imap():
     return jsonify({"ok": ok, "message": msg})
 
 
+# ── API: SMTP Accounts ───────────────────────────────────────────────────────
+
+@app.route("/api/accounts", methods=["GET"])
+def api_get_accounts():
+    accounts = db.get_smtp_accounts()
+    # Mask passwords before sending to frontend
+    for a in accounts:
+        a["smtp_pass"] = "●●●●●●" if a.get("smtp_pass") else ""
+        a["imap_pass"] = "●●●●●●" if a.get("imap_pass") else ""
+    return jsonify(accounts)
+
+
+@app.route("/api/accounts", methods=["POST"])
+def api_create_account():
+    d = request.json or {}
+    aid = db.create_smtp_account(d)
+    return jsonify({"ok": True, "id": aid})
+
+
+@app.route("/api/accounts/<int:aid>", methods=["PUT"])
+def api_update_account(aid):
+    d = request.json or {}
+    existing = db.get_smtp_account(aid)
+    if not existing:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    # Don't overwrite passwords if placeholder was sent back
+    for key in ("smtp_pass", "imap_pass"):
+        if d.get(key) == "●●●●●●":
+            d[key] = existing.get(key, "")
+    db.update_smtp_account(aid, d)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/accounts/<int:aid>", methods=["DELETE"])
+def api_delete_account(aid):
+    db.delete_smtp_account(aid)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/accounts/<int:aid>/test-smtp", methods=["POST"])
+def api_test_account_smtp(aid):
+    acct = db.get_smtp_account(aid)
+    if not acct:
+        return jsonify({"ok": False, "message": "Account not found"}), 404
+    cfg = {
+        "smtp_host": acct["smtp_host"], "smtp_port": acct["smtp_port"],
+        "smtp_user": acct["smtp_user"], "smtp_pass": acct["smtp_pass"],
+    }
+    ok, msg = email_sender.test_smtp(cfg)
+    return jsonify({"ok": ok, "message": msg})
+
+
+@app.route("/api/accounts/<int:aid>/test-imap", methods=["POST"])
+def api_test_account_imap(aid):
+    acct = db.get_smtp_account(aid)
+    if not acct:
+        return jsonify({"ok": False, "message": "Account not found"}), 404
+    cfg = {
+        "imap_host": acct["imap_host"],
+        "imap_user": acct["imap_user"],
+        "imap_pass": acct["imap_pass"],
+    }
+    ok, msg = email_sender.test_imap(cfg)
+    return jsonify({"ok": ok, "message": msg})
+
+
+@app.route("/api/campaigns/<int:cid>/accounts", methods=["GET"])
+def api_get_campaign_accounts(cid):
+    return jsonify(db.get_campaign_smtp_accounts(cid))
+
+
+@app.route("/api/campaigns/<int:cid>/accounts", methods=["POST"])
+def api_set_campaign_accounts(cid):
+    ids = (request.json or {}).get("account_ids", [])
+    db.set_campaign_smtp_accounts(cid, ids)
+    return jsonify({"ok": True})
+
+
 # ── API: Stats ────────────────────────────────────────────────────────────────
 
 @app.route("/api/stats")
@@ -210,10 +295,79 @@ def api_get_campaign(cid):
     c = db.get_campaign(cid)
     if not c:
         return jsonify({"error": "Not found"}), 404
-    c["steps"]    = db.get_steps(cid)
-    c["stats"]    = db.get_stats(cid)
-    c["contacts"] = db.get_campaign_contacts(cid)
+    steps = db.get_steps(cid)
+    for s in steps:
+        s["variants"] = db.get_step_variants(s["id"])
+    c["steps"]          = steps
+    c["stats"]          = db.get_stats(cid)
+    c["variant_stats"]  = db.get_variant_stats(cid)
+    c["contacts"]       = db.get_campaign_contacts(cid)
+    c["report"]         = db.get_campaign_contact_report(cid)
     return jsonify(c)
+
+
+@app.route("/api/campaigns/<int:cid>/export", methods=["GET"])
+def api_export_campaign(cid):
+    if not _OPENPYXL:
+        return jsonify({"error": "openpyxl not installed"}), 500
+    c = db.get_campaign(cid)
+    if not c:
+        return jsonify({"error": "Not found"}), 404
+    rows = db.get_campaign_contact_report(cid)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Contact Report"
+
+    headers = ["Email", "First Name", "Last Name", "Company",
+               "Variant", "Status", "Steps Sent", "Current Step",
+               "Next Send", "Enrolled At"]
+    header_fill = PatternFill("solid", fgColor="1E293B")
+    header_font = Font(bold=True, color="FFFFFF")
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    STATUS_LABELS = {
+        "queued": "Queued", "active": "Active", "replied": "Replied",
+        "bounced": "Bounced", "completed": "Completed", "paused": "Paused",
+        "unsubscribed": "Unsubscribed",
+    }
+    for r, row in enumerate(rows, 2):
+        ws.cell(r, 1, row["email"] or "")
+        ws.cell(r, 2, row["first_name"] or "")
+        ws.cell(r, 3, row["last_name"] or "")
+        ws.cell(r, 4, row["company"] or "")
+        ws.cell(r, 5, row["variant_label"] or "—")
+        ws.cell(r, 6, STATUS_LABELS.get(row["status"], row["status"] or ""))
+        ws.cell(r, 7, row["steps_sent"])
+        ws.cell(r, 8, row["current_step"])
+        ws.cell(r, 9, row["next_send_at"] or "—")
+        ws.cell(r, 10, row["enrolled_at"] or "")
+        if row["status"] == "replied":
+            shade = PatternFill("solid", fgColor="DCFCE7")
+        elif row["status"] == "bounced":
+            shade = PatternFill("solid", fgColor="FEE2E2")
+        else:
+            shade = None
+        if shade:
+            for col in range(1, 11):
+                ws.cell(r, col).fill = shade
+
+    for col, width in zip(range(1, 11), [30, 14, 14, 22, 10, 14, 12, 12, 20, 20]):
+        ws.column_dimensions[ws.cell(1, col).column_letter].width = width
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    safe_name = c["name"].replace(" ", "_").replace("/", "-")
+    return Response(
+        buf.read(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="campaign_{safe_name}.xlsx"'},
+    )
 
 
 @app.route("/api/campaigns/<int:cid>", methods=["DELETE"])
@@ -267,6 +421,15 @@ def api_upsert_step(cid):
         body_html   = d.get("body_html", ""),
         delay_days  = int(d.get("delay_days", 0)),
     )
+    # Save variants if provided (empty list clears/disables A/B for this step)
+    if "variants" in d:
+        with db.get_db() as conn:
+            step = conn.execute(
+                "SELECT id FROM steps WHERE campaign_id=? AND step_num=?",
+                (cid, int(d["step_num"]))
+            ).fetchone()
+        if step:
+            db.save_step_variants(step["id"], d["variants"])
     return jsonify({"ok": True})
 
 
@@ -375,6 +538,12 @@ def api_enroll_contacts(cid):
 @app.route("/api/campaigns/<int:cid>/contacts", methods=["GET"])
 def api_campaign_contacts(cid):
     return jsonify(db.get_campaign_contacts(cid))
+
+
+@app.route("/api/enrollments/<int:enroll_id>", methods=["DELETE"])
+def api_unenroll_contact(enroll_id):
+    db.unenroll_contact(enroll_id)
+    return jsonify({"ok": True})
 
 
 # ── API: Logs ─────────────────────────────────────────────────────────────────

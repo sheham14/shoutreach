@@ -9,3 +9,7 @@ document.querySelectorAll('nav a').forEach(a => {
 });
 
 refreshDashboard();
+
+function toggleFaq(header) {
+  header.closest('.faq-item').classList.toggle('open');
+}

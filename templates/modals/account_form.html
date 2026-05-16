@@ -1,0 +1,42 @@
+<div class="modal-overlay" id="modal-account">
+  <div class="modal" style="max-width:560px">
+    <button class="modal-close" onclick="closeModal('modal-account')">✕</button>
+    <h2 id="account-modal-title">Add Email Account</h2>
+
+    <div class="form-grid">
+      <div class="form-group"><label>Display Name</label><input id="acct-name" placeholder="Sales 1" /></div>
+      <div class="form-group"><label>From Email</label><input id="acct-email" type="email" placeholder="you@hexiv.co" /></div>
+    </div>
+    <div class="form-group"><label>From Name</label><input id="acct-from-name" placeholder="Your Name" /></div>
+
+    <div class="card-title" style="margin:20px 0 12px;font-size:12px;text-transform:uppercase;letter-spacing:.05em">SMTP — Outbound</div>
+    <div class="form-grid">
+      <div class="form-group"><label>Host</label><input id="acct-smtp-host" placeholder="smtp.zoho.com" /></div>
+      <div class="form-group"><label>Port</label><input id="acct-smtp-port" value="587" type="number" /></div>
+    </div>
+    <div class="form-grid">
+      <div class="form-group"><label>Username</label><input id="acct-smtp-user" placeholder="you@hexiv.co" /></div>
+      <div class="form-group"><label>Password</label><input id="acct-smtp-pass" type="password" placeholder="●●●●●●●●" /></div>
+    </div>
+    <div style="margin-bottom:16px">
+      <button class="btn btn-ghost btn-sm" onclick="testAccountSMTP()">Test SMTP</button>
+      <span id="acct-smtp-result" style="font-size:12px;font-family:var(--mono);margin-left:10px"></span>
+    </div>
+
+    <div class="card-title" style="margin:0 0 12px;font-size:12px;text-transform:uppercase;letter-spacing:.05em">IMAP — Reply Detection</div>
+    <div class="form-group"><label>IMAP Host</label><input id="acct-imap-host" placeholder="imap.zoho.com" /></div>
+    <div class="form-grid">
+      <div class="form-group"><label>Username</label><input id="acct-imap-user" placeholder="you@hexiv.co" /></div>
+      <div class="form-group"><label>Password</label><input id="acct-imap-pass" type="password" placeholder="●●●●●●●●" /></div>
+    </div>
+    <div style="margin-bottom:20px">
+      <button class="btn btn-ghost btn-sm" onclick="testAccountIMAP()">Test IMAP</button>
+      <span id="acct-imap-result" style="font-size:12px;font-family:var(--mono);margin-left:10px"></span>
+    </div>
+
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="saveAccount()">Save Account</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-account')">Cancel</button>
+    </div>
+  </div>
+</div>

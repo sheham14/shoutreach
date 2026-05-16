@@ -81,7 +81,10 @@ def process_queue():
             if not due:
                 continue
 
-            steps = {s["step_num"]: s for s in db.get_steps(cid)}
+            raw_steps = db.get_steps(cid)
+            for s in raw_steps:
+                s["variants"] = db.get_step_variants(s["id"])
+            steps = {s["step_num"]: s for s in raw_steps}
             if not steps:
                 continue
 
@@ -100,13 +103,28 @@ def process_queue():
                 contact = dict(enrollment)
                 contact["contact_id"] = enrollment["contact_id"]
 
+                # Pick subject/body: use variant if the enrollment has one
+                subject_tpl = step["subject"]
+                body_tpl    = step["body_html"]
+                variant_label = enrollment.get("variant_label")
+                if variant_label and step.get("variants"):
+                    v = next((x for x in step["variants"] if x["label"] == variant_label), None)
+                    if v:
+                        subject_tpl = v["subject"]
+                        body_tpl    = v["body_html"]
+
+                # Round-robin through campaign's assigned accounts (falls back
+                # to global settings inside send_email when account is None)
+                account = db.get_next_account_for_campaign(cid)
+
                 success, msg_id, err = email_sender.send_email(
                     contact=contact,
-                    subject_tpl=step["subject"],
-                    body_tpl=step["body_html"],
+                    subject_tpl=subject_tpl,
+                    body_tpl=body_tpl,
                     campaign_id=cid,
                     step_num=step_num,
                     settings=settings,
+                    account=account,
                 )
 
                 if success:

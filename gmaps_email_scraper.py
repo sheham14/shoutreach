@@ -490,13 +490,22 @@ def fetch_emails_from_url(url: str) -> tuple:
     except Exception:
         return set(), STATUS_BLOCKED
 
-    soup      = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Strip <style> blocks before extracting visible text — they contain
+    # font license comments with author emails (e.g. Raleway, Lato).
+    for tag in soup.find_all("style"):
+        tag.decompose()
+
     page_text = soup.get_text(separator=" ")
+
+    # Strip <style>...</style> blocks from raw HTML too before regex scan.
+    raw_no_css = re.sub(r"<style[\s\S]*?</style>", "", resp.text, flags=re.IGNORECASE)
 
     # Search rendered text + raw HTML (catches obfuscated/encoded emails)
     raw = (
         set(EMAIL_REGEX.findall(page_text))
-        | set(EMAIL_REGEX.findall(resp.text))
+        | set(EMAIL_REGEX.findall(raw_no_css))
     )
 
     clean = set()
@@ -634,6 +643,17 @@ def run_scraper_job(job: ScraperJob):
                             "website":    biz.get("website", ""),
                             "address":    biz.get("address", ""),
                         })
+            elif biz.get("website") and status != STATUS_NO_WEBSITE:
+                # Store as a prospect so the user can follow up manually
+                prospect_status = "form_only" if status == STATUS_FORM_ONLY else "no_email"
+                contacts_to_import.append({
+                    "email":   "",
+                    "company": biz.get("name", ""),
+                    "website": biz.get("website", ""),
+                    "address": biz.get("address", ""),
+                    "status":  prospect_status,
+                })
+                job.log(f"[{i+1}/{job.total}] – {biz['name']} — {status} (saved as prospect)")
             else:
                 job.log(f"[{i+1}/{job.total}] ✗ {biz['name']} — {status}")
 

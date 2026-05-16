@@ -1,5 +1,5 @@
 <div class="modal-overlay" id="modal-step">
-  <div class="modal">
+  <div class="modal" style="max-width:640px">
     <button class="modal-close" onclick="closeModal('modal-step')">✕</button>
     <h2 id="step-modal-title">Edit Step</h2>
     <input type="hidden" id="step-num-input" />
@@ -8,15 +8,31 @@
       <input id="step-delay" type="number" value="0" min="0" />
       <div class="form-hint">Step 1 = 0 (send immediately). Step 2+ = days to wait after previous step was sent.</div>
     </div>
-    <div class="form-group">
-      <label>Subject — use {{first_name}}, {{company}}, {{full_name}}</label>
-      <input id="step-subject" placeholder="Quick question about {{company}}" />
+
+    <div id="step-no-variant-fields">
+      <div class="form-group">
+        <label>Subject — use {{first_name}}, {{company}}, {{full_name}}</label>
+        <input id="step-subject" placeholder="Quick question about {{company}}" />
+      </div>
+      <div class="form-group">
+        <label>Body (HTML or plain text)</label>
+        <textarea id="step-body" style="min-height:180px" placeholder="Hi {{first_name}},&#10;&#10;..."></textarea>
+        <div class="form-hint">Variables: {{first_name}} {{last_name}} {{full_name}} {{company}} {{email}}</div>
+      </div>
     </div>
-    <div class="form-group">
-      <label>Body (HTML or plain text)</label>
-      <textarea id="step-body" style="min-height:220px" placeholder="Hi {{first_name}},&#10;&#10;..."></textarea>
-      <div class="form-hint">Variables: {{first_name}} {{last_name}} {{full_name}} {{company}} {{email}} — unsubscribe link is added automatically.</div>
+
+    <div style="margin:16px 0;border-top:1px solid var(--border);padding-top:16px">
+      <div class="flex items-center gap-2" style="margin-bottom:12px">
+        <span style="font-size:13px;font-weight:600">A/B Variants</span>
+        <button class="btn btn-ghost btn-sm" onclick="addStepVariant()">+ Add Variant</button>
+        <span class="text-muted text-small" style="margin-left:4px" id="variant-weight-total"></span>
+      </div>
+      <div id="step-variants-list" style="display:flex;flex-direction:column;gap:12px"></div>
+      <p class="text-muted text-small" id="step-variants-hint" style="margin-top:8px">
+        When variants are configured, the base subject/body above is used as fallback for contacts enrolled before variants were added.
+      </p>
     </div>
+
     <div class="flex gap-2">
       <button class="btn btn-primary" onclick="saveStep()">Save Step</button>
       <button class="btn btn-ghost" onclick="closeModal('modal-step')">Cancel</button>

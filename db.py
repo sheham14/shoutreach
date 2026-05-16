@@ -101,6 +101,38 @@ def init_db():
                 message    TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS smtp_accounts (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT    NOT NULL,
+                email       TEXT    NOT NULL,
+                from_name   TEXT    NOT NULL DEFAULT '',
+                smtp_host   TEXT    NOT NULL DEFAULT '',
+                smtp_port   INTEGER NOT NULL DEFAULT 587,
+                smtp_user   TEXT    NOT NULL DEFAULT '',
+                smtp_pass   TEXT    NOT NULL DEFAULT '',
+                imap_host   TEXT    NOT NULL DEFAULT '',
+                imap_user   TEXT    NOT NULL DEFAULT '',
+                imap_pass   TEXT    NOT NULL DEFAULT '',
+                status      TEXT    NOT NULL DEFAULT 'active',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS campaign_accounts (
+                campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+                account_id  INTEGER NOT NULL REFERENCES smtp_accounts(id) ON DELETE CASCADE,
+                PRIMARY KEY (campaign_id, account_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS step_variants (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                step_id   INTEGER NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
+                label     TEXT    NOT NULL,
+                subject   TEXT    NOT NULL DEFAULT '',
+                body_html TEXT    NOT NULL DEFAULT '',
+                weight    INTEGER NOT NULL DEFAULT 50,
+                UNIQUE(step_id, label)
+            );
         """)
 
         # Schema migrations — safe to run repeatedly on existing databases
@@ -108,11 +140,46 @@ def init_db():
             "ALTER TABLE contacts ADD COLUMN soft_bounce_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE contacts ADD COLUMN website TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE contacts ADD COLUMN address TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE sends ADD COLUMN account_id INTEGER",
+            "ALTER TABLE enrollments ADD COLUMN variant_label TEXT",
         ]:
             try:
                 conn.execute(_col_sql)
             except Exception:
                 pass  # Column already exists
+
+        # Make email nullable so the scraper can store no-email prospects
+        _col_info = conn.execute("PRAGMA table_info(contacts)").fetchall()
+        _email_col = next((r for r in _col_info if r['name'] == 'email'), None)
+        if _email_col and _email_col['notnull']:
+            conn.executescript("""
+                PRAGMA foreign_keys = OFF;
+                CREATE TABLE contacts_new (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email             TEXT DEFAULT NULL,
+                    first_name        TEXT NOT NULL DEFAULT '',
+                    last_name         TEXT NOT NULL DEFAULT '',
+                    company           TEXT NOT NULL DEFAULT '',
+                    extra             TEXT NOT NULL DEFAULT '{}',
+                    status            TEXT NOT NULL DEFAULT 'active',
+                    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                    website           TEXT NOT NULL DEFAULT '',
+                    address           TEXT NOT NULL DEFAULT '',
+                    soft_bounce_count INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO contacts_new
+                    SELECT id, email, first_name, last_name, company, extra, status,
+                           created_at, COALESCE(website,''), COALESCE(address,''),
+                           COALESCE(soft_bounce_count, 0)
+                    FROM contacts;
+                DROP TABLE contacts;
+                ALTER TABLE contacts_new RENAME TO contacts;
+                PRAGMA foreign_keys = ON;
+            """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS contacts_email_unique
+            ON contacts(email) WHERE email IS NOT NULL AND email != ''
+        """)
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -219,32 +286,51 @@ def delete_step(campaign_id, step_num):
 # ── Contacts ──────────────────────────────────────────────────────────────────
 
 def upsert_contacts(rows):
-    """rows: list of dicts — required key: email; optional: first_name, last_name, company, website, address"""
+    """rows: list of dicts — email optional; required for active contacts, omit for prospects."""
     with get_db() as conn:
         inserted = 0
         for r in rows:
-            email = r.get("email", "").strip().lower()
-            if not email or "@" not in email:
-                continue
-            conn.execute("""
-                INSERT INTO contacts(email,first_name,last_name,company,website,address,extra)
-                VALUES(:email,:first_name,:last_name,:company,:website,:address,:extra)
-                ON CONFLICT(email) DO UPDATE SET
-                    first_name=COALESCE(NULLIF(excluded.first_name,''), contacts.first_name),
-                    last_name=COALESCE(NULLIF(excluded.last_name,''),   contacts.last_name),
-                    company=COALESCE(NULLIF(excluded.company,''),       contacts.company),
-                    website=COALESCE(NULLIF(excluded.website,''),       contacts.website),
-                    address=COALESCE(NULLIF(excluded.address,''),       contacts.address)
-            """, {
-                "email":      email,
-                "first_name": r.get("first_name", ""),
-                "last_name":  r.get("last_name", ""),
-                "company":    r.get("company", ""),
-                "website":    r.get("website", ""),
-                "address":    r.get("address", ""),
-                "extra":      json.dumps(r.get("extra", {})),
-            })
-            inserted += 1
+            email = (r.get("email") or "").strip().lower()
+            website = r.get("website", "")
+            status = r.get("status", "active")
+
+            if email and "@" in email:
+                conn.execute("""
+                    INSERT INTO contacts(email,first_name,last_name,company,website,address,extra,status)
+                    VALUES(:email,:first_name,:last_name,:company,:website,:address,:extra,:status)
+                    ON CONFLICT(email) WHERE email IS NOT NULL AND email != '' DO UPDATE SET
+                        first_name=COALESCE(NULLIF(excluded.first_name,''), contacts.first_name),
+                        last_name=COALESCE(NULLIF(excluded.last_name,''),   contacts.last_name),
+                        company=COALESCE(NULLIF(excluded.company,''),       contacts.company),
+                        website=COALESCE(NULLIF(excluded.website,''),       contacts.website),
+                        address=COALESCE(NULLIF(excluded.address,''),       contacts.address)
+                """, {
+                    "email":      email,
+                    "first_name": r.get("first_name", ""),
+                    "last_name":  r.get("last_name", ""),
+                    "company":    r.get("company", ""),
+                    "website":    website,
+                    "address":    r.get("address", ""),
+                    "extra":      json.dumps(r.get("extra", {})),
+                    "status":     status,
+                })
+                inserted += 1
+            elif website and status in ("form_only", "no_email"):
+                # Prospect record — no email found; skip if same website already stored
+                exists = conn.execute(
+                    "SELECT id FROM contacts WHERE website=? AND email IS NULL",
+                    (website,)
+                ).fetchone()
+                if not exists:
+                    conn.execute("""
+                        INSERT INTO contacts(company,website,address,status,extra)
+                        VALUES(?,?,?,?,?)
+                    """, (
+                        r.get("company", ""), website,
+                        r.get("address", ""), status,
+                        json.dumps(r.get("extra", {})),
+                    ))
+                    inserted += 1
         return inserted
 
 
@@ -375,28 +461,124 @@ def increment_soft_bounce(email: str, threshold: int = 3):
 
 # ── Enrollments ───────────────────────────────────────────────────────────────
 
+# ── Step Variants ─────────────────────────────────────────────────────────────
+
+def get_step_variants(step_id: int):
+    with get_db() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM step_variants WHERE step_id=? ORDER BY label",
+            (step_id,)
+        ).fetchall()]
+
+
+def save_step_variants(step_id: int, variants: list):
+    """Replace all variants for a step. Pass empty list to clear (disable A/B)."""
+    with get_db() as conn:
+        conn.execute("DELETE FROM step_variants WHERE step_id=?", (step_id,))
+        for v in variants:
+            conn.execute("""
+                INSERT INTO step_variants(step_id, label, subject, body_html, weight)
+                VALUES(?,?,?,?,?)
+            """, (step_id, v["label"], v["subject"], v["body_html"], int(v.get("weight", 50))))
+
+
+def _pick_variant(variants: list):
+    """Weighted random selection from a list of variant dicts. Returns label."""
+    total = sum(v["weight"] for v in variants)
+    if total <= 0:
+        return variants[0]["label"]
+    r = random.uniform(0, total)
+    cumulative = 0
+    for v in variants:
+        cumulative += v["weight"]
+        if r <= cumulative:
+            return v["label"]
+    return variants[-1]["label"]
+
+
+def get_variant_stats(campaign_id: int):
+    """Per-variant breakdown: enrolled, sent, replied, bounced."""
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT
+                COALESCE(e.variant_label, 'default') as variant_label,
+                COUNT(DISTINCT e.id)                  as enrolled,
+                COUNT(s.id)                           as sent,
+                COUNT(DISTINCT CASE WHEN e.status='replied'  THEN e.id END) as replied,
+                COUNT(DISTINCT CASE WHEN e.status='bounced'  THEN e.id END) as bounced
+            FROM enrollments e
+            LEFT JOIN sends s ON s.campaign_id=e.campaign_id AND s.contact_id=e.contact_id
+            WHERE e.campaign_id=?
+            GROUP BY e.variant_label
+            ORDER BY e.variant_label
+        """, (campaign_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_campaign_contact_report(campaign_id: int):
+    """One row per enrolled contact with send count — used for the report table and Excel export."""
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT
+                c.email,
+                c.first_name,
+                c.last_name,
+                c.company,
+                e.variant_label,
+                e.status,
+                e.current_step,
+                e.next_send_at,
+                e.enrolled_at,
+                COUNT(s.id) AS steps_sent
+            FROM enrollments e
+            JOIN contacts c ON c.id = e.contact_id
+            LEFT JOIN sends s
+                   ON s.campaign_id = e.campaign_id
+                  AND s.contact_id  = e.contact_id
+            WHERE e.campaign_id = ?
+            GROUP BY e.id
+            ORDER BY e.enrolled_at DESC
+        """, (campaign_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
 def enroll_contacts_bulk(campaign_id, contact_ids):
     now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Determine variant weights from step 1 (if A/B is configured)
+    with get_db() as conn:
+        step1 = conn.execute(
+            "SELECT id FROM steps WHERE campaign_id=? AND step_num=1", (campaign_id,)
+        ).fetchone()
+    variants = get_step_variants(step1["id"]) if step1 else []
+
     with get_db() as conn:
         enrolled = 0
         for cid in contact_ids:
             try:
+                variant_label = _pick_variant(variants) if variants else None
                 cur = conn.execute("""
                     INSERT OR IGNORE INTO enrollments
-                        (campaign_id,contact_id,current_step,status,next_send_at)
-                    VALUES(?,?,1,'queued',?)
-                """, (campaign_id, cid, now))
-                enrolled += cur.rowcount  # 0 if already enrolled, 1 if new
+                        (campaign_id,contact_id,current_step,status,next_send_at,variant_label)
+                    VALUES(?,?,1,'queued',?,?)
+                """, (campaign_id, cid, now, variant_label))
+                enrolled += cur.rowcount
             except Exception as e:
                 logger.warning(f"Failed to enroll contact {cid}: {e}")
         return enrolled
+
+
+def unenroll_contact(enroll_id: int):
+    with get_db() as conn:
+        conn.execute("DELETE FROM enrollments WHERE id=?", (enroll_id,))
 
 
 def get_campaign_contacts(campaign_id):
     with get_db() as conn:
         return [dict(r) for r in conn.execute("""
             SELECT c.email, c.first_name, c.last_name, c.company, c.status as contact_status,
-                   e.id as enroll_id, e.current_step, e.status, e.next_send_at, e.enrolled_at
+                   e.id as enroll_id, e.current_step, e.status, e.next_send_at, e.enrolled_at,
+                   e.variant_label
             FROM contacts c
             JOIN enrollments e ON e.contact_id=c.id
             WHERE e.campaign_id=?
@@ -409,7 +591,7 @@ def get_due_enrollments(campaign_id, limit=20):
     with get_db() as conn:
         return [dict(r) for r in conn.execute("""
             SELECT e.id as enroll_id, e.campaign_id, e.contact_id,
-                   e.current_step, e.next_send_at,
+                   e.current_step, e.next_send_at, e.variant_label,
                    c.email, c.first_name, c.last_name, c.company, c.extra
             FROM enrollments e
             JOIN contacts c ON c.id=e.contact_id
@@ -445,13 +627,120 @@ def mark_enrollment_replied(campaign_id, contact_id):
 
 # ── Sends & Counts ────────────────────────────────────────────────────────────
 
-def log_send(campaign_id, contact_id, step_num, subject, msg_id):
+# ── SMTP Accounts ─────────────────────────────────────────────────────────────
+
+def get_smtp_accounts():
+    with get_db() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM smtp_accounts ORDER BY id"
+        ).fetchall()]
+
+
+def get_smtp_account(account_id: int):
+    with get_db() as conn:
+        r = conn.execute("SELECT * FROM smtp_accounts WHERE id=?", (account_id,)).fetchone()
+        return dict(r) if r else None
+
+
+def create_smtp_account(data: dict) -> int:
+    with get_db() as conn:
+        cur = conn.execute("""
+            INSERT INTO smtp_accounts
+                (name,email,from_name,smtp_host,smtp_port,smtp_user,smtp_pass,
+                 imap_host,imap_user,imap_pass)
+            VALUES(:name,:email,:from_name,:smtp_host,:smtp_port,:smtp_user,:smtp_pass,
+                   :imap_host,:imap_user,:imap_pass)
+        """, {
+            "name":       data.get("name", ""),
+            "email":      data.get("email", ""),
+            "from_name":  data.get("from_name", ""),
+            "smtp_host":  data.get("smtp_host", ""),
+            "smtp_port":  int(data.get("smtp_port", 587)),
+            "smtp_user":  data.get("smtp_user", ""),
+            "smtp_pass":  data.get("smtp_pass", ""),
+            "imap_host":  data.get("imap_host", ""),
+            "imap_user":  data.get("imap_user", ""),
+            "imap_pass":  data.get("imap_pass", ""),
+        })
+        return cur.lastrowid
+
+
+def update_smtp_account(account_id: int, data: dict):
+    allowed = {
+        "name", "email", "from_name", "smtp_host", "smtp_port",
+        "smtp_user", "smtp_pass", "imap_host", "imap_user", "imap_pass", "status",
+    }
+    updates = {k: v for k, v in data.items() if k in allowed}
+    if not updates:
+        return
+    set_clause = ", ".join(f"{k}=?" for k in updates)
+    with get_db() as conn:
+        conn.execute(
+            f"UPDATE smtp_accounts SET {set_clause} WHERE id=?",
+            (*updates.values(), account_id)
+        )
+
+
+def delete_smtp_account(account_id: int):
+    with get_db() as conn:
+        conn.execute("DELETE FROM smtp_accounts WHERE id=?", (account_id,))
+
+
+def get_campaign_smtp_accounts(campaign_id: int):
+    with get_db() as conn:
+        return [dict(r) for r in conn.execute("""
+            SELECT a.* FROM smtp_accounts a
+            JOIN campaign_accounts ca ON ca.account_id = a.id
+            WHERE ca.campaign_id = ? ORDER BY a.id
+        """, (campaign_id,)).fetchall()]
+
+
+def set_campaign_smtp_accounts(campaign_id: int, account_ids: list):
+    with get_db() as conn:
+        conn.execute("DELETE FROM campaign_accounts WHERE campaign_id=?", (campaign_id,))
+        for aid in account_ids:
+            conn.execute(
+                "INSERT INTO campaign_accounts(campaign_id,account_id) VALUES(?,?)",
+                (campaign_id, aid)
+            )
+
+
+def get_next_account_for_campaign(campaign_id: int):
+    """Round-robin through the accounts assigned to this campaign."""
+    with get_db() as conn:
+        accounts = conn.execute("""
+            SELECT a.* FROM smtp_accounts a
+            JOIN campaign_accounts ca ON ca.account_id = a.id
+            WHERE ca.campaign_id = ? AND a.status = 'active'
+            ORDER BY a.id
+        """, (campaign_id,)).fetchall()
+
+        if not accounts:
+            return None
+        if len(accounts) == 1:
+            return dict(accounts[0])
+
+        last = conn.execute("""
+            SELECT account_id FROM sends
+            WHERE campaign_id = ? AND account_id IS NOT NULL
+            ORDER BY sent_at DESC LIMIT 1
+        """, (campaign_id,)).fetchone()
+
+        ids = [a["id"] for a in accounts]
+        if not last or last["account_id"] not in ids:
+            return dict(accounts[0])
+
+        idx = ids.index(last["account_id"])
+        return dict(accounts[(idx + 1) % len(ids)])
+
+
+def log_send(campaign_id, contact_id, step_num, subject, msg_id, account_id=None):
     today = datetime.date.today().isoformat()
     with get_db() as conn:
         conn.execute("""
-            INSERT INTO sends(campaign_id,contact_id,step_num,subject,msg_id)
-            VALUES(?,?,?,?,?)
-        """, (campaign_id, contact_id, step_num, subject, msg_id))
+            INSERT INTO sends(campaign_id,contact_id,step_num,subject,msg_id,account_id)
+            VALUES(?,?,?,?,?,?)
+        """, (campaign_id, contact_id, step_num, subject, msg_id, account_id))
         conn.execute("""
             INSERT INTO daily_counts(date,count) VALUES(?,1)
             ON CONFLICT(date) DO UPDATE SET count=count+1

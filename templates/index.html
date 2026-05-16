@@ -20,6 +20,7 @@
     {% include 'sections/settings.html' %}
     {% include 'sections/scraper.html' %}
     {% include 'sections/database.html' %}
+    {% include 'sections/help.html' %}
   </main>
 </div>
 
@@ -30,6 +31,8 @@
 {% include 'modals/import_contacts.html' %}
 {% include 'modals/step_editor.html' %}
 {% include 'modals/enroll.html' %}
+{% include 'modals/account_form.html' %}
+{% include 'modals/edit_campaign.html' %}
 
 <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>

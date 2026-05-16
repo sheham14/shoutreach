@@ -62,8 +62,31 @@ def _render(template: str, contact: dict) -> str:
     return template
 
 
+def _plain_to_html(text: str) -> str:
+    """
+    Convert plain-text email body to minimal HTML.
+    If the text already contains HTML tags, return it unchanged.
+    Wraps in a simple div that looks like a personal email, not a newsletter.
+    """
+    if re.search(r'<[a-z][^>]*>', text, re.IGNORECASE):
+        return text  # already HTML — leave it alone
+    paragraphs = text.split('\n\n')
+    inner = ''.join(
+        f'<p style="margin:0 0 1em 0">{p.strip().replace(chr(10), "<br>")}</p>'
+        for p in paragraphs if p.strip()
+    )
+    return (
+        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;'
+        'line-height:1.6;color:#222;">'
+        + inner
+        + '</div>'
+    )
+
+
 def _html_to_text(html: str) -> str:
     """Very simple HTML → plain-text strip for the text/plain part."""
+    if not re.search(r'<[a-z][^>]*>', html, re.IGNORECASE):
+        return html  # already plain text
     txt = re.sub(r'<br\s*/?>', '\n', html, flags=re.IGNORECASE)
     txt = re.sub(r'<p[^>]*>', '\n', txt, flags=re.IGNORECASE)
     txt = re.sub(r'</p>', '\n', txt, flags=re.IGNORECASE)
@@ -72,11 +95,10 @@ def _html_to_text(html: str) -> str:
     return txt.strip()
 
 
-def _make_message_id(campaign_id, contact_id, step_num) -> str:
+def _make_message_id(campaign_id, contact_id, step_num, from_email="outreach@example.com") -> str:
     unique = f"{campaign_id}-{contact_id}-{step_num}-{time.time()}"
     h = hashlib.md5(unique.encode()).hexdigest()[:12]
-    settings = db.get_settings()
-    domain = settings.get("smtp_from_email", "outreach@example.com").split("@")[-1]
+    domain = from_email.split("@")[-1]
     return f"<{h}.{int(time.time())}@{domain}>"
 
 
@@ -88,23 +110,30 @@ def _make_unsub_token(email: str) -> str:
     return f"{encoded}.{sig}"
 
 
-def _unsubscribe_footer(contact_email: str, settings: dict) -> str:
+def _unsubscribe_footer(contact_email: str, settings: dict, include_link: bool = True) -> str:
     """Plain-text unsubscribe footer appended to every email."""
-    base_url = settings.get("app_base_url", "http://localhost:5000")
-    token = _make_unsub_token(contact_email)
-    return (
-        f"\n\n---\n"
-        f"To unsubscribe, click: {base_url}/unsubscribe/{token}\n"
-        f"Or reply with 'unsubscribe' in the subject line."
-    )
+    address = settings.get("company_address", "").strip()
+    addr_line = f"\n{address}" if address else ""
+    if include_link:
+        base_url = settings.get("app_base_url", "http://localhost:5000")
+        token = _make_unsub_token(contact_email)
+        return (
+            f"\n\n---\n"
+            f"To unsubscribe, click: {base_url}/unsubscribe/{token}\n"
+            f"Or reply with 'unsubscribe' in the subject line."
+            f"{addr_line}"
+        )
+    return f"\n\n---\nTo opt out of future emails, reply with 'unsubscribe'.{addr_line}"
 
 
 def _unsubscribe_footer_html(contact_email: str, settings: dict) -> str:
     base_url = settings.get("app_base_url", "http://localhost:5000")
     token = _make_unsub_token(contact_email)
+    address = settings.get("company_address", "").strip()
+    addr_html = f"<br>{address}" if address else ""
     return (
         f'<p style="font-size:11px;color:#999;margin-top:32px;border-top:1px solid #eee;padding-top:12px;">'
-        f'To unsubscribe, <a href="{base_url}/unsubscribe/{token}">click here</a>.</p>'
+        f'To unsubscribe, <a href="{base_url}/unsubscribe/{token}">click here</a>.{addr_html}</p>'
     )
 
 
@@ -172,6 +201,7 @@ def send_email(
     campaign_id: int,
     step_num: int,
     settings: dict,
+    account: dict = None,
 ) -> tuple[bool, str, str]:
     """
     Send one email.
@@ -179,21 +209,42 @@ def send_email(
     Returns (success: bool, message_id: str, error_msg: str)
     """
     try:
+        # Merge account-level SMTP settings over global settings
+        cfg = settings.copy()
+        if account:
+            cfg.update({
+                "smtp_host":       account.get("smtp_host", ""),
+                "smtp_port":       account.get("smtp_port", 587),
+                "smtp_user":       account.get("smtp_user", ""),
+                "smtp_pass":       account.get("smtp_pass", ""),
+                "smtp_from_name":  account.get("from_name", ""),
+                "smtp_from_email": account.get("email", ""),
+            })
+
         # Render templates
-        subject  = _render(subject_tpl, contact)
-        body_html = _render(body_tpl, contact)
+        subject       = _render(subject_tpl, contact)
+        body_rendered = _render(body_tpl, contact)
 
-        # Append unsubscribe footer
-        body_html += _unsubscribe_footer_html(contact["email"], settings)
-        body_text  = _html_to_text(body_html) + _unsubscribe_footer(contact["email"], settings)
+        # Build HTML and plain-text parts from the rendered body
+        include_unsub = cfg.get("include_unsubscribe", "1") == "1"
+        body_html  = _plain_to_html(body_rendered)
+        body_text  = _html_to_text(body_rendered)
+        if include_unsub:
+            body_html += _unsubscribe_footer_html(contact["email"], cfg)
+        # Plain-text notice always stays for CAN-SPAM compliance
+        body_text += _unsubscribe_footer(contact["email"], cfg, include_link=include_unsub)
 
-        msg_id = _make_message_id(campaign_id, contact["contact_id"] if "contact_id" in contact else 0, step_num)
-
-        from_name  = settings.get("smtp_from_name", "")
-        from_email = settings.get("smtp_from_email", "")
+        from_name  = cfg.get("smtp_from_name", "")
+        from_email = cfg.get("smtp_from_email", "")
+        msg_id = _make_message_id(
+            campaign_id,
+            contact["contact_id"] if "contact_id" in contact else 0,
+            step_num,
+            from_email,
+        )
         from_addr  = email.utils.formataddr((from_name, from_email)) if from_name else from_email
 
-        base_url  = settings.get("app_base_url", "http://localhost:5000")
+        base_url  = cfg.get("app_base_url", "http://localhost:5000")
         unsub_url = f"{base_url}/unsubscribe/{_make_unsub_token(contact['email'])}"
 
         # Build MIME message
@@ -203,19 +254,22 @@ def send_email(
         msg["Subject"]      = subject
         msg["Message-ID"]   = msg_id
         msg["Date"]         = email.utils.formatdate(localtime=True)
-        msg["List-Unsubscribe"] = f"<{unsub_url}>, <mailto:{from_email}?subject=unsubscribe>"
-        msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
-        msg["X-Mailer"]     = "Python-Outreach/1.0"
+        if include_unsub:
+            msg["List-Unsubscribe"] = f"<{unsub_url}>, <mailto:{from_email}?subject=unsubscribe>"
+            msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
         msg.set_content(body_text)
         msg.add_alternative(body_html, subtype="html")
 
         # Send
-        srv = get_smtp(settings)
+        srv = get_smtp(cfg)
         srv.send_message(msg)
         srv.quit()
 
-        db.log_send(campaign_id, contact.get("contact_id", 0), step_num, subject, msg_id)
+        db.log_send(
+            campaign_id, contact.get("contact_id", 0), step_num, subject, msg_id,
+            account_id=account["id"] if account else None,
+        )
         db.add_log(f"✉ Sent step {step_num} → {contact['email']} | {subject}")
 
         return True, msg_id, ""
@@ -232,36 +286,23 @@ def send_email(
 
 # ── IMAP reply detection ───────────────────────────────────────────────────────
 
-def check_replies(settings: dict):
-    """
-    Scan inbox for replies from enrolled contacts.
-    If a reply is found, mark that enrollment as 'replied' to stop the sequence.
-
-    Scans the last 50 unseen messages to keep it fast.
-    """
-    host = settings.get("imap_host", "")
-    user = settings.get("imap_user", "")
-    pwd  = settings.get("imap_pass", "")
-
+def _scan_inbox_for_replies(host: str, user: str, pwd: str):
     if not host or not user or not pwd:
-        return  # IMAP not configured, skip
-
+        return
     try:
         M = imaplib.IMAP4_SSL(host, timeout=20)
         M.login(user, pwd)
         M.select("INBOX", readonly=True)
 
-        # Search messages from the last 7 days to keep it fast
         since = (datetime.date.today() - datetime.timedelta(days=7)).strftime("%d-%b-%Y")
         _, data = M.search(None, f'(SINCE "{since}")')
-        ids = data[0].split()[-50:]  # last 50 max
+        ids = data[0].split()[-50:]
 
         for num in ids:
             _, msg_data = M.fetch(num, "(RFC822.HEADER)")
             raw = msg_data[0][1] if msg_data and msg_data[0] else b""
             parsed = emaillib.message_from_bytes(raw)
             from_header = parsed.get("From", "")
-            # Extract email address from From header
             _, from_email = emaillib.utils.parseaddr(from_header)
             from_email = from_email.lower().strip()
 
@@ -270,7 +311,6 @@ def check_replies(settings: dict):
 
             contact = db.get_contact_by_email(from_email)
             if contact:
-                # Mark all active enrollments for this contact as replied
                 with db.get_db() as conn:
                     rows = conn.execute(
                         "SELECT campaign_id FROM enrollments WHERE contact_id=? AND status='queued'",
@@ -281,9 +321,20 @@ def check_replies(settings: dict):
                         db.add_log(f"↩ Reply detected from {from_email} — sequence paused", "INFO")
 
         M.logout()
-
     except Exception as e:
-        db.add_log(f"IMAP check error: {e}", "WARN")
+        db.add_log(f"IMAP reply check error ({user}): {e}", "WARN")
+
+
+def check_replies(settings: dict):
+    """Scan all configured inboxes for replies."""
+    _scan_inbox_for_replies(
+        settings.get("imap_host", ""),
+        settings.get("imap_user", ""),
+        settings.get("imap_pass", ""),
+    )
+    for acct in db.get_smtp_accounts():
+        if acct.get("imap_host"):
+            _scan_inbox_for_replies(acct["imap_host"], acct["imap_user"], acct["imap_pass"])
 
 
 # ── Bounce parser ──────────────────────────────────────────────────────────────
@@ -365,30 +416,13 @@ def _parse_bounce(msg) -> tuple:
     return failed_email, is_hard
 
 
-def check_bounces(settings: dict):
-    """
-    Scan inbox for Mail Delivery System / MAILER-DAEMON bounce emails.
-
-    Hard bounces (5xx permanent failure) → mark contact bounced immediately.
-    Soft bounces (4xx temporary failure) → increment counter; mark bounced
-      once soft_bounce_threshold (default 3) is reached.
-
-    Processed bounce emails are marked as read so they aren't re-processed.
-    Runs every 15 minutes from the scheduler alongside check_replies().
-    """
-    host = settings.get("imap_host", "")
-    user = settings.get("imap_user", "")
-    pwd  = settings.get("imap_pass", "")
-
+def _scan_inbox_for_bounces(host: str, user: str, pwd: str, threshold: int):
     if not host or not user or not pwd:
         return
-
-    threshold = int(settings.get("soft_bounce_threshold", 3))
-
     try:
         M = imaplib.IMAP4_SSL(host, timeout=20)
         M.login(user, pwd)
-        M.select("INBOX")  # writable — we mark processed bounces as Seen
+        M.select("INBOX")
 
         since = (datetime.date.today() - datetime.timedelta(days=7)).strftime("%d-%b-%Y")
         _, data = M.search(None, f'UNSEEN SINCE "{since}"')
@@ -402,7 +436,7 @@ def check_bounces(settings: dict):
             from_hdr    = parsed.get("From", "").lower()
             subject_hdr = parsed.get("Subject", "").lower()
 
-            bounce_senders = ("mailer-daemon", "postmaster", "mail delivery")
+            bounce_senders  = ("mailer-daemon", "postmaster", "mail delivery")
             bounce_subjects = (
                 "undeliverable", "delivery failed", "delivery status notification",
                 "returned mail", "mail delivery failure", "failure notice",
@@ -417,9 +451,8 @@ def check_bounces(settings: dict):
                 continue
 
             failed_email, is_hard = _parse_bounce(parsed)
-
             if not failed_email:
-                continue  # couldn't identify recipient — skip
+                continue
 
             if is_hard:
                 db.mark_bounced(failed_email)
@@ -427,12 +460,24 @@ def check_bounces(settings: dict):
             else:
                 db.increment_soft_bounce(failed_email, threshold)
 
-            # Mark as read so we don't process it again on next run
             M.store(num, "+FLAGS", "\\Seen")
 
         M.logout()
-
     except Exception as e:
-        db.add_log(f"Bounce inbox check error: {e}", "WARN")
+        db.add_log(f"Bounce inbox check error ({user}): {e}", "WARN")
+
+
+def check_bounces(settings: dict):
+    """Scan all configured inboxes for bounces."""
+    threshold = int(settings.get("soft_bounce_threshold", 3))
+    _scan_inbox_for_bounces(
+        settings.get("imap_host", ""),
+        settings.get("imap_user", ""),
+        settings.get("imap_pass", ""),
+        threshold,
+    )
+    for acct in db.get_smtp_accounts():
+        if acct.get("imap_host"):
+            _scan_inbox_for_bounces(acct["imap_host"], acct["imap_user"], acct["imap_pass"], threshold)
 
 

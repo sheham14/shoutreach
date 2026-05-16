@@ -22,6 +22,13 @@
   </div>
 
   <div class="stat-grid" id="cd-stats" style="grid-template-columns:repeat(5,1fr)"></div>
+  <div id="cd-variant-stats"></div>
+
+  <div id="cd-accounts-wrap" style="margin-top:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <span class="text-muted text-small">Sending accounts:</span>
+    <div id="cd-accounts-list" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+    <button class="btn btn-ghost btn-sm" onclick="openCampaignAccountsModal()">⚙ Assign</button>
+  </div>
 
   <div class="section-gap"></div>
 
@@ -37,14 +44,55 @@
     <div>
       <div class="flex items-center" style="margin-bottom:14px">
         <div class="card-title">Enrolled Contacts</div>
-        <button class="btn btn-ghost btn-sm ml-auto" onclick="openEnrollModal()">+ Enroll</button>
+        <div class="flex gap-2 ml-auto">
+          <button id="enroll-remove-selected-btn" class="btn btn-danger btn-sm" onclick="removeSelectedEnrolled()" disabled>✕ Remove Selected</button>
+          <button class="btn btn-ghost btn-sm" onclick="openEnrollModal()">+ Enroll</button>
+        </div>
       </div>
       <div class="card" style="max-height:480px;overflow-y:auto">
         <table>
-          <thead><tr><th>Email</th><th>Name</th><th>Step</th><th>Status</th></tr></thead>
+          <thead><tr>
+            <th style="width:36px"><input type="checkbox" id="enroll-select-all" onchange="toggleSelectAllEnrolled(this.checked)" style="cursor:pointer"/></th>
+            <th>Email</th><th>Name</th><th>Step</th><th>Variant</th><th>Status</th><th></th>
+          </tr></thead>
           <tbody id="cd-contacts"></tbody>
         </table>
       </div>
+    </div>
+  </div>
+
+  <div class="section-gap"></div>
+
+  <div>
+    <div class="flex items-center" style="margin-bottom:14px">
+      <div class="card-title">Contact Report</div>
+      <div class="flex gap-2 ml-auto items-center">
+        <span id="report-count" class="text-muted text-small"></span>
+        <a id="report-export-btn" class="btn btn-ghost btn-sm" href="#" target="_blank">⬇ Export Excel</a>
+      </div>
+    </div>
+    <div class="card" style="max-height:400px;overflow-y:auto">
+      <table>
+        <thead><tr>
+          <th>Email</th><th>Name</th><th>Company</th>
+          <th>Variant</th><th>Steps Sent</th><th>Current Step</th>
+          <th>Status</th><th>Next Send</th>
+        </tr></thead>
+        <tbody id="cd-report"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-campaign-accounts">
+  <div class="modal" style="max-width:420px">
+    <button class="modal-close" onclick="closeModal('modal-campaign-accounts')">✕</button>
+    <h2>Assign Sending Accounts</h2>
+    <p class="text-muted text-small" style="margin-bottom:16px">Selected accounts will rotate round-robin for this campaign. Falls back to global SMTP settings if none selected.</p>
+    <div id="campaign-account-checkboxes" style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px"></div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="saveCampaignAccounts()">Save</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-campaign-accounts')">Cancel</button>
     </div>
   </div>
 </div>

@@ -8,7 +8,7 @@ function showSection(name) {
   if (name === 'campaigns')  loadCampaigns();
   if (name === 'contacts')   loadContacts();
   if (name === 'logs')       loadLogs();
-  if (name === 'settings')   loadSettings();
+  if (name === 'settings')   { loadSettings(); loadAccounts(); }
   if (name === 'scraper')    loadScraper();
   if (name === 'database')   loadDbTables();
 }
@@ -53,6 +53,10 @@ function enrollBadge(s) {
 }
 
 function contactStatusBadge(s) {
-  const map = { active: 'badge-green', bounced: 'badge-red', unsubscribed: 'badge-gray', deleted: 'badge-gray' };
+  const map = {
+    active: 'badge-green', bounced: 'badge-red',
+    unsubscribed: 'badge-gray', deleted: 'badge-gray',
+    form_only: 'badge-amber', no_email: 'badge-blue',
+  };
   return `<span class="badge ${map[s]||'badge-gray'}">${s}</span>`;
 }

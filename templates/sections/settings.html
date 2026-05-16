@@ -10,36 +10,18 @@
 
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
 
-    <div class="card" style="padding:24px">
-      <div class="card-title" style="margin-bottom:20px">SMTP — Outbound</div>
-      <div class="form-group"><label>Host</label><input id="cfg-smtp-host" placeholder="smtp.gmail.com" /></div>
-      <div class="form-grid">
-        <div class="form-group"><label>Port</label><input id="cfg-smtp-port" value="587" /></div>
-        <div class="form-group"><label>Username</label><input id="cfg-smtp-user" placeholder="you@yourdomain.com" /></div>
+    <div class="card" style="padding:24px;grid-column:1/-1">
+      <div class="flex items-center" style="margin-bottom:16px">
+        <div class="card-title">Email Accounts</div>
+        <button class="btn btn-ghost btn-sm ml-auto" onclick="openAddAccountModal()">+ Add Account</button>
       </div>
-      <div class="form-group"><label>Password / App Password</label><input id="cfg-smtp-pass" type="password" placeholder="●●●●●●●●" /></div>
-      <div class="form-grid">
-        <div class="form-group"><label>From Name</label><input id="cfg-from-name" placeholder="Your Name" /></div>
-        <div class="form-group"><label>From Email</label><input id="cfg-from-email" placeholder="you@yourdomain.com" /></div>
+      <p class="text-muted text-small" style="margin-bottom:16px">Add the accounts you want to use for sending. Assign them to campaigns in the campaign detail view — selected accounts rotate automatically.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Email</th><th>SMTP Host</th><th>Status</th><th></th></tr></thead>
+          <tbody id="accounts-table"><tr><td colspan="5" class="empty-state"><p>No accounts configured.</p></td></tr></tbody>
+        </table>
       </div>
-      <div class="flex gap-2">
-        <button class="btn btn-primary" onclick="saveSettings()">Save SMTP</button>
-        <button class="btn btn-ghost" onclick="testSMTP()">Test Connection</button>
-      </div>
-      <div id="smtp-test-result" style="margin-top:10px;font-family:var(--mono);font-size:12px"></div>
-    </div>
-
-    <div class="card" style="padding:24px">
-      <div class="card-title" style="margin-bottom:6px">IMAP — Reply Detection</div>
-      <p class="text-muted text-small" style="margin-bottom:18px">When a contact replies, their sequence automatically stops.</p>
-      <div class="form-group"><label>IMAP Host</label><input id="cfg-imap-host" placeholder="imap.gmail.com" /></div>
-      <div class="form-group"><label>Username</label><input id="cfg-imap-user" placeholder="you@yourdomain.com" /></div>
-      <div class="form-group"><label>Password / App Password</label><input id="cfg-imap-pass" type="password" placeholder="●●●●●●●●" /></div>
-      <div class="flex gap-2" style="margin-top:8px">
-        <button class="btn btn-primary" onclick="saveSettings()">Save IMAP</button>
-        <button class="btn btn-ghost" onclick="testIMAP()">Test Connection</button>
-      </div>
-      <div id="imap-test-result" style="margin-top:10px;font-family:var(--mono);font-size:12px"></div>
     </div>
 
     <div class="card" style="padding:24px">
@@ -54,11 +36,23 @@
         <input id="cfg-base-url" value="http://localhost:5000" />
         <div class="form-hint">If running on a server, set to your public domain.</div>
       </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+          <input type="checkbox" id="cfg-include-unsub" style="cursor:pointer" />
+          Include unsubscribe header + footer in emails
+        </label>
+        <div class="form-hint">Required by Gmail if you send 5,000+ emails/day. Turn off for low-volume cold outreach to avoid the Promotions tab. A plain-text "reply to unsubscribe" notice is always included regardless.</div>
+      </div>
+      <div class="form-group">
+        <label>Company Physical Address <span style="color:var(--red);font-size:11px">CAN-SPAM required</span></label>
+        <textarea id="cfg-company-address" rows="2" placeholder="123 Main St, Toronto, ON M5V 1A1, Canada" style="resize:vertical"></textarea>
+        <div class="form-hint">Required by law (CAN-SPAM / CASL). Appended to the footer of every email.</div>
+      </div>
       <button class="btn btn-primary" onclick="saveSettings()">Save Rules</button>
     </div>
 
     <div class="card" style="padding:24px">
-      <div class="card-title" style="margin-bottom:12px">📈 Domain Warmup Schedule</div>
+      <div class="card-title" style="margin-bottom:12px">Domain Warmup Schedule</div>
       <p class="text-muted text-small" style="margin-bottom:14px">Follow this ramp-up to avoid hitting spam filters on a new domain.</p>
       <table>
         <thead><tr><th>Week</th><th>Daily Limit</th><th>Status</th></tr></thead>

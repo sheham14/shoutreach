@@ -33,7 +33,9 @@ function renderContactsTable() {
     return (c.email || '').toLowerCase().includes(q) ||
            (c.first_name || '').toLowerCase().includes(q) ||
            (c.last_name || '').toLowerCase().includes(q) ||
-           (c.company || '').toLowerCase().includes(q);
+           (c.company || '').toLowerCase().includes(q) ||
+           (c.address || '').toLowerCase().includes(q) ||
+           (c.website || '').toLowerCase().includes(q);
   });
 
   if (contactSortCol) {
@@ -148,7 +150,9 @@ function toggleSelectAllContacts(checked) {
       return (c.email || '').toLowerCase().includes(q) ||
              (c.first_name || '').toLowerCase().includes(q) ||
              (c.last_name || '').toLowerCase().includes(q) ||
-             (c.company || '').toLowerCase().includes(q);
+             (c.company || '').toLowerCase().includes(q) ||
+             (c.address || '').toLowerCase().includes(q) ||
+             (c.website || '').toLowerCase().includes(q);
     })
     .forEach(c => checked ? contactSelectedIds.add(c.id) : contactSelectedIds.delete(c.id));
   _updateDeleteSelectedBtn();
@@ -164,7 +168,9 @@ function _rerenderSelectAll() {
     return (c.email || '').toLowerCase().includes(q) ||
            (c.first_name || '').toLowerCase().includes(q) ||
            (c.last_name || '').toLowerCase().includes(q) ||
-           (c.company || '').toLowerCase().includes(q);
+           (c.company || '').toLowerCase().includes(q) ||
+           (c.address || '').toLowerCase().includes(q) ||
+           (c.website || '').toLowerCase().includes(q);
   });
   const cb = document.querySelector('#contacts-thead input[type=checkbox]');
   if (cb) cb.checked = visible.length > 0 && visible.every(c => contactSelectedIds.has(c.id));
@@ -261,7 +267,7 @@ async function saveContact() {
     status:     document.getElementById('cf-status').value,
   };
 
-  if (!payload.email) { toast('Email is required', 'err'); return; }
+  if (!payload.email && !contactEditId) { toast('Email is required', 'err'); return; }
 
   let res;
   if (contactEditId) {
@@ -281,7 +287,7 @@ async function saveContact() {
 
 async function deleteContact(id) {
   const c = allContacts.find(x => x.id === id);
-  const label = c ? c.email : `#${id}`;
+  const label = c ? (c.email || c.company || `#${id}`) : `#${id}`;
   if (!confirm(`Delete ${label}?\n\nThis is a soft delete — the record is kept but marked as deleted.`)) return;
   await api(`/api/contacts/${id}`, 'DELETE');
   toast('Contact deleted');
