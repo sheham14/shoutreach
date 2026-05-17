@@ -1,0 +1,23 @@
+name: Deploy to GCP
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: sheham_shahid
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/shoutreach
+            git pull origin master
+            source venv/bin/activate
+            pip install -r requirements.txt -q
+            sudo systemctl restart shoutreach
