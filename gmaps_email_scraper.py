@@ -83,6 +83,8 @@ import logging
 from pathlib import Path
 from collections import Counter
 
+import email_validator as _ev
+
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
@@ -634,15 +636,20 @@ def run_scraper_job(job: ScraperJob):
                 job.log(f"[{i+1}/{job.total}] ✓ {biz['name']} — {emails}")
                 for raw in emails.split(";"):
                     raw = raw.strip()
-                    if raw:
-                        contacts_to_import.append({
-                            "email":      raw,
-                            "company":    biz.get("name", ""),
-                            "first_name": "",
-                            "last_name":  "",
-                            "website":    biz.get("website", ""),
-                            "address":    biz.get("address", ""),
-                        })
+                    if not raw:
+                        continue
+                    mx_ok = _ev.check_mx(raw)
+                    if not mx_ok:
+                        job.log(f"  ↳ {raw} — invalid MX (saved for review)")
+                    contacts_to_import.append({
+                        "email":      raw,
+                        "company":    biz.get("name", ""),
+                        "first_name": "",
+                        "last_name":  "",
+                        "website":    biz.get("website", ""),
+                        "address":    biz.get("address", ""),
+                        "mx_valid":   1 if mx_ok else 0,
+                    })
             elif biz.get("website") and status != STATUS_NO_WEBSITE:
                 # Store as a prospect so the user can follow up manually
                 prospect_status = "form_only" if status == STATUS_FORM_ONLY else "no_email"

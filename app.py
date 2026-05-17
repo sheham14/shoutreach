@@ -703,8 +703,7 @@ def api_activate(cid):
     steps = db.get_steps(cid)
     if not steps:
         return jsonify({"ok": False, "error": "Add at least one sequence step first"}), 400
-    settings = db.get_settings()
-    if not settings.get("smtp_host"):
+    if not db.get_smtp_accounts():
         return jsonify({"ok": False, "error": "Configure SMTP settings first"}), 400
     db.update_campaign(cid, status="active")
     db.add_log(f"▶ Campaign {cid} activated")
