@@ -345,6 +345,13 @@ def _scan_inbox_for_replies(host: str, user: str, pwd: str):
         _, data = M.search(None, f'(SINCE "{since}")')
         ids = data[0].split()[-50:]
 
+        # Load all known ShoutReach message IDs for fast lookup
+        with db.get_db() as conn:
+            known_msg_ids = {
+                row[0].strip("<>").lower()
+                for row in conn.execute("SELECT msg_id FROM sends WHERE msg_id IS NOT NULL").fetchall()
+            }
+
         for num in ids:
             _, msg_data = M.fetch(num, "(RFC822.HEADER)")
             raw = msg_data[0][1] if msg_data and msg_data[0] else b""
@@ -354,6 +361,13 @@ def _scan_inbox_for_replies(host: str, user: str, pwd: str):
                 from_header = parsed.get("From", "")
                 _, from_email = emaillib.utils.parseaddr(from_header)
                 db.add_log(f"↩ Auto-reply ignored from {from_email.lower().strip()}", "INFO")
+                continue
+
+            # Only treat as a reply if In-Reply-To or References links to a ShoutReach send
+            in_reply_to = (parsed.get("In-Reply-To") or "").strip("<>").lower()
+            references = [r.strip("<>").lower() for r in (parsed.get("References") or "").split()]
+            linked_ids = {in_reply_to} | set(references)
+            if not linked_ids & known_msg_ids:
                 continue
 
             from_header = parsed.get("From", "")
