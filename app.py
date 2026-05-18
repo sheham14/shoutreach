@@ -1021,9 +1021,15 @@ def api_scheduler_status():
 
 @app.route("/api/scheduler/trigger", methods=["POST"])
 def api_scheduler_trigger():
-    """Manually trigger one queue processing cycle (useful for testing)."""
     scheduler.process_queue()
     return jsonify({"ok": True, "message": "Queue processed"})
+
+
+@app.route("/api/scheduler/run", methods=["POST"])
+def api_scheduler_run():
+    scheduler.process_queue()
+    scheduler.run_reply_check()
+    return jsonify({"ok": True})
 
 
 # ── API: Scraper ──────────────────────────────────────────────────────────────

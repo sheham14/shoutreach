@@ -1,17 +1,18 @@
-async function pollScheduler() {
-  const data = await api('/api/scheduler/status');
-  const pill  = document.getElementById('scheduler-pill');
-  const label = document.getElementById('scheduler-label');
-  if (data.running) {
-    pill.classList.add('running');
-    label.textContent = 'Scheduler running';
-  } else {
-    pill.classList.remove('running');
-    label.textContent = 'Scheduler offline';
+async function runSchedulerNow() {
+  const btn = document.getElementById('run-now-btn');
+  btn.textContent = '⟳ Running…';
+  btn.disabled = true;
+  try {
+    await api('/api/scheduler/run', { method: 'POST' });
+    showToast('Scheduler ran — replies and queue refreshed', 'success');
+    refreshDashboard();
+  } catch (e) {
+    showToast('Scheduler run failed', 'error');
+  } finally {
+    btn.textContent = '⟳ Run Now';
+    btn.disabled = false;
   }
 }
-setInterval(pollScheduler, 10000);
-pollScheduler();
 
 async function refreshDashboard() {
   const s = await api('/api/stats');
