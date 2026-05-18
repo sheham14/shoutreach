@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SSH & Linux Reference</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b0f14;--bg2:#111827;--bg3:#1a2435;
+  --border:#1e2a38;--green:#00e5a0;--green-dim:rgba(0,229,160,.12);
+  --text:#e2e8f0;--muted:#6b7280;--sub:#94a3b8;
+  --blue:#3b82f6;--amber:#f59e0b;--red:#ef4444;
+  --font:'Inter',system-ui,sans-serif;--mono:'JetBrains Mono',monospace;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--font);line-height:1.6;font-size:14px}
+a{color:var(--green);text-decoration:none}
+a:hover{text-decoration:underline}
+
+.shell{display:flex;min-height:100vh}
+.sidebar{width:240px;flex-shrink:0;background:var(--bg2);border-right:1px solid var(--border);
+  position:sticky;top:0;height:100vh;overflow-y:auto;padding:24px 0}
+.sb-logo{padding:0 20px 20px;border-bottom:1px solid var(--border);margin-bottom:16px}
+.sb-sys{font-size:10px;color:var(--green);font-family:var(--mono);letter-spacing:.06em;margin-bottom:4px}
+.sb-name{font-size:17px;font-weight:800;color:var(--text)}
+.sb-tag{font-size:11px;color:var(--muted);margin-top:2px}
+.sb-section{padding:4px 20px;font-size:10px;font-weight:700;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.08em;margin-top:14px;margin-bottom:4px}
+.sb-link{display:block;padding:6px 20px;font-size:13px;color:var(--sub);
+  text-decoration:none;transition:color .15s,background .15s}
+.sb-link:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.sb-link.active{color:var(--green);background:var(--green-dim);border-right:2px solid var(--green)}
+
+.content{flex:1;min-width:0;padding:48px 56px;max-width:860px}
+
+h1{font-size:32px;font-weight:900;letter-spacing:-.8px;margin-bottom:6px}
+h2{font-size:22px;font-weight:800;letter-spacing:-.4px;margin:48px 0 16px;
+  padding-bottom:10px;border-bottom:1px solid var(--border);color:var(--text)}
+h2:first-of-type{margin-top:0}
+h3{font-size:16px;font-weight:700;color:var(--text);margin:24px 0 10px}
+p{color:var(--sub);margin-bottom:12px;font-size:14px;line-height:1.7}
+ul,ol{color:var(--sub);padding-left:20px;margin-bottom:12px}
+li{margin-bottom:5px;font-size:14px;line-height:1.65}
+code{font-family:var(--mono);font-size:12px;background:var(--green-dim);
+  color:var(--green);padding:1px 6px;border-radius:4px}
+pre{background:var(--bg2);border:1px solid var(--border);border-radius:8px;
+  padding:16px 18px;overflow-x:auto;margin-bottom:16px}
+pre code{background:none;color:#94a3b8;font-size:12px;padding:0}
+
+table{width:100%;border-collapse:collapse;margin-bottom:16px;font-size:13px}
+th{text-align:left;padding:10px 14px;font-size:11px;font-weight:700;
+  color:var(--muted);text-transform:uppercase;letter-spacing:.05em;
+  border-bottom:1px solid var(--border);background:var(--bg2)}
+td{padding:10px 14px;border-bottom:1px solid var(--border);color:var(--sub);vertical-align:top}
+td:first-child{color:var(--text);font-weight:500;font-family:var(--mono);font-size:12px}
+tr:last-child td{border:none}
+
+.info{background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.25);
+  border-radius:8px;padding:14px 16px;margin-bottom:14px;font-size:13px;color:var(--sub)}
+.warn{background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);
+  border-radius:8px;padding:14px 16px;margin-bottom:14px;font-size:13px;color:var(--sub)}
+.info strong,.warn strong{color:var(--text)}
+.meta{font-size:12px;color:var(--muted);margin-top:4px}
+
+.cmd-table td:first-child{white-space:nowrap}
+
+@media(max-width:768px){
+  .sidebar{display:none}
+  .content{padding:32px 20px}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<nav class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-sys">◆ REFERENCE</div>
+    <div class="sb-name">SSH & Linux</div>
+    <div class="sb-tag">General server guide</div>
+  </div>
+  <div class="sb-section">Connecting</div>
+  <a href="#ssh-basics" class="sb-link active">SSH basics</a>
+  <a href="#ssh-keys" class="sb-link">SSH keys</a>
+  <div class="sb-section">File System</div>
+  <a href="#navigation" class="sb-link">Navigation</a>
+  <a href="#files" class="sb-link">Files & folders</a>
+  <a href="#permissions" class="sb-link">Permissions</a>
+  <div class="sb-section">Processes</div>
+  <a href="#systemd" class="sb-link">systemd services</a>
+  <a href="#processes" class="sb-link">Processes & jobs</a>
+  <a href="#logs" class="sb-link">Logs</a>
+  <div class="sb-section">Web Server</div>
+  <a href="#nginx" class="sb-link">nginx</a>
+  <a href="#gunicorn" class="sb-link">gunicorn</a>
+  <div class="sb-section">Dev Tools</div>
+  <a href="#git" class="sb-link">Git on server</a>
+  <a href="#python" class="sb-link">Python & venv</a>
+  <a href="#networking" class="sb-link">Networking</a>
+  <div class="sb-section">Troubleshooting</div>
+  <a href="#debug" class="sb-link">Common issues</a>
+</nav>
+
+<main class="content">
+
+  <h1>SSH & Linux Reference</h1>
+  <div class="meta">General guide · Written during ShoutReach GCP deployment · May 2026</div>
+  <p style="margin-top:16px">A practical reference for working on a remote Linux server. Commands are written for Debian/Ubuntu — they work the same on most Linux distros.</p>
+
+  <!-- SSH BASICS -->
+  <h2 id="ssh-basics">SSH Basics</h2>
+  <p>SSH (Secure Shell) lets you control a remote server from your terminal as if you were sitting at it.</p>
+
+  <h3>Connecting</h3>
+  <pre><code># Basic connection
+ssh username@server-ip
+
+# Example
+ssh sheham_shahid@34.123.45.67
+
+# Connect on a non-default port (default is 22)
+ssh -p 2222 username@server-ip
+
+# Connect with a specific key file
+ssh -i ~/.ssh/my_key username@server-ip</code></pre>
+
+  <h3>Disconnecting</h3>
+  <pre><code># Clean exit
+exit
+
+# Force close if frozen
+# Press: ~ then . (tilde, then period)</code></pre>
+
+  <div class="info"><strong>GCP tip:</strong> You can also connect directly in the browser via the SSH button in Compute Engine — no local setup needed.</div>
+
+  <!-- SSH KEYS -->
+  <h2 id="ssh-keys">SSH Keys</h2>
+  <p>Keys are more secure than passwords. A key pair has two parts: a private key (stays on your machine) and a public key (goes on the server).</p>
+
+  <h3>Generate a key pair</h3>
+  <pre><code># Generate an Ed25519 key (modern, recommended)
+ssh-keygen -t ed25519 -C "your-label" -f ~/.ssh/my_key
+
+# -C adds a comment/label to identify the key
+# -f sets the filename (default is ~/.ssh/id_ed25519)</code></pre>
+
+  <h3>Add public key to a server</h3>
+  <pre><code># The easy way — copies your key to the server
+ssh-copy-id -i ~/.ssh/my_key.pub username@server-ip
+
+# Manual way — paste the public key into authorized_keys
+cat ~/.ssh/my_key.pub   # copy this output
+# Then on the server:
+echo "PASTE_PUBLIC_KEY_HERE" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys</code></pre>
+
+  <h3>View your public key</h3>
+  <pre><code>cat ~/.ssh/my_key.pub</code></pre>
+
+  <!-- NAVIGATION -->
+  <h2 id="navigation">Navigation</h2>
+  <table class="cmd-table">
+    <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>pwd</td><td>Print current directory (where am I?)</td></tr>
+      <tr><td>ls</td><td>List files in current directory</td></tr>
+      <tr><td>ls -la</td><td>List all files including hidden, with details</td></tr>
+      <tr><td>cd foldername</td><td>Go into a folder</td></tr>
+      <tr><td>cd ..</td><td>Go up one level</td></tr>
+      <tr><td>cd ~</td><td>Go to your home directory</td></tr>
+      <tr><td>cd /</td><td>Go to the root of the filesystem</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Important directories</h3>
+  <table class="cmd-table">
+    <thead><tr><th>Path</th><th>What lives there</th></tr></thead>
+    <tbody>
+      <tr><td>/home/username/</td><td>Your home directory — your files live here</td></tr>
+      <tr><td>/etc/</td><td>System config files (nginx, systemd services)</td></tr>
+      <tr><td>/var/log/</td><td>System and app log files</td></tr>
+      <tr><td>/tmp/</td><td>Temporary files — cleared on reboot</td></tr>
+      <tr><td>/usr/bin/</td><td>Installed programs</td></tr>
+    </tbody>
+  </table>
+
+  <!-- FILES -->
+  <h2 id="files">Files & Folders</h2>
+  <table class="cmd-table">
+    <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>mkdir foldername</td><td>Create a new folder</td></tr>
+      <tr><td>mkdir -p a/b/c</td><td>Create nested folders (creates all missing parents)</td></tr>
+      <tr><td>touch filename.txt</td><td>Create an empty file</td></tr>
+      <tr><td>nano filename.txt</td><td>Open a file in the nano text editor</td></tr>
+      <tr><td>cat filename.txt</td><td>Print file contents to terminal</td></tr>
+      <tr><td>cp source dest</td><td>Copy a file</td></tr>
+      <tr><td>mv source dest</td><td>Move or rename a file</td></tr>
+      <tr><td>rm filename</td><td>Delete a file</td></tr>
+      <tr><td>rm -rf foldername</td><td>Delete a folder and everything in it (careful!)</td></tr>
+      <tr><td>find . -name "*.py"</td><td>Find files matching a pattern</td></tr>
+      <tr><td>grep "text" filename</td><td>Search for text inside a file</td></tr>
+    </tbody>
+  </table>
+
+  <h3>nano editor shortcuts</h3>
+  <table class="cmd-table">
+    <thead><tr><th>Keys</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td>Ctrl + O, Enter</td><td>Save the file</td></tr>
+      <tr><td>Ctrl + X</td><td>Exit nano</td></tr>
+      <tr><td>Ctrl + K</td><td>Cut a line</td></tr>
+      <tr><td>Ctrl + U</td><td>Paste a line</td></tr>
+      <tr><td>Ctrl + W</td><td>Search in file</td></tr>
+    </tbody>
+  </table>
+
+  <!-- PERMISSIONS -->
+  <h2 id="permissions">Permissions</h2>
+  <p>Linux controls who can read, write, or execute each file.</p>
+  <pre><code># View permissions
+ls -la
+
+# Output looks like:
+# -rw-r--r-- 1 sheham_shahid sheham_shahid 1234 May 17 file.txt
+# ^ rwx bits   ^ owner          ^ group
+
+# Change permissions (numbers: 4=read, 2=write, 1=execute)
+chmod 600 file.txt     # owner read+write only (good for keys/secrets)
+chmod 644 file.txt     # owner rw, others read-only
+chmod 755 script.sh    # owner rwx, others rx (executable script)
+
+# Change owner
+sudo chown username:username file.txt</code></pre>
+
+  <!-- SYSTEMD -->
+  <h2 id="systemd">systemd Services</h2>
+  <p>systemd manages long-running background processes (services). It starts them on boot, restarts them on crash, and lets you check their status.</p>
+
+  <h3>Common commands</h3>
+  <table class="cmd-table">
+    <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>sudo systemctl start name</td><td>Start a service</td></tr>
+      <tr><td>sudo systemctl stop name</td><td>Stop a service</td></tr>
+      <tr><td>sudo systemctl restart name</td><td>Stop and start (picks up code/config changes)</td></tr>
+      <tr><td>sudo systemctl reload name</td><td>Reload config without full restart (nginx)</td></tr>
+      <tr><td>sudo systemctl enable name</td><td>Start automatically on boot</td></tr>
+      <tr><td>sudo systemctl disable name</td><td>Don't start on boot</td></tr>
+      <tr><td>sudo systemctl status name</td><td>Check if running, recent log lines</td></tr>
+      <tr><td>sudo systemctl daemon-reload</td><td>Re-read service files after editing them</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Writing a service file</h3>
+  <p>Service files live in <code>/etc/systemd/system/</code></p>
+  <pre><code>[Unit]
+Description=My App
+After=network.target        # wait for network before starting
+
+[Service]
+User=myuser                 # run as this user (not root)
+WorkingDirectory=/home/myuser/myapp
+Environment="PATH=/home/myuser/myapp/venv/bin"
+EnvironmentFile=/home/myuser/myapp/.env   # load .env vars
+ExecStart=/home/myuser/myapp/venv/bin/gunicorn --workers 1 --bind 127.0.0.1:8000 app:app
+Restart=always              # restart if it crashes
+
+[Install]
+WantedBy=multi-user.target  # start in normal boot mode</code></pre>
+
+  <div class="warn"><strong>After editing a service file</strong>, always run <code>sudo systemctl daemon-reload</code> before restarting — otherwise systemd uses the old version.</div>
+
+  <!-- PROCESSES -->
+  <h2 id="processes">Processes & Jobs</h2>
+  <table class="cmd-table">
+    <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>ps aux</td><td>List all running processes</td></tr>
+      <tr><td>ps aux | grep python</td><td>Filter processes by name</td></tr>
+      <tr><td>top</td><td>Live process monitor (CPU/RAM usage). Press q to quit.</td></tr>
+      <tr><td>htop</td><td>Better version of top (install with apt if missing)</td></tr>
+      <tr><td>kill PID</td><td>Send stop signal to a process by its ID</td></tr>
+      <tr><td>kill -9 PID</td><td>Force kill a process immediately</td></tr>
+      <tr><td>free -h</td><td>Show RAM and swap usage</td></tr>
+      <tr><td>df -h</td><td>Show disk usage</td></tr>
+    </tbody>
+  </table>
+
+  <!-- LOGS -->
+  <h2 id="logs">Logs</h2>
+  <p>systemd captures all stdout/stderr from your service automatically.</p>
+  <pre><code># View logs for a service
+sudo journalctl -u servicename
+
+# View last 50 lines
+sudo journalctl -u servicename -n 50
+
+# Follow live (like tail -f)
+sudo journalctl -u servicename -f
+
+# View logs since a time
+sudo journalctl -u servicename --since "2026-05-17 19:00"
+
+# View nginx access log
+sudo tail -f /var/log/nginx/access.log
+
+# View nginx error log
+sudo tail -f /var/log/nginx/error.log</code></pre>
+
+  <!-- NGINX -->
+  <h2 id="nginx">nginx</h2>
+  <p>nginx is a reverse proxy — it receives incoming HTTP requests on port 80 and forwards them to your app running on a local port (e.g. 8000).</p>
+
+  <h3>Config files</h3>
+  <table class="cmd-table">
+    <thead><tr><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>/etc/nginx/nginx.conf</td><td>Main config (rarely edited)</td></tr>
+      <tr><td>/etc/nginx/sites-available/</td><td>All your site configs (inactive until linked)</td></tr>
+      <tr><td>/etc/nginx/sites-enabled/</td><td>Symlinks to active configs</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Activate a site config</h3>
+  <pre><code># Create symlink to enable the site
+sudo ln -s /etc/nginx/sites-available/myapp /etc/nginx/sites-enabled/
+
+# Remove the default placeholder
+sudo rm /etc/nginx/sites-enabled/default
+
+# Test config for syntax errors
+sudo nginx -t
+
+# Apply changes
+sudo systemctl reload nginx</code></pre>
+
+  <h3>Basic site config</h3>
+  <pre><code>server {
+    listen 80;
+    server_name _;              # _ = match any hostname
+    client_max_body_size 20M;   # increase for file uploads
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}</code></pre>
+
+  <!-- GUNICORN -->
+  <h2 id="gunicorn">gunicorn</h2>
+  <p>gunicorn is a production-grade Python web server. It runs your Flask app and handles concurrent requests.</p>
+  <pre><code># Basic run (for testing — use systemd in production)
+gunicorn --workers 1 --bind 0.0.0.0:8000 app:app
+#                ^ workers   ^ address     ^ module:flask_app_variable
+
+# With a virtualenv
+/home/user/myapp/venv/bin/gunicorn --workers 1 --bind 127.0.0.1:8000 app:app</code></pre>
+
+  <div class="warn"><strong>Workers and background threads:</strong> If your app runs background threads (like APScheduler), use <code>--workers 1</code>. Multiple workers spawn multiple processes, each with their own scheduler thread — causing duplicate work.</div>
+
+  <!-- GIT -->
+  <h2 id="git">Git on Server</h2>
+  <pre><code># Clone a repo into the current directory
+git clone https://github.com/user/repo.git .
+
+# Clone a private repo with a token
+git clone https://TOKEN@github.com/user/repo.git .
+
+# Pull latest changes
+git pull origin main
+
+# Check what branch you're on
+git branch
+
+# Check status
+git status
+
+# Set up credential storage (saves token so you don't retype it)
+git config credential.helper store
+git pull origin main   # enter credentials once, saved after</code></pre>
+
+  <div class="info"><strong>After pulling code changes</strong>, always restart your service: <code>sudo systemctl restart myapp</code></div>
+
+  <!-- PYTHON -->
+  <h2 id="python">Python & Virtual Environments</h2>
+  <p>A virtualenv isolates your project's Python packages from the system Python.</p>
+  <pre><code># Create a virtualenv
+python3 -m venv venv
+
+# Activate it (your prompt changes to show "(venv)")
+source venv/bin/activate
+
+# Deactivate
+deactivate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Install a single package
+pip install flask
+
+# See what's installed
+pip list
+
+# Run a Python script inside the venv
+venv/bin/python3 script.py</code></pre>
+
+  <div class="info"><strong>In systemd service files</strong>, set <code>Environment="PATH=/path/to/venv/bin"</code> instead of activating — the service runs without a shell session.</div>
+
+  <!-- NETWORKING -->
+  <h2 id="networking">Networking</h2>
+  <pre><code># Check what ports are listening
+sudo ss -tlnp
+
+# Test if a local port is responding
+curl http://127.0.0.1:8000
+
+# Check outbound connectivity
+curl https://google.com
+
+# Check DNS resolution
+nslookup google.com
+
+# Show your server's IP addresses
+ip addr show
+
+# Download a file
+wget https://example.com/file.zip
+curl -O https://example.com/file.zip</code></pre>
+
+  <!-- DEBUG -->
+  <h2 id="debug">Common Issues & Fixes</h2>
+
+  <h3>App not loading in browser</h3>
+  <ol>
+    <li>Check the app is running: <code>sudo systemctl status myapp</code></li>
+    <li>Check it responds locally: <code>curl http://127.0.0.1:8000</code></li>
+    <li>If local works, check nginx: <code>sudo systemctl status nginx</code></li>
+    <li>If nginx is fine, check cloud firewall rules (port 80 must be open)</li>
+  </ol>
+
+  <h3>Service won't start</h3>
+  <pre><code># See the error
+sudo journalctl -u myapp -n 30
+
+# Common causes:
+# - Wrong file path in ExecStart
+# - Python import error (missing package)
+# - Port already in use
+# - Permission denied on a file</code></pre>
+
+  <h3>Changes not showing after git pull</h3>
+  <pre><code># Always restart after pulling
+sudo systemctl restart myapp
+
+# If you changed nginx config too
+sudo systemctl reload nginx</code></pre>
+
+  <h3>Disk full</h3>
+  <pre><code># Check usage
+df -h
+
+# Find large files
+du -sh /* 2>/dev/null | sort -hr | head -20
+
+# Clear old journal logs
+sudo journalctl --vacuum-time=7d</code></pre>
+
+  <h3>Out of memory / server freezing</h3>
+  <pre><code># Check memory usage
+free -h
+
+# Check swap is active
+swapon --show
+
+# Add swap if none (2GB example)
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab</code></pre>
+
+  <h3>Permission denied errors</h3>
+  <pre><code># Check who owns the file
+ls -la filename
+
+# Fix ownership
+sudo chown yourusername:yourusername filename
+
+# Fix permissions
+chmod 644 filename    # regular file
+chmod 755 filename    # executable / folder</code></pre>
+
+</main>
+</div>
+</body>
+</html>

@@ -125,6 +125,10 @@ tr:last-child td{border:none}
   <a href="#architecture" class="sb-link">Architecture</a>
   <a href="#api" class="sb-link">Key API endpoints</a>
   <a href="#files" class="sb-link">File map</a>
+  <div class="sb-section">Deployment</div>
+  <a href="#deployment" class="sb-link">GCP setup</a>
+  <a href="#auto-deploy" class="sb-link">Auto-deploy</a>
+  <a href="#https" class="sb-link">HTTPS / SSL</a>
   <div class="sb-section">Context</div>
   <a href="#compare" class="sb-link">Competitor comparison</a>
   <a href="#roadmap" class="sb-link">Roadmap</a>
@@ -374,6 +378,170 @@ Every 5m → check_replies() + check_bounces()
     </table>
   </div>
 
+  <!-- DEPLOYMENT -->
+  <h2 id="deployment">Deployment — GCP Setup</h2>
+  <div class="info"><strong>Live server:</strong> Google Cloud Platform · e2-medium · us-central1 · Debian 12 · gunicorn + nginx + systemd</div>
+
+  <h3>Server Details</h3>
+  <table>
+    <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td>Provider</td><td>Google Cloud Platform (e2-medium, us-central1)</td></tr>
+      <tr><td>OS</td><td>Debian GNU/Linux 12 (bookworm)</td></tr>
+      <tr><td>User</td><td><code>sheham_shahid</code></td></tr>
+      <tr><td>App directory</td><td><code>/home/sheham_shahid/shoutreach/</code></td></tr>
+      <tr><td>Virtualenv</td><td><code>/home/sheham_shahid/shoutreach/venv/</code></td></tr>
+      <tr><td>Database</td><td><code>/home/sheham_shahid/shoutreach/outreach.db</code></td></tr>
+      <tr><td>Service name</td><td><code>shoutreach</code> (systemd)</td></tr>
+      <tr><td>Gunicorn bind</td><td><code>127.0.0.1:8000</code> (nginx proxies port 80)</td></tr>
+      <tr><td>Swap</td><td>2GB swapfile at <code>/swapfile</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Key Management Commands</h3>
+  <pre><code># Check app status
+sudo systemctl status shoutreach
+
+# Restart app (after code changes)
+sudo systemctl restart shoutreach
+
+# View live logs
+sudo journalctl -u shoutreach -f
+
+# View last 50 log lines
+sudo journalctl -u shoutreach -n 50
+
+# Pull latest code manually
+cd ~/shoutreach && git pull origin master
+
+# Activate virtualenv (for manual pip installs)
+source ~/shoutreach/venv/bin/activate
+
+# Check nginx status
+sudo systemctl status nginx
+
+# Reload nginx config
+sudo systemctl reload nginx</code></pre>
+
+  <h3>Systemd Service File</h3>
+  <p>Located at <code>/etc/systemd/system/shoutreach.service</code></p>
+  <pre><code>[Unit]
+Description=ShoutReach Tool
+After=network.target
+
+[Service]
+User=sheham_shahid
+WorkingDirectory=/home/sheham_shahid/shoutreach
+Environment="PATH=/home/sheham_shahid/shoutreach/venv/bin"
+EnvironmentFile=/home/sheham_shahid/shoutreach/.env
+ExecStart=/home/sheham_shahid/shoutreach/venv/bin/gunicorn --workers 1 --bind 127.0.0.1:8000 app:app
+Restart=always
+
+[Install]
+WantedBy=multi-user.target</code></pre>
+
+  <div class="warn"><strong>--workers 1 is intentional.</strong> APScheduler runs inside the Flask process. Multiple workers would spawn duplicate scheduler threads, causing double-sends.</div>
+
+  <h3>Nginx Config</h3>
+  <p>Located at <code>/etc/nginx/sites-available/shoutreach</code></p>
+  <pre><code>server {
+    listen 80;
+    server_name _;
+    client_max_body_size 20M;
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}</code></pre>
+
+  <h3>Environment File</h3>
+  <p>Located at <code>/home/sheham_shahid/shoutreach/.env</code> — not committed to git.</p>
+  <pre><code>SECRET_KEY=your-random-secret-key-here</code></pre>
+  <p>SMTP credentials are stored in the SQLite database via the app UI — not in <code>.env</code>.</p>
+
+  <h2 id="auto-deploy">Auto-Deploy via GitHub Actions</h2>
+  <p>Every push to <code>master</code> automatically deploys to the server. The workflow SSHes in, pulls the latest code, reinstalls dependencies, and restarts the service.</p>
+
+  <h3>Workflow File</h3>
+  <p>Located at <code>.github/workflows/deploy.yml</code></p>
+  <pre><code>name: Deploy to GCP
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: sheham_shahid
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/shoutreach
+            git pull origin master
+            source venv/bin/activate
+            pip install -r requirements.txt -q
+            sudo systemctl restart shoutreach</code></pre>
+
+  <h3>GitHub Secrets Required</h3>
+  <table>
+    <thead><tr><th>Secret</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td><code>SERVER_IP</code></td><td>GCP VM external static IP</td></tr>
+      <tr><td><code>SSH_PRIVATE_KEY</code></td><td>Ed25519 private key generated on server (<code>~/.ssh/github_actions</code>)</td></tr>
+    </tbody>
+  </table>
+  <p>The corresponding public key is added to <code>~/.ssh/authorized_keys</code> on the server. The server is also granted passwordless <code>systemctl restart shoutreach</code> via <code>/etc/sudoers.d/shoutreach</code>.</p>
+
+  <!-- HTTPS -->
+  <h2 id="https">HTTPS / SSL</h2>
+  <div class="info"><strong>Live domain:</strong> <code>shoutreach.hexiv.co</code> — subdomain of Hexiv's Cloudflare-managed domain. Free SSL via Let's Encrypt / certbot.</div>
+
+  <h3>Setup Steps</h3>
+  <p>Done once. Certificate auto-renews every 90 days.</p>
+
+  <h4>1. Add DNS record in Cloudflare</h4>
+  <ul>
+    <li>Type: <code>A</code></li>
+    <li>Name: <code>shoutreach</code></li>
+    <li>Value: GCP external static IP</li>
+    <li>Proxy status: <strong>DNS only (grey cloud)</strong> — proxied mode breaks certbot</li>
+  </ul>
+
+  <h4>2. Update nginx server_name</h4>
+  <p>Edit <code>/etc/nginx/sites-available/shoutreach</code> — change <code>server_name _;</code> to:</p>
+  <pre><code>server_name shoutreach.hexiv.co;</code></pre>
+
+  <h4>3. Install certbot and get certificate</h4>
+  <pre><code>sudo apt install certbot python3-certbot-nginx -y
+sudo certbot --nginx -d shoutreach.hexiv.co</code></pre>
+  <p>If certbot can't auto-install (server_name mismatch), it saves the cert anyway. Then run:</p>
+  <pre><code>sudo nginx -t
+sudo systemctl reload nginx
+sudo certbot install --cert-name shoutreach.hexiv.co</code></pre>
+
+  <h3>What certbot does automatically</h3>
+  <ul>
+    <li>Obtains a free TLS certificate from Let's Encrypt</li>
+    <li>Updates the nginx config to listen on port 443 with SSL</li>
+    <li>Adds an HTTP → HTTPS redirect on port 80</li>
+    <li>Installs a systemd timer to auto-renew before expiry</li>
+  </ul>
+
+  <h3>Renewal</h3>
+  <pre><code># Test renewal without actually renewing
+sudo certbot renew --dry-run
+
+# Force renew now
+sudo certbot renew</code></pre>
+
   <!-- ROADMAP -->
   <h2 id="roadmap">Roadmap</h2>
 
@@ -393,7 +561,7 @@ Every 5m → check_replies() + check_bounces()
 
   <h3>Pending / Next</h3>
   <div class="feat-list">
-    <div class="feat-row"><span class="ic">○</span><div class="body"><div class="ft">Deployment guide (Docker + VPS)</div><div class="fd">Dockerfile, nginx config, systemd service, env vars.</div></div><span class="status"><span class="tag tag-pend">Pending</span></span></div>
+    <div class="feat-row"><span class="ic">✓</span><div class="body"><div class="ft">Deployment (GCP + systemd + nginx + auto-deploy)</div><div class="fd">e2-medium, us-central1, gunicorn, GitHub Actions CD pipeline.</div></div><span class="status"><span class="tag tag-done">Done</span></span></div>
     <div class="feat-row"><span class="ic">○</span><div class="body"><div class="ft">LinkedIn outreach</div><div class="fd">Big gap vs Smartlead/Apollo. High effort — Playwright-based.</div></div><span class="status"><span class="tag tag-idea">Future</span></span></div>
     <div class="feat-row"><span class="ic">○</span><div class="body"><div class="ft">CRM sync (HubSpot / Pipedrive)</div><div class="fd">Webhook on reply → push to CRM. Needed for agency use.</div></div><span class="status"><span class="tag tag-idea">Future</span></span></div>
     <div class="feat-row"><span class="ic">○</span><div class="body"><div class="ft">Contact form / manual custom fields UI</div><div class="fd">Currently custom fields only come from CSV. Add UI for manual entry.</div></div><span class="status"><span class="tag tag-idea">Future</span></span></div>
