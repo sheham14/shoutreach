@@ -352,6 +352,8 @@ def _scan_inbox_for_replies(host: str, user: str, pwd: str):
                 for row in conn.execute("SELECT msg_id FROM sends WHERE msg_id IS NOT NULL").fetchall()
             }
 
+        db.add_log(f"Reply check: scanning {len(ids)} inbox messages, {len(known_msg_ids)} known send IDs", "INFO")
+
         for num in ids:
             _, msg_data = M.fetch(num, "(RFC822.HEADER)")
             raw = msg_data[0][1] if msg_data and msg_data[0] else b""
@@ -367,7 +369,19 @@ def _scan_inbox_for_replies(host: str, user: str, pwd: str):
             in_reply_to = (parsed.get("In-Reply-To") or "").strip("<>").lower()
             references = [r.strip("<>").lower() for r in (parsed.get("References") or "").split()]
             linked_ids = {in_reply_to} | set(references)
+            linked_ids.discard("")  # remove empty string from missing headers
+
+            if not linked_ids:
+                continue  # no threading headers — not a reply at all
+
             if not linked_ids & known_msg_ids:
+                from_header = parsed.get("From", "")
+                _, from_email = emaillib.utils.parseaddr(from_header)
+                db.add_log(
+                    f"Reply check: unmatched In-Reply-To from {from_email.lower().strip()} "
+                    f"(refs: {list(linked_ids)[:3]})",
+                    "INFO",
+                )
                 continue
 
             from_header = parsed.get("From", "")
