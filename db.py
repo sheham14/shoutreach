@@ -7,15 +7,15 @@ import sqlite3
 import json
 import logging
 import datetime
+import random
 import secrets
 import hashlib
 import hmac as _hmac
-import os as _os_auth
+import os as _os
 from pathlib import Path
 
 logger = logging.getLogger("db")
 
-import os as _os
 DB_PATH = _os.environ.get("DB_PATH", "outreach.db")
 
 
@@ -194,6 +194,21 @@ def init_db():
             CREATE UNIQUE INDEX IF NOT EXISTS contacts_email_unique
             ON contacts(email) WHERE email IS NOT NULL AND email != ''
         """)
+
+        # Hot-path indexes — used by the scheduler / reply-detection loops.
+        # Without these every cycle full-scans the sends and enrollments tables.
+        for idx_sql in (
+            "CREATE INDEX IF NOT EXISTS sends_msg_id_idx        ON sends(msg_id) WHERE msg_id IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS sends_campaign_sent_at  ON sends(campaign_id, sent_at)",
+            "CREATE INDEX IF NOT EXISTS sends_sent_at_idx       ON sends(sent_at)",
+            "CREATE INDEX IF NOT EXISTS enrollments_due_idx     ON enrollments(campaign_id, status, next_send_at)",
+            "CREATE INDEX IF NOT EXISTS enrollments_contact_idx ON enrollments(contact_id, status)",
+            "CREATE INDEX IF NOT EXISTS contacts_status_idx     ON contacts(status)",
+        ):
+            try:
+                conn.execute(idx_sql)
+            except Exception as exc:
+                logger.debug("Index create skipped: %s (%s)", idx_sql, exc)
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -423,12 +438,17 @@ def delete_contact(contact_id: int):
 
 
 def unsubscribe_contact(email):
+    """Mark a contact unsubscribed and propagate to ALL their enrollments
+    regardless of current status (a paused or replied enrollment must also
+    stop sending if the contact opts out later)."""
+    email_lc = email.lower()
     with get_db() as conn:
-        conn.execute("UPDATE contacts SET status='unsubscribed' WHERE email=?", (email.lower(),))
+        conn.execute("UPDATE contacts SET status='unsubscribed' WHERE email=?", (email_lc,))
         conn.execute("""
             UPDATE enrollments SET status='unsubscribed'
             WHERE contact_id=(SELECT id FROM contacts WHERE email=?)
-        """, (email.lower(),))
+              AND status NOT IN ('unsubscribed','bounced','completed','replied')
+        """, (email_lc,))
 
 
 def get_unsubscribed_contacts():
@@ -656,11 +676,25 @@ def complete_enrollment(enroll_id):
 
 
 def mark_enrollment_replied(campaign_id, contact_id):
+    """Mark a (campaign, contact) enrollment as replied.
+
+    Updates rows in ANY non-terminal state — including 'completed' (last step
+    already sent) and 'paused' — so a reply that arrives after the sequence
+    finishes still counts in reply-rate stats. Skips rows already in a final
+    state ('replied', 'bounced', 'unsubscribed').
+
+    Returns the number of rows actually updated, so callers can avoid logging
+    duplicate "reply detected" messages every time the IMAP scan re-walks the
+    same inbox message.
+    """
     with get_db() as conn:
-        conn.execute("""
-            UPDATE enrollments SET status='replied'
-            WHERE campaign_id=? AND contact_id=? AND status='queued'
+        cur = conn.execute("""
+            UPDATE enrollments
+               SET status='replied'
+             WHERE campaign_id=? AND contact_id=?
+               AND status NOT IN ('replied','bounced','unsubscribed')
         """, (campaign_id, contact_id))
+        return cur.rowcount
 
 
 def set_enrollment_status(enroll_id, status):
@@ -871,21 +905,52 @@ def get_logs(limit=50):
 
 
 # ── Users & Auth ──────────────────────────────────────────────────────────────
+#
+# Password hash format:
+#   pbkdf2_sha256$<iterations>$<salt_hex>$<key_hex>     ← current
+#   <salt_hex>:<key_hex>                                ← legacy (assume 260k)
+#
+# Verifying a legacy hash returns success but the caller is expected to call
+# maybe_rehash() to upgrade it to the current format.
 
-def _hash_password(password: str) -> str:
-    salt = _os_auth.urandom(32)
-    key  = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 260_000)
-    return salt.hex() + ":" + key.hex()
+_PBKDF2_ITERATIONS = 600_000  # OWASP 2023 recommendation for PBKDF2-SHA256
+
+
+def _hash_password(password: str, iterations: int = _PBKDF2_ITERATIONS) -> str:
+    salt = _os.urandom(32)
+    key  = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${key.hex()}"
 
 
 def _verify_password(password: str, stored: str) -> bool:
+    if not stored:
+        return False
     try:
-        salt_hex, key_hex = stored.split(":")
+        if stored.startswith("pbkdf2_sha256$"):
+            _, iter_str, salt_hex, key_hex = stored.split("$", 3)
+            iterations = int(iter_str)
+        elif ":" in stored:
+            # Legacy two-part format from the initial release.
+            salt_hex, key_hex = stored.split(":", 1)
+            iterations = 260_000
+        else:
+            return False
         salt = bytes.fromhex(salt_hex)
-        key  = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 260_000)
+        key  = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
         return _hmac.compare_digest(key.hex(), key_hex)
     except Exception:
         return False
+
+
+def _hash_needs_upgrade(stored: str) -> bool:
+    """True if the stored hash is from an older format or weaker parameters."""
+    if not stored or not stored.startswith("pbkdf2_sha256$"):
+        return True
+    try:
+        _, iter_str, _, _ = stored.split("$", 3)
+        return int(iter_str) < _PBKDF2_ITERATIONS
+    except Exception:
+        return True
 
 
 def create_user(username: str, password: str, is_admin: bool = False) -> int:
@@ -931,12 +996,29 @@ def change_password(uid: int, new_password: str):
         )
 
 
+def verify_user_password(user: dict, password: str) -> bool:
+    """Check a password against a user row. Constant-time."""
+    if not user or not password:
+        return False
+    return _verify_password(password, user.get("password_hash", ""))
+
+
 def authenticate(username: str, password: str):
-    """Return user dict if credentials valid, else None."""
+    """Return user dict if credentials valid, else None.
+    Transparently re-hashes legacy or weaker-parameter passwords on success."""
     user = get_user_by_username(username)
-    if user and _verify_password(password, user["password_hash"]):
-        return user
-    return None
+    if not user:
+        return None
+    stored = user["password_hash"]
+    if not _verify_password(password, stored):
+        return None
+    if _hash_needs_upgrade(stored):
+        try:
+            change_password(user["id"], password)
+            logger.info("Upgraded password hash for uid=%s", user["id"])
+        except Exception as exc:
+            logger.warning("Hash upgrade failed for uid=%s: %s", user["id"], exc)
+    return user
 
 
 def user_count() -> int:
@@ -948,8 +1030,11 @@ def seed_admin_from_env():
     """On first run, create an admin account from ADMIN_PASS env var if set."""
     if user_count() > 0:
         return
-    password = _os_auth.environ.get("ADMIN_PASS", "")
-    username  = _os_auth.environ.get("ADMIN_USER", "admin")
+    password = _os.environ.get("ADMIN_PASS", "")
+    username  = _os.environ.get("ADMIN_USER", "admin")
     if password:
+        if len(password) < 12:
+            logger.warning("ADMIN_PASS is shorter than 12 chars; refusing to seed admin.")
+            return
         create_user(username, password, is_admin=True)
         logger.info(f"Created admin user '{username}' from ADMIN_PASS env var")

@@ -21,6 +21,7 @@ import email.utils
 import re
 import time
 import random
+import secrets
 import datetime
 import hashlib
 import hmac
@@ -104,10 +105,12 @@ def _html_to_text(html: str) -> str:
 
 
 def _make_message_id(campaign_id, contact_id, step_num, from_email="outreach@example.com") -> str:
-    unique = f"{campaign_id}-{contact_id}-{step_num}-{time.time()}"
-    h = hashlib.md5(unique.encode()).hexdigest()[:12]
-    domain = from_email.split("@")[-1]
-    return f"<{h}.{int(time.time())}@{domain}>"
+    # Use a cryptographically random token to make collisions effectively
+    # impossible even at high send rates. Domain must be the sender's domain
+    # so receiving MTAs accept the Message-ID as well-formed.
+    unique = secrets.token_urlsafe(16)
+    domain = from_email.split("@")[-1] if "@" in from_email else "shoutreach.local"
+    return f"<{campaign_id}.{contact_id}.{step_num}.{unique}@{domain}>"
 
 
 def _make_unsub_token(email: str) -> str:
@@ -345,62 +348,71 @@ def _scan_inbox_for_replies(host: str, user: str, pwd: str):
         _, data = M.search(None, f'(SINCE "{since}")')
         ids = data[0].split()[-50:]
 
-        # Load all known ShoutReach message IDs for fast lookup
+        # Build msg_id → (campaign_id, contact_id) map from the last 30 days
+        # of sends. Looking up the enrollment via the threading header is
+        # strictly more accurate than matching on the reply's From address —
+        # a reply forwarded by a delegate, sent from an alias, or routed
+        # through an auto-responder still references our original Message-ID.
+        msg_id_since = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
         with db.get_db() as conn:
-            known_msg_ids = {
-                row[0].strip("<>").lower()
-                for row in conn.execute("SELECT msg_id FROM sends WHERE msg_id IS NOT NULL").fetchall()
+            msg_id_to_enroll = {
+                row["msg_id"].strip("<>").lower(): (row["campaign_id"], row["contact_id"])
+                for row in conn.execute(
+                    "SELECT msg_id, campaign_id, contact_id FROM sends "
+                    "WHERE msg_id IS NOT NULL AND sent_at >= ?",
+                    (msg_id_since,),
+                ).fetchall()
             }
 
-        db.add_log(f"Reply check: scanning {len(ids)} inbox messages, {len(known_msg_ids)} known send IDs", "INFO")
+        db.add_log(
+            f"Reply check: scanning {len(ids)} inbox messages, "
+            f"{len(msg_id_to_enroll)} known send IDs",
+            "INFO",
+        )
 
         for num in ids:
             _, msg_data = M.fetch(num, "(RFC822.HEADER)")
             raw = msg_data[0][1] if msg_data and msg_data[0] else b""
             parsed = emaillib.message_from_bytes(raw)
 
+            from_header = parsed.get("From", "")
+            _, from_email = emaillib.utils.parseaddr(from_header)
+            from_email = (from_email or "").lower().strip()
+
             if _is_auto_reply(parsed):
-                from_header = parsed.get("From", "")
-                _, from_email = emaillib.utils.parseaddr(from_header)
-                db.add_log(f"↩ Auto-reply ignored from {from_email.lower().strip()}", "INFO")
+                db.add_log(f"↩ Auto-reply ignored from {from_email}", "INFO")
                 continue
 
-            # Only treat as a reply if In-Reply-To or References links to a ShoutReach send
+            # Threading headers: In-Reply-To is a single Message-ID, References
+            # is the chain. Either pointing at one of our sends proves this is
+            # a reply to a ShoutReach campaign.
             in_reply_to = (parsed.get("In-Reply-To") or "").strip("<>").lower()
             references = [r.strip("<>").lower() for r in (parsed.get("References") or "").split()]
             linked_ids = {in_reply_to} | set(references)
-            linked_ids.discard("")  # remove empty string from missing headers
+            linked_ids.discard("")
 
             if not linked_ids:
                 continue  # no threading headers — not a reply at all
 
-            if not linked_ids & known_msg_ids:
-                from_header = parsed.get("From", "")
-                _, from_email = emaillib.utils.parseaddr(from_header)
+            matched = [msg_id_to_enroll[mid] for mid in linked_ids if mid in msg_id_to_enroll]
+            if not matched:
                 db.add_log(
-                    f"Reply check: unmatched In-Reply-To from {from_email.lower().strip()} "
+                    f"Reply check: unmatched In-Reply-To from {from_email} "
                     f"(refs: {list(linked_ids)[:3]})",
                     "INFO",
                 )
                 continue
 
-            from_header = parsed.get("From", "")
-            _, from_email = emaillib.utils.parseaddr(from_header)
-            from_email = from_email.lower().strip()
-
-            if not from_email or "@" not in from_email:
-                continue
-
-            contact = db.get_contact_by_email(from_email)
-            if contact:
-                with db.get_db() as conn:
-                    rows = conn.execute(
-                        "SELECT campaign_id FROM enrollments WHERE contact_id=? AND status='queued'",
-                        (contact["id"],)
-                    ).fetchall()
-                    for row in rows:
-                        db.mark_enrollment_replied(row["campaign_id"], contact["id"])
-                        db.add_log(f"↩ Reply detected from {from_email} — sequence paused", "INFO")
+            # A single reply can reference multiple of our messages (the whole
+            # thread chain). Dedupe to (campaign_id, contact_id) pairs.
+            for cid, contact_id in set(matched):
+                updated = db.mark_enrollment_replied(cid, contact_id)
+                if updated:
+                    db.add_log(
+                        f"↩ Reply detected from {from_email} (campaign {cid}, "
+                        f"contact {contact_id}) — sequence stopped",
+                        "INFO",
+                    )
 
         M.logout()
     except Exception as e:

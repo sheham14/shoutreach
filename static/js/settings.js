@@ -139,8 +139,8 @@ async function loadUsers() {
       <td>${u.is_admin ? '<span class="badge badge-blue">Admin</span>' : '<span class="badge">User</span>'}</td>
       <td class="mono text-muted" style="font-size:11px">${(u.created_at || "").substring(0, 10)}</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-ghost btn-sm" onclick="openChangePasswordModal(${u.id}, '${esc(u.username)}')">Change password</button>
-        ${u.id !== me.id ? `<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id}, '${esc(u.username)}')">✕</button>` : ""}
+        <button class="btn btn-ghost btn-sm" onclick="openChangePasswordModal(${u.id}, '${escj(u.username)}')">Change password</button>
+        ${u.id !== me.id ? `<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id}, '${escj(u.username)}')">✕</button>` : ""}
       </td>
     </tr>
   `,
@@ -173,21 +173,39 @@ async function saveNewUser() {
   loadUsers();
 }
 
-function openChangePasswordModal(uid, username) {
+async function openChangePasswordModal(uid, username) {
   document.getElementById("chpw-uid").value = uid;
   document.getElementById("chpw-username").textContent = username;
   document.getElementById("chpw-password").value = "";
+  document.getElementById("chpw-current").value = "";
+  // Show the "current password" field only when changing one's own password.
+  const me = await api("/api/users/me");
+  const isSelf = me && me.id === uid;
+  document.getElementById("chpw-current-group").style.display = isSelf ? "" : "none";
   openModal("modal-change-password");
 }
 
 async function submitChangePassword() {
   const uid = +document.getElementById("chpw-uid").value;
   const password = document.getElementById("chpw-password").value;
+  const current  = document.getElementById("chpw-current").value;
   if (!password) {
     toast("Enter a new password", "err");
     return;
   }
-  const res = await api(`/api/users/${uid}/password`, "POST", { password });
+  if (password.length < 12) {
+    toast("New password must be at least 12 characters", "err");
+    return;
+  }
+  const me = await api("/api/users/me");
+  const isSelf = me && me.id === uid;
+  if (isSelf && !current) {
+    toast("Enter your current password", "err");
+    return;
+  }
+  const body = { password };
+  if (isSelf) body.current_password = current;
+  const res = await api(`/api/users/${uid}/password`, "POST", body);
   if (res.error) {
     toast(res.error, "err");
     return;

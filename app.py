@@ -19,9 +19,14 @@ import hashlib
 import hmac
 import logging
 import os
+import secrets as _secrets
 import sys
 import threading
+import time as _time
+from collections import defaultdict, deque
+from datetime import timedelta
 from functools import wraps
+from urllib.parse import urlparse
 from flask import (
     Flask, render_template, request, jsonify,
     redirect, url_for, make_response, Response, session
@@ -54,10 +59,88 @@ db.init_db()
 db.seed_admin_from_env()
 app.secret_key = os.environ.get("SECRET_KEY") or db.get_or_create_secret()
 
+# Hardened session cookie settings. Set SHOUTREACH_INSECURE_COOKIES=1 for
+# local-only HTTP development.
+app.config.update(
+    SESSION_COOKIE_SECURE      = os.environ.get("SHOUTREACH_INSECURE_COOKIES") != "1",
+    SESSION_COOKIE_HTTPONLY    = True,
+    SESSION_COOKIE_SAMESITE    = "Lax",
+    PERMANENT_SESSION_LIFETIME = timedelta(days=14),
+    MAX_CONTENT_LENGTH         = 16 * 1024 * 1024,  # 16 MB hard cap on uploads
+)
+
+# Start the background scheduler once, at process boot. Doing this in a
+# before_request hook (the old way) added overhead per request and allowed
+# duplicate threads under request races.
+scheduler.start()
+
+
+# ── First-run setup token ────────────────────────────────────────────────────
+# If no users exist and ADMIN_PASS is not set, generate a one-time token that
+# must be entered on the first-run web form. This stops random visitors from
+# claiming the admin account on a fresh deploy.
+_SETUP_TOKEN: str = ""
+_SETUP_TOKEN_LOCK = threading.Lock()
+
+
+def _ensure_setup_token() -> None:
+    global _SETUP_TOKEN
+    with _SETUP_TOKEN_LOCK:
+        if db.user_count() == 0 and not os.environ.get("ADMIN_PASS") and not _SETUP_TOKEN:
+            _SETUP_TOKEN = _secrets.token_urlsafe(24)
+            banner = "=" * 64
+            logging.warning(
+                "\n%s\n SHOUTREACH FIRST-RUN SETUP TOKEN:\n   %s\n"
+                " Enter this on the first-run setup form to create the admin.\n%s",
+                banner, _SETUP_TOKEN, banner,
+            )
+
+
+def _consume_setup_token(submitted: str) -> bool:
+    global _SETUP_TOKEN
+    with _SETUP_TOKEN_LOCK:
+        if not _SETUP_TOKEN:
+            return False
+        ok = hmac.compare_digest(submitted or "", _SETUP_TOKEN)
+        if ok:
+            _SETUP_TOKEN = ""
+        return ok
+
+
+_ensure_setup_token()
+
+
+# ── Login rate limiter (per-IP, in-memory) ───────────────────────────────────
+_LOGIN_WINDOW_SECS = 900   # 15 min
+_LOGIN_MAX_ATTEMPTS = 10
+_login_attempts: "defaultdict[str, deque]" = defaultdict(deque)
+_login_attempts_lock = threading.Lock()
+
+
+def _client_ip() -> str:
+    fwd = request.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def _login_rate_limited(ip: str) -> bool:
+    now = _time.time()
+    with _login_attempts_lock:
+        dq = _login_attempts[ip]
+        while dq and now - dq[0] > _LOGIN_WINDOW_SECS:
+            dq.popleft()
+        if len(dq) >= _LOGIN_MAX_ATTEMPTS:
+            return True
+        dq.append(now)
+        return False
+
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
 _PUBLIC_PATHS = {"/login", "/logout"}
+_CSRF_EXEMPT_PATHS = {"/login", "/logout"}
+
 
 def login_required(f):
     @wraps(f)
@@ -79,10 +162,31 @@ def admin_required(f):
     return decorated
 
 
-@app.before_request
-def _ensure_scheduler():
-    if not scheduler.is_running():
-        scheduler.start()
+def _ensure_csrf_token() -> str:
+    if not session.get("csrf_token"):
+        session["csrf_token"] = _secrets.token_urlsafe(32)
+    return session["csrf_token"]
+
+
+def _same_origin() -> bool:
+    """Best-effort origin check: Origin or Referer must match this host."""
+    host = request.host
+    origin = request.headers.get("Origin")
+    if origin:
+        try:
+            return urlparse(origin).netloc == host
+        except Exception:
+            return False
+    referer = request.headers.get("Referer")
+    if referer:
+        try:
+            return urlparse(referer).netloc == host
+        except Exception:
+            return False
+    # No Origin and no Referer is suspicious for a state-changing request, but
+    # some browsers (and curl) omit both. Allow it; CSRF token on the JSON
+    # endpoints provides the real defence.
+    return True
 
 
 @app.before_request
@@ -95,43 +199,139 @@ def _require_login():
         return redirect("/login")
 
 
+@app.before_request
+def _check_csrf():
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+    if request.path in _CSRF_EXEMPT_PATHS:
+        return
+    if request.path.startswith("/unsubscribe"):
+        return
+    # _require_login already redirected unauthed users; here we know there is
+    # a session. Compare submitted token against the one bound to this session.
+    submitted = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or ""
+    expected = session.get("csrf_token") or ""
+    if not submitted or not expected or not hmac.compare_digest(submitted, expected):
+        return jsonify({"error": "Invalid or missing CSRF token"}), 403
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault(
+        "Permissions-Policy", "geolocation=(), microphone=(), camera=(), interest-cohort=()"
+    )
+    if request.is_secure or request.headers.get("X-Forwarded-Proto") == "https":
+        resp.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return resp
+
+
+@app.route("/api/csrf", methods=["GET"])
+def api_csrf():
+    return jsonify({"csrf_token": _ensure_csrf_token()})
+
+
 # ── Login / Logout ────────────────────────────────────────────────────────────
 
 @app.route("/login", methods=["GET"])
 def login_page():
     if session.get("user_id"):
         return redirect("/")
+    _ensure_setup_token()
     first_run = db.user_count() == 0
     error = request.args.get("error", "")
-    return render_template("login.html", error=error, first_run=first_run)
+    # Bind a CSRF token to the unauthenticated session so the form can submit it.
+    csrf_token = _ensure_csrf_token()
+    return render_template(
+        "login.html",
+        error=error,
+        first_run=first_run,
+        csrf_token=csrf_token,
+    )
 
 
 @app.route("/login", methods=["POST"])
 def login_submit():
-    # First-run: create the initial admin account
+    # Same-origin check stops cross-site form POSTs.
+    if not _same_origin():
+        return render_template(
+            "login.html", first_run=db.user_count() == 0,
+            csrf_token=_ensure_csrf_token(),
+            error="Request origin mismatch.",
+        ), 403
+
+    # CSRF token check (the global _check_csrf hook exempts /login because the
+    # session is empty before login; we enforce it manually here using whatever
+    # token was bound to the visitor's pre-login session).
+    submitted_csrf = request.form.get("csrf_token", "")
+    expected_csrf  = session.get("csrf_token", "")
+    if not submitted_csrf or not expected_csrf or not hmac.compare_digest(submitted_csrf, expected_csrf):
+        return render_template(
+            "login.html", first_run=db.user_count() == 0,
+            csrf_token=_ensure_csrf_token(),
+            error="Session expired — please try again.",
+        ), 403
+
+    # Per-IP brute-force throttle.
+    ip = _client_ip()
+    if _login_rate_limited(ip):
+        return render_template(
+            "login.html", first_run=db.user_count() == 0,
+            csrf_token=_ensure_csrf_token(),
+            error="Too many attempts. Try again in 15 minutes.",
+        ), 429
+
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+
     if db.user_count() == 0:
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
-        if not username or len(password) < 8:
-            return render_template("login.html", first_run=True,
-                                   error="Username required and password must be at least 8 characters.")
+        # First-run: must present the setup token (logged at boot) to claim admin.
+        _ensure_setup_token()
+        if not _consume_setup_token(request.form.get("setup_token", "").strip()):
+            return render_template(
+                "login.html", first_run=True,
+                csrf_token=_ensure_csrf_token(),
+                error="Invalid setup token. Check the server startup logs.",
+            ), 403
+        if not username or len(password) < 12:
+            # Re-arm the token so a typo on first-run doesn't lock the operator out.
+            global _SETUP_TOKEN
+            with _SETUP_TOKEN_LOCK:
+                _SETUP_TOKEN = _secrets.token_urlsafe(24)
+                logging.warning("Setup token consumed but admin not created; new token: %s", _SETUP_TOKEN)
+            return render_template(
+                "login.html", first_run=True,
+                csrf_token=_ensure_csrf_token(),
+                error="Username required and password must be at least 12 characters. A new setup token has been issued (see server logs).",
+            ), 400
         db.create_user(username, password, is_admin=True)
         user = db.authenticate(username, password)
+        logging.info("First-run admin '%s' created from setup token (ip=%s)", username, ip)
     else:
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
         user = db.authenticate(username, password)
         if not user:
-            return render_template("login.html", first_run=False,
-                                   error="Invalid username or password.")
+            logging.info("Failed login attempt for username=%r ip=%s", username, ip)
+            return render_template(
+                "login.html", first_run=False,
+                csrf_token=_ensure_csrf_token(),
+                error="Invalid username or password.",
+            ), 401
+
+    # Successful login — rotate the session and bind a fresh CSRF token.
+    session.clear()
     session.permanent = True
-    session["user_id"]  = user["id"]
-    session["username"] = user["username"]
-    session["is_admin"] = bool(user["is_admin"])
+    session["user_id"]    = user["id"]
+    session["username"]   = user["username"]
+    session["is_admin"]   = bool(user["is_admin"])
+    session["csrf_token"] = _secrets.token_urlsafe(32)
     return redirect("/")
 
 
-@app.route("/logout")
+@app.route("/logout", methods=["GET", "POST"])
 def logout():
     session.clear()
     return redirect("/login")
@@ -184,22 +384,45 @@ def unsubscribe(token):
 
 # ── API: Settings ─────────────────────────────────────────────────────────────
 
+# Explicit denylist of setting keys whose values must never leave the server.
+# Anything sensitive (credentials, API keys, signing secrets) belongs here.
+_SECRET_SETTING_KEYS = {
+    "smtp_pass", "imap_pass",
+    "anthropic_api_key", "gemini_api_key", "openai_api_key",
+    "_secret_key",
+}
+_SECRET_PLACEHOLDER = "●●●●●●"
+
+
+def _is_secret_key(key: str) -> bool:
+    if key in _SECRET_SETTING_KEYS:
+        return True
+    # Defensive default: anything that looks like a secret gets masked too.
+    lower = key.lower()
+    return (
+        "pass" in lower
+        or lower.endswith("_key")
+        or lower.endswith("_secret")
+        or lower.endswith("_token")
+    )
+
+
 @app.route("/api/settings", methods=["GET"])
+@admin_required
 def api_get_settings():
     s = db.get_settings()
-    # Never return the raw password to the frontend
-    safe = {k: ("●●●●●●" if "pass" in k else v) for k, v in s.items()}
+    safe = {k: (_SECRET_PLACEHOLDER if _is_secret_key(k) else v) for k, v in s.items()}
     return jsonify(safe)
 
 
 @app.route("/api/settings", methods=["POST"])
+@admin_required
 def api_save_settings():
     data = request.json or {}
-    # Don't overwrite passwords if the placeholder was sent back
     existing = db.get_settings()
     filtered = {}
     for k, v in data.items():
-        if "pass" in k and v == "●●●●●●":
+        if _is_secret_key(k) and v == _SECRET_PLACEHOLDER:
             filtered[k] = existing.get(k, "")
         else:
             filtered[k] = v
@@ -208,6 +431,7 @@ def api_save_settings():
 
 
 @app.route("/api/settings/test-smtp", methods=["POST"])
+@admin_required
 def api_test_smtp():
     settings = db.get_settings()
     ok, msg = email_sender.test_smtp(settings)
@@ -215,6 +439,7 @@ def api_test_smtp():
 
 
 @app.route("/api/settings/test-imap", methods=["POST"])
+@admin_required
 def api_test_imap():
     settings = db.get_settings()
     ok, msg = email_sender.test_imap(settings)
@@ -224,16 +449,18 @@ def api_test_imap():
 # ── API: SMTP Accounts ───────────────────────────────────────────────────────
 
 @app.route("/api/accounts", methods=["GET"])
+@admin_required
 def api_get_accounts():
     accounts = db.get_smtp_accounts()
     # Mask passwords before sending to frontend
     for a in accounts:
-        a["smtp_pass"] = "●●●●●●" if a.get("smtp_pass") else ""
-        a["imap_pass"] = "●●●●●●" if a.get("imap_pass") else ""
+        a["smtp_pass"] = _SECRET_PLACEHOLDER if a.get("smtp_pass") else ""
+        a["imap_pass"] = _SECRET_PLACEHOLDER if a.get("imap_pass") else ""
     return jsonify(accounts)
 
 
 @app.route("/api/accounts", methods=["POST"])
+@admin_required
 def api_create_account():
     d = request.json or {}
     aid = db.create_smtp_account(d)
@@ -241,6 +468,7 @@ def api_create_account():
 
 
 @app.route("/api/accounts/<int:aid>", methods=["PUT"])
+@admin_required
 def api_update_account(aid):
     d = request.json or {}
     existing = db.get_smtp_account(aid)
@@ -248,19 +476,21 @@ def api_update_account(aid):
         return jsonify({"ok": False, "error": "Not found"}), 404
     # Don't overwrite passwords if placeholder was sent back
     for key in ("smtp_pass", "imap_pass"):
-        if d.get(key) == "●●●●●●":
+        if d.get(key) == _SECRET_PLACEHOLDER:
             d[key] = existing.get(key, "")
     db.update_smtp_account(aid, d)
     return jsonify({"ok": True})
 
 
 @app.route("/api/accounts/<int:aid>", methods=["DELETE"])
+@admin_required
 def api_delete_account(aid):
     db.delete_smtp_account(aid)
     return jsonify({"ok": True})
 
 
 @app.route("/api/accounts/<int:aid>/test-smtp", methods=["POST"])
+@admin_required
 def api_test_account_smtp(aid):
     acct = db.get_smtp_account(aid)
     if not acct:
@@ -274,6 +504,7 @@ def api_test_account_smtp(aid):
 
 
 @app.route("/api/accounts/<int:aid>/test-imap", methods=["POST"])
+@admin_required
 def api_test_account_imap(aid):
     acct = db.get_smtp_account(aid)
     if not acct:
@@ -288,11 +519,13 @@ def api_test_account_imap(aid):
 
 
 @app.route("/api/campaigns/<int:cid>/accounts", methods=["GET"])
+@admin_required
 def api_get_campaign_accounts(cid):
     return jsonify(db.get_campaign_smtp_accounts(cid))
 
 
 @app.route("/api/campaigns/<int:cid>/accounts", methods=["POST"])
+@admin_required
 def api_set_campaign_accounts(cid):
     ids = (request.json or {}).get("account_ids", [])
     db.set_campaign_smtp_accounts(cid, ids)
@@ -335,14 +568,31 @@ def api_delete_user(uid):
 
 @app.route("/api/users/<int:uid>/password", methods=["POST"])
 def api_change_password(uid):
-    # Admins can change anyone's password; users can only change their own
-    if not session.get("is_admin") and uid != session.get("user_id"):
+    # Admins can change anyone's password; users can only change their own.
+    is_self  = uid == session.get("user_id")
+    is_admin = bool(session.get("is_admin"))
+    if not is_admin and not is_self:
         return jsonify({"error": "Forbidden"}), 403
+
     d = request.json or {}
-    new_pass = d.get("password", "")
-    if len(new_pass) < 8:
-        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    new_pass     = d.get("password", "")
+    current_pass = d.get("current_password", "")
+
+    if len(new_pass) < 12:
+        return jsonify({"error": "Password must be at least 12 characters"}), 400
+
+    # Self-service password change requires the current password — this stops
+    # an XSS or session-fixation attacker from silently rotating credentials.
+    # Admins changing OTHER users' passwords don't need the target's password
+    # (this is the intended admin reset flow); admins changing their OWN
+    # password still need to prove they know the current one.
+    if is_self:
+        user = db.get_user_by_id(uid)
+        if not user or not db.verify_user_password(user, current_pass):
+            return jsonify({"error": "Current password is incorrect"}), 403
+
     db.change_password(uid, new_pass)
+    logging.info("Password changed for uid=%s by uid=%s", uid, session.get("user_id"))
     return jsonify({"ok": True})
 
 
@@ -518,6 +768,7 @@ _AI_CALLERS = {
 
 
 @app.route("/api/ai/review", methods=["POST"])
+@admin_required
 def api_ai_review():
     s = db.get_settings()
     if s.get("ai_features_enabled") != "1":
@@ -580,6 +831,7 @@ def api_get_campaigns():
 
 
 @app.route("/api/campaigns", methods=["POST"])
+@admin_required
 def api_create_campaign():
     d = request.json or {}
     cid = db.create_campaign(
@@ -681,6 +933,7 @@ def api_export_campaign(cid):
 
 
 @app.route("/api/campaigns/<int:cid>", methods=["DELETE"])
+@admin_required
 def api_delete_campaign(cid):
     db.delete_campaign(cid)
     db.add_log(f"Campaign {cid} deleted")
@@ -688,6 +941,7 @@ def api_delete_campaign(cid):
 
 
 @app.route("/api/campaigns/<int:cid>", methods=["PATCH"])
+@admin_required
 def api_update_campaign(cid):
     d = request.json or {}
     # Serialize variables dict → JSON string for storage
@@ -699,6 +953,7 @@ def api_update_campaign(cid):
 
 
 @app.route("/api/campaigns/<int:cid>/activate", methods=["POST"])
+@admin_required
 def api_activate(cid):
     steps = db.get_steps(cid)
     if not steps:
@@ -711,6 +966,7 @@ def api_activate(cid):
 
 
 @app.route("/api/campaigns/<int:cid>/pause", methods=["POST"])
+@admin_required
 def api_pause(cid):
     db.update_campaign(cid, status="paused")
     db.add_log(f"⏸ Campaign {cid} paused")
@@ -725,6 +981,7 @@ def api_get_steps(cid):
 
 
 @app.route("/api/campaigns/<int:cid>/steps", methods=["POST"])
+@admin_required
 def api_upsert_step(cid):
     d = request.json or {}
     db.upsert_step(
@@ -747,6 +1004,7 @@ def api_upsert_step(cid):
 
 
 @app.route("/api/campaigns/<int:cid>/steps/<int:step_num>", methods=["DELETE"])
+@admin_required
 def api_delete_step(cid, step_num):
     db.delete_step(cid, step_num)
     return jsonify({"ok": True})
@@ -760,19 +1018,34 @@ def api_get_contacts():
 
 
 @app.route("/api/contacts/import", methods=["POST"])
+@admin_required
 def api_import_contacts():
     """
     Accepts JSON body: { "rows": [...] }
     or multipart form with a CSV file field named 'file'.
     """
     import email_validator as _ev
+    _CSV_MAX_BYTES = 8 * 1024 * 1024  # 8 MB
+    _CSV_MAX_ROWS  = 50_000
     if request.content_type and "multipart" in request.content_type:
         f = request.files.get("file")
         if not f:
             return jsonify({"ok": False, "error": "No file"}), 400
-        content = f.read().decode("utf-8", errors="replace")
+        # Read with a hard cap to avoid OOM on a huge upload.
+        raw = f.read(_CSV_MAX_BYTES + 1)
+        if len(raw) > _CSV_MAX_BYTES:
+            return jsonify({
+                "ok": False,
+                "error": f"CSV too large (max {_CSV_MAX_BYTES // (1024*1024)} MB).",
+            }), 413
+        content = raw.decode("utf-8", errors="replace")
         reader  = csv.DictReader(io.StringIO(content))
         rows    = list(reader)
+        if len(rows) > _CSV_MAX_ROWS:
+            return jsonify({
+                "ok": False,
+                "error": f"CSV too large (max {_CSV_MAX_ROWS} rows).",
+            }), 413
     else:
         data = request.json or {}
         rows = data.get("rows", [])
@@ -810,6 +1083,7 @@ def api_import_contacts():
 
 
 @app.route("/api/contacts/bulk-delete", methods=["POST"])
+@admin_required
 def api_bulk_delete_contacts():
     ids = (request.json or {}).get("ids", [])
     if not ids:
@@ -820,6 +1094,7 @@ def api_bulk_delete_contacts():
 
 
 @app.route("/api/contacts", methods=["POST"])
+@admin_required
 def api_add_contact():
     d = request.json or {}
     contact_id, err = db.create_contact(
@@ -837,6 +1112,7 @@ def api_add_contact():
 
 
 @app.route("/api/contacts/<int:cid>", methods=["PUT"])
+@admin_required
 def api_update_contact(cid):
     d = request.json or {}
     ok, err = db.update_contact(cid, d)
@@ -846,12 +1122,14 @@ def api_update_contact(cid):
 
 
 @app.route("/api/contacts/<int:cid>", methods=["DELETE"])
+@admin_required
 def api_delete_contact(cid):
     db.delete_contact(cid)
     return jsonify({'ok': True})
 
 
 @app.route("/api/campaigns/<int:cid>/contacts", methods=["POST"])
+@admin_required
 def api_enroll_contacts(cid):
     """
     Enroll contacts from the global contacts pool into a campaign.
@@ -880,12 +1158,14 @@ def api_campaign_contacts(cid):
 
 
 @app.route("/api/enrollments/<int:enroll_id>", methods=["DELETE"])
+@admin_required
 def api_unenroll_contact(enroll_id):
     db.unenroll_contact(enroll_id)
     return jsonify({"ok": True})
 
 
 @app.route("/api/enrollments/<int:enroll_id>/status", methods=["PATCH"])
+@admin_required
 def api_set_enrollment_status(enroll_id):
     status = (request.json or {}).get("status", "")
     try:
@@ -908,11 +1188,14 @@ _VIEWER_TABLES = [
     "contacts", "campaigns", "enrollments", "sends",
     "steps", "daily_counts", "logs", "settings",
 ]
-# Keys in the settings table that must never be shown in plaintext
-_MASKED_KEYS = {"smtp_pass", "imap_pass", "_secret_key"}
+# Columns to mask in addition to the settings.value masking handled by _is_secret_key.
+_MASKED_COLUMNS = {
+    "smtp_accounts": {"smtp_pass", "imap_pass"},
+}
 
 
 @app.route("/api/db/tables")
+@admin_required
 def api_db_tables():
     result = []
     with db.get_db() as conn:
@@ -926,6 +1209,7 @@ def api_db_tables():
 
 
 @app.route("/api/db/table/<name>")
+@admin_required
 def api_db_table(name):
     if name not in _VIEWER_TABLES:
         return jsonify({"error": "Table not allowed"}), 403
@@ -968,11 +1252,15 @@ def api_db_table(name):
             params + [per_page, offset],
         ).fetchall()
 
+        masked_cols = _MASKED_COLUMNS.get(name, set())
         data = []
         for row in rows:
             r = dict(row)
-            if name == "settings" and r.get("key") in _MASKED_KEYS:
-                r["value"] = "●●●●●●"
+            if name == "settings" and _is_secret_key(r.get("key") or ""):
+                r["value"] = _SECRET_PLACEHOLDER
+            for col in masked_cols:
+                if col in r and r[col]:
+                    r[col] = _SECRET_PLACEHOLDER
             data.append(r)
 
     return jsonify({
@@ -988,6 +1276,7 @@ def api_db_table(name):
 
 
 @app.route("/api/db/table/<name>/export")
+@admin_required
 def api_db_table_export(name):
     if name not in _VIEWER_TABLES:
         return jsonify({"error": "Table not allowed"}), 403
@@ -997,13 +1286,17 @@ def api_db_table_export(name):
         columns = [d[0] for d in cursor.description]
         rows    = cursor.fetchall()
 
+    masked_cols = _MASKED_COLUMNS.get(name, set())
     buf = io.StringIO()
     w   = csv.writer(buf)
     w.writerow(columns)
     for row in rows:
         r = dict(row)
-        if name == "settings" and r.get("key") in _MASKED_KEYS:
-            r["value"] = "●●●●●●"
+        if name == "settings" and _is_secret_key(r.get("key") or ""):
+            r["value"] = _SECRET_PLACEHOLDER
+        for col in masked_cols:
+            if col in r and r[col]:
+                r[col] = _SECRET_PLACEHOLDER
         w.writerow([r.get(col, "") for col in columns])
 
     resp = make_response(buf.getvalue())
@@ -1020,15 +1313,19 @@ def api_scheduler_status():
 
 
 @app.route("/api/scheduler/trigger", methods=["POST"])
+@admin_required
 def api_scheduler_trigger():
-    scheduler.process_queue()
-    return jsonify({"ok": True, "message": "Queue processed"})
+    # Signal the background scheduler to run on its next wake; do NOT call
+    # process_queue() inline — it sleeps up to (max_delay × batch_size) seconds
+    # and would hold the HTTP worker open well past gunicorn's timeout.
+    scheduler.request_run_now(include_reply_check=False)
+    return jsonify({"ok": True, "message": "Queue run requested"})
 
 
 @app.route("/api/scheduler/run", methods=["POST"])
+@admin_required
 def api_scheduler_run():
-    scheduler.process_queue()
-    scheduler.run_reply_check()
+    scheduler.request_run_now(include_reply_check=True)
     return jsonify({"ok": True})
 
 
@@ -1049,6 +1346,7 @@ def api_scraper_status():
 
 
 @app.route("/api/scraper/start", methods=["POST"])
+@admin_required
 def api_scraper_start():
     global _scraper_job, _scraper_thread
     if not _SCRAPER_AVAILABLE:
@@ -1079,6 +1377,7 @@ def api_scraper_start():
 
 
 @app.route("/api/scraper/stop", methods=["POST"])
+@admin_required
 def api_scraper_stop():
     if _scraper_job:
         _scraper_job.stop()
@@ -1086,6 +1385,7 @@ def api_scraper_stop():
 
 
 @app.route("/api/scraper/resume", methods=["POST"])
+@admin_required
 def api_scraper_resume():
     if _scraper_job:
         _scraper_job.resume()
@@ -1096,14 +1396,16 @@ def api_scraper_resume():
 
 if __name__ == "__main__":
     print("\n" + "─" * 60)
-    print("  📬  Outreach System")
+    print("  📣  ShoutReach")
     print("  ─────────────────────────────────────────────")
     print("  Dashboard: http://localhost:5000")
     print("  Press Ctrl+C to stop")
     print("─" * 60 + "\n")
+    # Debug defaults OFF in production. Enable with FLASK_DEBUG=1.
+    debug_mode = os.environ.get("FLASK_DEBUG") == "1"
     app.run(
-        debug=True,
+        debug=debug_mode,
         host=os.environ.get("HOST", "127.0.0.1"),
         port=int(os.environ.get("PORT", 5000)),
-        use_reloader=True,
+        use_reloader=debug_mode,
     )

@@ -24,16 +24,80 @@ function toast(msg, type = 'ok') {
 function openModal(id)  { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
-async function api(path, method = 'GET', body = null) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
-  if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(path, opts);
-  return res.json();
+// ── CSRF token bootstrap ──────────────────────────────────────────────────────
+let _csrfToken = null;
+let _csrfPromise = null;
+
+async function _getCsrfToken() {
+  if (_csrfToken) return _csrfToken;
+  if (!_csrfPromise) {
+    _csrfPromise = fetch('/api/csrf', { credentials: 'same-origin' })
+      .then(r => r.ok ? r.json() : { csrf_token: '' })
+      .then(d => { _csrfToken = d.csrf_token || ''; return _csrfToken; })
+      .catch(() => { _csrfToken = ''; return ''; });
+  }
+  return _csrfPromise;
 }
 
+async function api(path, method = 'GET', body = null) {
+  const opts = {
+    method,
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+  };
+  if (method !== 'GET' && method !== 'HEAD') {
+    opts.headers['X-CSRF-Token'] = await _getCsrfToken();
+  }
+  if (body) opts.body = JSON.stringify(body);
+
+  let res = await fetch(path, opts);
+
+  // If the token expired (server rotated session) try once more.
+  if (res.status === 403 && (method !== 'GET' && method !== 'HEAD')) {
+    _csrfToken = null; _csrfPromise = null;
+    opts.headers['X-CSRF-Token'] = await _getCsrfToken();
+    res = await fetch(path, opts);
+  }
+
+  if (res.status === 401) {
+    window.location.href = '/login';
+    return { error: 'Unauthorized' };
+  }
+
+  let data = {};
+  try { data = await res.json(); } catch (_) { data = {}; }
+
+  if (!res.ok && !data.error) {
+    data.error = `Request failed (${res.status})`;
+  }
+  return data;
+}
+
+// HTML-text escape (for text content inside elements).
 function esc(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/`/g, '&#96;');
+}
+
+// JavaScript string-literal escape — for values embedded in inline onclick
+// handlers like onclick="doThing('${escj(name)}')". Returns the value safe
+// to drop inside a single-quoted JS string inside an HTML attribute.
+function escj(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, '\\x27')
+    .replace(/"/g, '\\x22')
+    .replace(/</g, '\\x3c')
+    .replace(/>/g, '\\x3e')
+    .replace(/&/g, '\\x26')
+    .replace(/\r?\n/g, '\\n');
 }
 
 function statusBadge(s) {

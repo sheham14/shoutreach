@@ -278,7 +278,16 @@ async function importContacts() {
   if (fileInput.files.length) {
     const form = new FormData();
     form.append('file', fileInput.files[0]);
-    const res  = await fetch('/api/contacts/import', { method: 'POST', body: form });
+    // Raw fetch (FormData sets its own Content-Type with boundary), but the
+    // CSRF middleware requires the X-CSRF-Token header on every non-GET.
+    const csrf = await _getCsrfToken();
+    const res  = await fetch('/api/contacts/import', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-CSRF-Token': csrf },
+      body: form,
+    });
+    if (res.status === 401) { window.location.href = '/login'; return; }
     const data = await res.json();
     const inv = data.invalid_mx ? ` (${data.invalid_mx} invalid MX — see Invalid Emails list)` : '';
     toast(`Imported ${data.inserted} contacts ✓${inv}`);

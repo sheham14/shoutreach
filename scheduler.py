@@ -26,7 +26,19 @@ import sender as email_sender
 logger = logging.getLogger("scheduler")
 
 _scheduler_thread: threading.Thread = None
+_scheduler_lock = threading.Lock()
 _stop_event = threading.Event()
+_wake_event = threading.Event()
+_run_now_reply_check = False  # set by request_run_now(include_reply_check=True)
+
+
+def request_run_now(include_reply_check: bool = False) -> None:
+    """Ask the scheduler thread to run process_queue() on its next tick.
+    Returns immediately — the actual work happens off the request thread."""
+    global _run_now_reply_check
+    if include_reply_check:
+        _run_now_reply_check = True
+    _wake_event.set()
 
 
 # ── Main queue processor ──────────────────────────────────────────────────────
@@ -210,38 +222,55 @@ def run_bounce_check():
 def _run_loop():
     """
     Infinite loop running in a daemon thread.
-    - Processes queue every 60 seconds
-    - Checks replies every 15 minutes
+    - Processes queue every 60 seconds (or sooner when request_run_now fires)
+    - Checks replies every 5 minutes
     """
+    global _run_now_reply_check
     last_reply_check = 0
 
     while not _stop_event.is_set():
         process_queue()
 
+        do_reply_check = _run_now_reply_check
+        _run_now_reply_check = False
         now = time.time()
-        if now - last_reply_check > 300:  # 5 minutes
+        if do_reply_check or now - last_reply_check > 300:  # 5 minutes
             run_reply_check()
             run_bounce_check()
             last_reply_check = now
 
-        # Sleep in small chunks so we can respond to stop event quickly
-        for _ in range(60):
-            if _stop_event.is_set():
-                break
-            time.sleep(1)
+        # Sleep up to 60s, but wake immediately on request_run_now() or stop().
+        _wake_event.wait(timeout=60)
+        _wake_event.clear()
 
 
 def start():
+    """Start the background scheduler. Safe to call more than once."""
     global _scheduler_thread
-    _stop_event.clear()
-    _scheduler_thread = threading.Thread(target=_run_loop, daemon=True, name="outreach-scheduler")
-    _scheduler_thread.start()
+    with _scheduler_lock:
+        if _scheduler_thread is not None and _scheduler_thread.is_alive():
+            return
+        _stop_event.clear()
+        _wake_event.clear()
+        _scheduler_thread = threading.Thread(
+            target=_run_loop, daemon=True, name="shoutreach-scheduler"
+        )
+        _scheduler_thread.start()
     db.add_log("⚡ Scheduler started", "INFO")
     logger.info("Scheduler started")
 
 
-def stop():
+def stop(timeout: float = 10.0):
+    """Signal the scheduler to stop and wait briefly for it to exit."""
+    global _scheduler_thread
     _stop_event.set()
+    _wake_event.set()
+    t = _scheduler_thread
+    if t is not None:
+        t.join(timeout=timeout)
+        if t.is_alive():
+            logger.warning("Scheduler thread did not exit within %.1fs", timeout)
+    _scheduler_thread = None
     db.add_log("⏹ Scheduler stopped", "INFO")
     logger.info("Scheduler stopped")
 
