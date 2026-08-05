@@ -115,6 +115,33 @@
     <button class="btn btn-primary" onclick="saveSettings()">Save</button>
   </div>
 
+  <div id="settings-worker-card" class="card" style="padding:24px;margin-top:24px">
+    <div class="card-title" style="margin-bottom:6px">Lead Scraper Worker</div>
+    <div class="form-hint" style="margin-bottom:16px">
+      Scrapes run on your own machine, not on this server — the browser needs a
+      screen you can see to solve CAPTCHAs. This key lets that worker talk to
+      ShoutReach. Treat it like a password.
+    </div>
+    <div class="form-group">
+      <label>Worker API Key</label>
+      <div class="flex gap-2">
+        <input id="cfg-worker-key" type="password" readonly value="••••••••••••" style="flex:1" />
+        <button class="btn btn-ghost btn-sm" onclick="revealWorkerKey()" id="cfg-worker-reveal">Show</button>
+        <button class="btn btn-ghost btn-sm" onclick="copyWorkerKey()">Copy</button>
+        <button class="btn btn-danger btn-sm" onclick="rotateWorkerKey()">Rotate</button>
+      </div>
+      <div class="form-hint">
+        Rotating immediately stops any worker still using the old key.
+      </div>
+    </div>
+    <div class="form-hint" style="margin-top:14px">On your machine:</div>
+    <div class="mono" style="margin-top:6px;padding:10px 12px;background:var(--bg3);border-radius:6px;font-size:11px;line-height:1.8">
+      set SHOUTREACH_URL=<span id="cfg-worker-origin">…</span><br>
+      set SHOUTREACH_API_KEY=&lt;the key above&gt;<br>
+      python scraper_worker.py
+    </div>
+  </div>
+
   <div id="settings-users-card" class="card" style="padding:24px;margin-top:24px;display:none">
     <div class="flex items-center" style="margin-bottom:16px">
       <div class="card-title">Users</div>

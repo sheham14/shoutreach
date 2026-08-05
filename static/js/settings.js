@@ -57,6 +57,9 @@ function aiProviderChanged(keepModel) {
 }
 
 async function loadSettings() {
+  const originEl = document.getElementById("cfg-worker-origin");
+  if (originEl) originEl.textContent = window.location.origin;
+
   const s = await api("/api/settings");
   document.getElementById("cfg-global-cap").value = s.global_daily_cap || "200";
   document.getElementById("cfg-base-url").value =
@@ -366,4 +369,57 @@ async function testAccountIMAP() {
   const res = await api(`/api/accounts/${_accountEditId}/test-imap`, "POST");
   el.textContent = res.message;
   el.style.color = res.ok ? "var(--green)" : "var(--red)";
+}
+
+// ── Lead scraper worker key ──────────────────────────────────────────────────
+// The worker runs on the operator's own machine (the server has no display for
+// CAPTCHA solving), so it authenticates with this key instead of a session.
+
+let _workerKeyShown = false;
+
+async function _fetchWorkerKey() {
+  const res = await api('/api/settings/worker-key');
+  return res.key || '';
+}
+
+async function revealWorkerKey() {
+  const input = document.getElementById('cfg-worker-key');
+  const btn = document.getElementById('cfg-worker-reveal');
+  if (_workerKeyShown) {
+    input.type = 'password';
+    input.value = '••••••••••••';
+    btn.textContent = 'Show';
+    _workerKeyShown = false;
+    return;
+  }
+  input.value = await _fetchWorkerKey();
+  input.type = 'text';
+  btn.textContent = 'Hide';
+  _workerKeyShown = true;
+}
+
+async function copyWorkerKey() {
+  const key = await _fetchWorkerKey();
+  try {
+    await navigator.clipboard.writeText(key);
+    toast('Worker key copied');
+  } catch (e) {
+    // Clipboard needs a secure context; fall back to showing it to copy by hand.
+    const input = document.getElementById('cfg-worker-key');
+    input.type = 'text';
+    input.value = key;
+    input.select();
+    toast('Select and copy the key', 'err');
+  }
+}
+
+async function rotateWorkerKey() {
+  if (!confirm('Rotate the worker key?\n\nAny worker still using the old key will stop being able to connect until you update it.')) return;
+  const res = await api('/api/settings/worker-key', 'POST');
+  const input = document.getElementById('cfg-worker-key');
+  input.type = 'text';
+  input.value = res.key || '';
+  document.getElementById('cfg-worker-reveal').textContent = 'Hide';
+  _workerKeyShown = true;
+  toast('Key rotated — update your worker');
 }

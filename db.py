@@ -24,6 +24,11 @@ def get_db():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    # WAL lets readers run alongside a writer but still serialises writers.
+    # The scrape worker posts progress while the scheduler is sending, so a
+    # collision is expected -- wait it out instead of raising "database is
+    # locked" at whichever one loses the race.
+    conn.execute("PRAGMA busy_timeout = 10000")
     return conn
 
 
@@ -138,6 +143,31 @@ def init_db():
                 body_html TEXT    NOT NULL DEFAULT '',
                 weight    INTEGER NOT NULL DEFAULT 50,
                 UNIQUE(step_id, label)
+            );
+
+            -- Scrape jobs are queued here by the web UI and claimed by a
+            -- worker running on the operator's own machine. The server never
+            -- launches a browser: the scraper needs a visible Chrome window
+            -- for CAPTCHA solving, which a headless VM cannot provide.
+            CREATE TABLE IF NOT EXISTS scrape_jobs (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                niche        TEXT    NOT NULL,
+                city         TEXT    NOT NULL,
+                max_results  INTEGER NOT NULL DEFAULT 50,
+                auto_import  INTEGER NOT NULL DEFAULT 1,
+                status       TEXT    NOT NULL DEFAULT 'queued',
+                progress     INTEGER NOT NULL DEFAULT 0,
+                total        INTEGER NOT NULL DEFAULT 0,
+                found        INTEGER NOT NULL DEFAULT 0,
+                imported     INTEGER NOT NULL DEFAULT 0,
+                logs         TEXT    NOT NULL DEFAULT '[]',
+                stop_flag    INTEGER NOT NULL DEFAULT 0,
+                resume_flag  INTEGER NOT NULL DEFAULT 0,
+                error        TEXT    NOT NULL DEFAULT '',
+                created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+                claimed_at   TEXT,
+                heartbeat_at TEXT,
+                finished_at  TEXT
             );
 
             CREATE TABLE IF NOT EXISTS users (
@@ -255,6 +285,222 @@ def get_or_create_secret() -> str:
             "INSERT INTO settings(key,value) VALUES('_secret_key',?)", (key,)
         )
         return key
+
+
+def get_or_create_worker_api_key() -> str:
+    """
+    Shared secret the local scrape worker uses to authenticate.
+
+    The worker is not a browser and has no session cookie, so it presents this
+    as an X-API-Key header instead. Custom headers are not attached
+    cross-origin by browsers, so token auth on these routes is not exposed to
+    CSRF the way a cookie-authenticated route would be.
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key='_worker_api_key'"
+        ).fetchone()
+        if row and row["value"]:
+            return row["value"]
+        key = secrets.token_urlsafe(32)
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES('_worker_api_key',?)",
+            (key,),
+        )
+        return key
+
+
+def rotate_worker_api_key() -> str:
+    with get_db() as conn:
+        key = secrets.token_urlsafe(32)
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES('_worker_api_key',?)",
+            (key,),
+        )
+        return key
+
+
+# ── Scrape jobs ───────────────────────────────────────────────────────────────
+
+# Statuses a job can sit in while it is still someone's responsibility.
+SCRAPE_ACTIVE_STATUSES = ("queued", "claimed", "running", "captcha")
+
+# A worker that has not checked in for this long is treated as gone. It has to
+# comfortably exceed the worker's own post interval, or a busy scrape that goes
+# quiet during a slow page load would flap the UI to "offline".
+WORKER_STALE_SECONDS = 45
+
+
+def create_scrape_job(niche, city, max_results=50, auto_import=True) -> int:
+    with get_db() as conn:
+        cur = conn.execute("""
+            INSERT INTO scrape_jobs(niche, city, max_results, auto_import, logs)
+            VALUES(?,?,?,?,'[]')
+        """, (niche, city, int(max_results), 1 if auto_import else 0))
+        return cur.lastrowid
+
+
+def get_scrape_job(job_id: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM scrape_jobs WHERE id=?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_latest_scrape_job():
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM scrape_jobs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_active_scrape_job():
+    placeholders = ",".join("?" * len(SCRAPE_ACTIVE_STATUSES))
+    with get_db() as conn:
+        row = conn.execute(
+            f"SELECT * FROM scrape_jobs WHERE status IN ({placeholders}) "
+            "ORDER BY id ASC LIMIT 1",
+            SCRAPE_ACTIVE_STATUSES,
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def claim_scrape_job() -> dict:
+    """
+    Hand the oldest queued job to a worker, atomically.
+
+    The UPDATE ... WHERE status='queued' is the lock: if two workers race, only
+    one gets a rowcount of 1, so the job cannot be run twice.
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM scrape_jobs WHERE status='queued' ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return None
+        cur = conn.execute("""
+            UPDATE scrape_jobs
+               SET status='claimed',
+                   claimed_at=datetime('now'),
+                   heartbeat_at=datetime('now')
+             WHERE id=? AND status='queued'
+        """, (row["id"],))
+        if cur.rowcount != 1:
+            return None          # another worker won the race
+        return dict(conn.execute(
+            "SELECT * FROM scrape_jobs WHERE id=?", (row["id"],)
+        ).fetchone())
+
+
+def update_scrape_job(job_id: int, *, status=None, progress=None, total=None,
+                      found=None, imported=None, error=None, new_logs=None,
+                      finished=False) -> dict:
+    """
+    Apply a worker's progress report and return the current control flags.
+
+    Returning stop/resume in the same round trip is deliberate: this one call
+    is the heartbeat, the log upload, and the control channel, so the worker
+    learns about a Stop or Resume press without a second request.
+    """
+    with get_db() as conn:
+        sets, params = ["heartbeat_at=datetime('now')"], []
+        for column, value in (("status", status), ("progress", progress),
+                              ("total", total), ("found", found),
+                              ("imported", imported), ("error", error)):
+            if value is not None:
+                sets.append(f"{column}=?")
+                params.append(value)
+        if finished:
+            sets.append("finished_at=datetime('now')")
+
+        if new_logs:
+            row = conn.execute(
+                "SELECT logs FROM scrape_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            try:
+                existing = json.loads(row["logs"]) if row else []
+            except Exception:
+                existing = []
+            existing.extend(new_logs)
+            # Bounded so a long scrape cannot grow the row without limit.
+            sets.append("logs=?")
+            params.append(json.dumps(existing[-300:]))
+
+        params.append(job_id)
+        conn.execute(f"UPDATE scrape_jobs SET {','.join(sets)} WHERE id=?", params)
+
+        row = conn.execute(
+            "SELECT stop_flag, resume_flag, status FROM scrape_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            return {"stop": True, "resume": False, "status": "gone"}
+        # Resume is a one-shot edge: clear it once the worker has been told,
+        # or a single click would unblock every later CAPTCHA too.
+        if row["resume_flag"]:
+            conn.execute(
+                "UPDATE scrape_jobs SET resume_flag=0 WHERE id=?", (job_id,)
+            )
+        return {
+            "stop":   bool(row["stop_flag"]),
+            "resume": bool(row["resume_flag"]),
+            "status": row["status"],
+        }
+
+
+def flag_scrape_job(job_id: int, *, stop=False, resume=False):
+    column = "stop_flag" if stop else "resume_flag"
+    with get_db() as conn:
+        conn.execute(f"UPDATE scrape_jobs SET {column}=1 WHERE id=?", (job_id,))
+
+
+def touch_worker_seen():
+    """
+    Record that a worker just checked in.
+
+    Kept in settings rather than on the job row because the worker polls for
+    work when no job exists -- the UI still needs to show it as connected so
+    pressing Start is not a shot in the dark.
+    """
+    with get_db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key,value) "
+            "VALUES('_worker_last_seen', datetime('now'))"
+        )
+
+
+def worker_seconds_since_seen():
+    """Seconds since any worker last checked in, or None if never."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key='_worker_last_seen'"
+        ).fetchone()
+    if not row or not row["value"]:
+        return None
+    try:
+        seen = datetime.datetime.strptime(row["value"], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+    return max(0.0, (datetime.datetime.utcnow() - seen).total_seconds())
+
+
+def reap_stale_scrape_jobs():
+    """
+    Fail jobs whose worker vanished mid-run.
+
+    Without this a killed worker leaves a job stuck in 'running' forever, and
+    the UI refuses to start a new one because something is already active.
+    """
+    with get_db() as conn:
+        conn.execute(f"""
+            UPDATE scrape_jobs
+               SET status='error',
+                   error='Worker stopped reporting',
+                   finished_at=datetime('now')
+             WHERE status IN ('claimed','running','captcha')
+               AND heartbeat_at IS NOT NULL
+               AND (julianday('now') - julianday(heartbeat_at)) * 86400 > ?
+        """, (WORKER_STALE_SECONDS * 4,))
 
 
 # ── Campaigns ─────────────────────────────────────────────────────────────────

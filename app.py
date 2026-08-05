@@ -36,15 +36,12 @@ import db
 import scheduler
 import sender as email_sender
 
-try:
-    import gmaps_email_scraper as _scraper_mod
-    _SCRAPER_AVAILABLE = True
-except ImportError:
-    _scraper_mod = None
-    _SCRAPER_AVAILABLE = False
-
-_scraper_job: object = None
-_scraper_thread: threading.Thread = None
+# The scraper deliberately does NOT run here. It needs a visible Chrome window
+# for CAPTCHA solving, which a headless server cannot provide -- on the GCP VM
+# it failed at browser launch because the deploy never runs
+# `playwright install chromium` and there is no X display. The server now only
+# queues jobs; a worker on the operator's machine claims and runs them.
+# See scraper_worker.py.
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +49,11 @@ logging.basicConfig(
 )
 
 app = Flask(__name__)
+
+# How many proxies sit in front of this app and append to X-Forwarded-For.
+# The GCP deploy runs behind a single Nginx, so 1 is right there. Set to 0 for
+# direct exposure, which makes _client_ip ignore the header entirely.
+TRUSTED_PROXY_COUNT = int(os.environ.get("TRUSTED_PROXY_COUNT", "1"))
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
@@ -118,9 +120,22 @@ _login_attempts_lock = threading.Lock()
 
 
 def _client_ip() -> str:
+    """
+    The caller's IP, for the login rate limiter.
+
+    X-Forwarded-For is a client-supplied list that proxies append to, so its
+    LEFTMOST entry is whatever the client claimed -- an attacker rotating that
+    header got a fresh rate-limit bucket per request and walked straight past
+    the throttle. Take the rightmost entries instead: those were written by
+    proxies we actually control, counted by TRUSTED_PROXY_COUNT.
+    """
     fwd = request.headers.get("X-Forwarded-For", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    if fwd and TRUSTED_PROXY_COUNT > 0:
+        parts = [p.strip() for p in fwd.split(",") if p.strip()]
+        if parts:
+            # -1 is our own proxy's view of the peer; -2 if there are two, etc.
+            index = max(0, len(parts) - TRUSTED_PROXY_COUNT)
+            return parts[index]
     return request.remote_addr or "unknown"
 
 
@@ -141,6 +156,38 @@ def _login_rate_limited(ip: str) -> bool:
 _PUBLIC_PATHS = {"/login", "/logout"}
 _CSRF_EXEMPT_PATHS = {"/login", "/logout"}
 
+# Routes the local scrape worker calls. They authenticate with X-API-Key
+# instead of a session cookie, so the login redirect and the CSRF token check
+# -- both of which assume a browser -- have to step aside. Safe because a
+# custom header cannot be attached cross-origin by a browser, which is the
+# threat CSRF tokens exist to stop. Each of these still carries
+# @worker_auth_required; skipping the hooks is not skipping authentication.
+_WORKER_PATH_PREFIX = "/api/scraper/claim"
+_WORKER_PATHS = {"/api/scraper/claim", "/api/scraper/heartbeat"}
+
+
+def _has_valid_worker_key() -> bool:
+    presented = request.headers.get("X-API-Key", "")
+    if not presented:
+        return False
+    try:
+        return hmac.compare_digest(presented, db.get_or_create_worker_api_key())
+    except Exception:
+        return False
+
+
+def _is_worker_route() -> bool:
+    path = request.path
+    if path in _WORKER_PATHS:
+        return True
+    # /api/scraper/jobs/<id>/progress
+    if path.startswith("/api/scraper/jobs/") and path.endswith("/progress"):
+        return True
+    # The worker pushes finished leads to the normal contacts import. That
+    # route is also used by the browser, so it stays cookie+CSRF protected
+    # unless a valid worker key is actually presented.
+    return path == "/api/contacts/import" and _has_valid_worker_key()
+
 
 def login_required(f):
     @wraps(f)
@@ -158,6 +205,36 @@ def admin_required(f):
     def decorated(*args, **kwargs):
         if not session.get("is_admin"):
             return jsonify({"error": "Forbidden"}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+
+def admin_or_worker_required(f):
+    """Either a logged-in admin in a browser, or the local scrape worker."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if session.get("is_admin") or _has_valid_worker_key():
+            return f(*args, **kwargs)
+        return jsonify({"error": "Forbidden"}), 403
+    return decorated
+
+
+def worker_auth_required(f):
+    """
+    Authenticate the local scrape worker by shared key instead of a session.
+
+    The worker is a script, not a browser: it has no cookie and no CSRF token.
+    A custom header is the right primitive here because browsers will not
+    attach one cross-origin, so these routes are not CSRF-reachable the way a
+    cookie-authenticated route is. Compared with compare_digest so a wrong key
+    cannot be recovered by timing the response.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        presented = request.headers.get("X-API-Key", "")
+        expected = db.get_or_create_worker_api_key()
+        if not presented or not hmac.compare_digest(presented, expected):
+            return jsonify({"error": "Invalid or missing worker API key"}), 401
         return f(*args, **kwargs)
     return decorated
 
@@ -193,6 +270,8 @@ def _same_origin() -> bool:
 def _require_login():
     if request.path in _PUBLIC_PATHS or request.path.startswith("/unsubscribe"):
         return
+    if _is_worker_route():
+        return          # authenticated by X-API-Key in worker_auth_required
     if not session.get("user_id"):
         if request.path.startswith("/api/"):
             return jsonify({"error": "Unauthorized"}), 401
@@ -207,6 +286,8 @@ def _check_csrf():
         return
     if request.path.startswith("/unsubscribe"):
         return
+    if _is_worker_route():
+        return          # header auth, not cookie auth -- see _WORKER_PATHS
     # _require_login already redirected unauthed users; here we know there is
     # a session. Compare submitted token against the one bound to this session.
     submitted = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or ""
@@ -428,6 +509,19 @@ def api_save_settings():
             filtered[k] = v
     db.save_settings(filtered)
     return jsonify({"ok": True})
+
+
+@app.route("/api/settings/worker-key", methods=["GET"])
+@admin_required
+def api_get_worker_key():
+    """Deliberately separate from /api/settings, which masks every secret."""
+    return jsonify({"key": db.get_or_create_worker_api_key()})
+
+
+@app.route("/api/settings/worker-key", methods=["POST"])
+@admin_required
+def api_rotate_worker_key():
+    return jsonify({"key": db.rotate_worker_api_key()})
 
 
 @app.route("/api/settings/test-smtp", methods=["POST"])
@@ -1018,7 +1112,7 @@ def api_get_contacts():
 
 
 @app.route("/api/contacts/import", methods=["POST"])
-@admin_required
+@admin_or_worker_required
 def api_import_contacts():
     """
     Accepts JSON body: { "rows": [...] }
@@ -1049,6 +1143,16 @@ def api_import_contacts():
     else:
         data = request.json or {}
         rows = data.get("rows", [])
+        if not isinstance(rows, list):
+            return jsonify({"ok": False, "error": "rows must be a list"}), 400
+        # The multipart path has always been capped; this one was not, so a
+        # 16MB JSON body could carry 100k+ rows and each one triggers a
+        # blocking DNS lookup below -- enough to stall the single worker.
+        if len(rows) > _CSV_MAX_ROWS:
+            return jsonify({
+                "ok": False,
+                "error": f"Too many rows (max {_CSV_MAX_ROWS}).",
+            }), 413
 
     if not rows:
         return jsonify({"ok": False, "error": "No rows"}), 400
@@ -1068,15 +1172,29 @@ def api_import_contacts():
             existing.update(custom)
             row["extra"] = existing
 
-    # MX-validate each row that has an email
+    # MX-validate each row that has an email.
+    #
+    # This is a blocking DNS lookup per unseen domain, on the request thread,
+    # in a single-worker process. check_mx caches per domain, so a scrape of
+    # one city is cheap, but a large paste is not -- past this many rows the
+    # rows are stored unvalidated and mx_valid stays NULL ("unchecked") rather
+    # than holding the whole app hostage. The worker pre-validates anyway and
+    # sends mx_valid with each row.
+    _MX_INLINE_LIMIT = 500
     invalid_mx = 0
-    for row in rows:
-        email = (row.get("email") or "").strip()
-        if email and "@" in email:
-            ok = _ev.check_mx(email)
-            row["mx_valid"] = 1 if ok else 0
-            if not ok:
-                invalid_mx += 1
+    if len(rows) <= _MX_INLINE_LIMIT:
+        for row in rows:
+            email = (row.get("email") or "").strip()
+            if email and "@" in email and row.get("mx_valid") is None:
+                ok = _ev.check_mx(email)
+                row["mx_valid"] = 1 if ok else 0
+                if not ok:
+                    invalid_mx += 1
+    else:
+        app.logger.info(
+            "Skipping inline MX validation for %d rows (over the %d-row limit)",
+            len(rows), _MX_INLINE_LIMIT,
+        )
 
     inserted = db.upsert_contacts(rows)
     return jsonify({"ok": True, "inserted": inserted, "invalid_mx": invalid_mx})
@@ -1331,64 +1449,137 @@ def api_scheduler_run():
 
 # ── API: Scraper ──────────────────────────────────────────────────────────────
 
+def _job_payload(job: dict) -> dict:
+    try:
+        logs = json.loads(job.get("logs") or "[]")
+    except Exception:
+        logs = []
+    return {
+        "job_id":   job["id"],
+        "status":   job["status"],
+        "progress": job["progress"],
+        "total":    job["total"],
+        "found":    job["found"],
+        "imported": job["imported"],
+        "error":    job.get("error") or "",
+        "niche":    job["niche"],
+        "city":     job["city"],
+        "logs":     logs[-80:],
+    }
+
+
 @app.route("/api/scraper/status")
 def api_scraper_status():
-    if not _scraper_job:
-        return jsonify({"status": "idle"})
-    return jsonify({
-        "status":   _scraper_job.status,
-        "progress": _scraper_job.progress,
-        "total":    _scraper_job.total,
-        "found":    _scraper_job.found,
-        "imported": _scraper_job.imported,
-        "logs":     _scraper_job.logs[-80:],
-    })
+    db.reap_stale_scrape_jobs()
+    seen = db.worker_seconds_since_seen()
+    payload = {
+        "worker_online": seen is not None and seen < db.WORKER_STALE_SECONDS,
+        "worker_last_seen": None if seen is None else int(seen),
+    }
+    job = db.get_active_scrape_job() or db.get_latest_scrape_job()
+    if not job:
+        payload["status"] = "idle"
+        return jsonify(payload)
+    payload.update(_job_payload(job))
+    return jsonify(payload)
 
 
 @app.route("/api/scraper/start", methods=["POST"])
 @admin_required
 def api_scraper_start():
-    global _scraper_job, _scraper_thread
-    if not _SCRAPER_AVAILABLE:
-        return jsonify({"ok": False, "error":
-            "Playwright not installed. Run: pip install playwright playwright-stealth && playwright install chromium"
-        }), 501
-    if _scraper_thread and _scraper_thread.is_alive():
-        return jsonify({"ok": False, "error": "Scraper is already running"}), 409
+    db.reap_stale_scrape_jobs()
+    if db.get_active_scrape_job():
+        return jsonify({"ok": False, "error": "A scrape is already queued or running"}), 409
 
     d           = request.json or {}
     niche       = d.get("niche", "").strip()
     city        = d.get("city", "").strip()
-    max_results = int(d.get("max_results", 50))
     auto_import = bool(d.get("auto_import", True))
+    try:
+        max_results = max(1, min(500, int(d.get("max_results", 50))))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "max_results must be a number"}), 400
 
     if not niche or not city:
         return jsonify({"ok": False, "error": "Niche and city are required"}), 400
 
-    _scraper_job    = _scraper_mod.ScraperJob(niche, city, max_results, auto_import)
-    _scraper_thread = threading.Thread(
-        target=_scraper_mod.run_scraper_job,
-        args=(_scraper_job,),
-        daemon=True,
-        name="scraper",
-    )
-    _scraper_thread.start()
-    return jsonify({"ok": True})
+    job_id = db.create_scrape_job(niche, city, max_results, auto_import)
+    seen = db.worker_seconds_since_seen()
+    warning = None
+    if seen is None or seen >= db.WORKER_STALE_SECONDS:
+        # Queue it anyway -- it will run as soon as the worker comes up. But
+        # say so, or pressing Start against a dead worker looks like a no-op.
+        warning = "Queued, but no worker is connected. Start scraper_worker.py on your machine."
+    return jsonify({"ok": True, "job_id": job_id, "warning": warning})
 
 
 @app.route("/api/scraper/stop", methods=["POST"])
 @admin_required
 def api_scraper_stop():
-    if _scraper_job:
-        _scraper_job.stop()
+    job = db.get_active_scrape_job()
+    if job:
+        db.flag_scrape_job(job["id"], stop=True)
+        if job["status"] == "queued":
+            # Never claimed, so no worker will ever see the flag.
+            db.update_scrape_job(job["id"], status="stopped", finished=True)
     return jsonify({"ok": True})
 
 
 @app.route("/api/scraper/resume", methods=["POST"])
 @admin_required
 def api_scraper_resume():
-    if _scraper_job:
-        _scraper_job.resume()
+    job = db.get_active_scrape_job()
+    if job:
+        db.flag_scrape_job(job["id"], resume=True)
+    return jsonify({"ok": True})
+
+
+# ── API: scrape worker (machine-to-machine, X-API-Key) ────────────────────────
+
+@app.route("/api/scraper/claim", methods=["POST"])
+@worker_auth_required
+def api_scraper_claim():
+    db.touch_worker_seen()      # polling for work is itself a sign of life
+    db.reap_stale_scrape_jobs()
+    job = db.claim_scrape_job()
+    if not job:
+        return ("", 204)
+    return jsonify({
+        "job_id":      job["id"],
+        "niche":       job["niche"],
+        "city":        job["city"],
+        "max_results": job["max_results"],
+        "auto_import": bool(job["auto_import"]),
+    })
+
+
+@app.route("/api/scraper/jobs/<int:job_id>/progress", methods=["POST"])
+@worker_auth_required
+def api_scraper_progress(job_id):
+    db.touch_worker_seen()
+    d = request.json or {}
+    logs = d.get("logs") or []
+    if not isinstance(logs, list):
+        logs = []
+    control = db.update_scrape_job(
+        job_id,
+        status=d.get("status"),
+        progress=d.get("progress"),
+        total=d.get("total"),
+        found=d.get("found"),
+        imported=d.get("imported"),
+        error=d.get("error"),
+        new_logs=logs[:100],
+        finished=bool(d.get("finished")),
+    )
+    return jsonify(control)
+
+
+@app.route("/api/scraper/heartbeat", methods=["POST"])
+@worker_auth_required
+def api_scraper_heartbeat():
+    """Idle check-in so the UI can show the worker as online between jobs."""
+    db.touch_worker_seen()
     return jsonify({"ok": True})
 
 
