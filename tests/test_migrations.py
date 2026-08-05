@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 EXPECTED_COLUMNS = {
     "id", "email", "first_name", "last_name", "company", "extra", "status",
     "created_at", "website", "address", "soft_bounce_count", "mx_valid",
+    "domain", "duplicate_of",
 }
 
 _failures = []

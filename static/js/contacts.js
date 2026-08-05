@@ -415,18 +415,25 @@ function filterEnrollList() {
   renderEnrollList(filtered);
 }
 
+// Some contacts are deliberately skipped: already in another campaign, or a
+// duplicate address at a business we already have a better contact for.
+// Report that, or enrolling 9 of 12 looks like a silent failure.
+function _enrollResultMessage(res) {
+  return res.message || `Enrolled ${res.enrolled} contacts`;
+}
+
 async function enrollSelected() {
   const ids = [...document.querySelectorAll('.enroll-cb:checked')].map(cb => +cb.value);
   if (!ids.length) { toast('Select at least one contact', 'err'); return; }
   const res = await api(`/api/campaigns/${currentCampaignId}/contacts`, 'POST', { contact_ids: ids });
-  toast(`Enrolled ${res.enrolled} contacts ✓`);
+  toast(_enrollResultMessage(res));
   closeModal('modal-enroll');
   openCampaign(currentCampaignId);
 }
 
 async function enrollAll() {
   const res = await api(`/api/campaigns/${currentCampaignId}/contacts`, 'POST', { all: true });
-  toast(`Enrolled ${res.enrolled} contacts ✓`);
+  toast(_enrollResultMessage(res));
   closeModal('modal-enroll');
   openCampaign(currentCampaignId);
 }

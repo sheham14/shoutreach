@@ -1266,8 +1266,27 @@ def api_enroll_contacts(cid):
     if not ids:
         return jsonify({"ok": False, "error": "No contact IDs"}), 400
 
-    enrolled = db.enroll_contacts_bulk(cid, ids)
-    return jsonify({"ok": True, "enrolled": enrolled})
+    enrolled, skipped = db.enroll_contacts_bulk(cid, ids)
+
+    # Surface why contacts were left out. Silently enrolling fewer than the
+    # operator selected looks like a bug; naming the reason makes the
+    # duplicate protection visible instead of mysterious.
+    reasons = []
+    if skipped.get("other_campaign"):
+        reasons.append(f"{skipped['other_campaign']} already in another campaign")
+    if skipped.get("duplicate_address"):
+        reasons.append(f"{skipped['duplicate_address']} duplicate address at the same business")
+    if skipped.get("same_domain"):
+        reasons.append(f"{skipped['same_domain']} already being contacted at that business")
+
+    return jsonify({
+        "ok": True,
+        "enrolled": enrolled,
+        "skipped": skipped,
+        "message": (
+            f"Enrolled {enrolled}" + (f" — skipped {', '.join(reasons)}" if reasons else "")
+        ),
+    })
 
 
 @app.route("/api/campaigns/<int:cid>/contacts", methods=["GET"])
