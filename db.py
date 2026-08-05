@@ -60,9 +60,12 @@ def init_db():
                 UNIQUE(campaign_id, step_num)
             );
 
+            -- email is nullable: the scraper stores no-email prospects.
+            -- Uniqueness comes from the partial index contacts_email_unique
+            -- below, not a table constraint, so NULLs are allowed to repeat.
             CREATE TABLE IF NOT EXISTS contacts (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                email      TEXT NOT NULL UNIQUE,
+                email      TEXT DEFAULT NULL,
                 first_name TEXT NOT NULL DEFAULT '',
                 last_name  TEXT NOT NULL DEFAULT '',
                 company    TEXT NOT NULL DEFAULT '',
@@ -159,13 +162,22 @@ def init_db():
         ]:
             try:
                 conn.execute(_col_sql)
-            except Exception:
-                pass  # Column already exists
+            except Exception as exc:
+                # Almost always "duplicate column name" on an already-migrated DB,
+                # but log it — a genuine migration failure must not be invisible.
+                logger.debug("Column migration skipped: %s (%s)", _col_sql, exc)
 
-        # Make email nullable so the scraper can store no-email prospects
+        # Make email nullable on legacy databases created before the scraper
+        # needed to store no-email prospects. Fresh databases are already
+        # nullable (see CREATE TABLE above), so this never fires for them.
+        #
+        # This rebuild must list EVERY column added by the ALTER loop above --
+        # anything omitted here is silently dropped. That is exactly how
+        # mx_valid went missing (Fable Audit 2.1). Add new columns in both places.
         _col_info = conn.execute("PRAGMA table_info(contacts)").fetchall()
         _email_col = next((r for r in _col_info if r['name'] == 'email'), None)
         if _email_col and _email_col['notnull']:
+            logger.info("Migrating contacts.email to nullable (legacy schema)")
             conn.executescript("""
                 PRAGMA foreign_keys = OFF;
                 CREATE TABLE contacts_new (
@@ -179,12 +191,13 @@ def init_db():
                     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                     website           TEXT NOT NULL DEFAULT '',
                     address           TEXT NOT NULL DEFAULT '',
-                    soft_bounce_count INTEGER NOT NULL DEFAULT 0
+                    soft_bounce_count INTEGER NOT NULL DEFAULT 0,
+                    mx_valid          INTEGER DEFAULT NULL
                 );
                 INSERT INTO contacts_new
                     SELECT id, email, first_name, last_name, company, extra, status,
                            created_at, COALESCE(website,''), COALESCE(address,''),
-                           COALESCE(soft_bounce_count, 0)
+                           COALESCE(soft_bounce_count, 0), mx_valid
                     FROM contacts;
                 DROP TABLE contacts;
                 ALTER TABLE contacts_new RENAME TO contacts;
@@ -364,6 +377,23 @@ def upsert_contacts(rows):
                     ))
                     inserted += 1
         return inserted
+
+
+def get_known_company_names() -> set:
+    """
+    Every company already stored, for the scraper's resume set.
+
+    The Maps scraper dedupes by the business name shown on the listing, so
+    this lets a new search skip businesses an earlier search already collected
+    -- overlapping niches like "dentists" and "dental clinics" in one city
+    otherwise re-scrape the same places from scratch.
+    """
+    with get_db() as conn:
+        return {
+            r["company"] for r in conn.execute(
+                "SELECT DISTINCT company FROM contacts WHERE company != ''"
+            ).fetchall()
+        }
 
 
 def get_contacts(limit=200, offset=0):
