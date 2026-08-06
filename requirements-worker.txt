@@ -1,0 +1,14 @@
+# Local scrape worker dependencies — install these on YOUR machine, not the server.
+#
+#   pip install -r requirements-worker.txt
+#   playwright install chromium     <-- separate step; pip only installs the
+#                                       Python package, not the browser binary.
+#                                       Forgetting this is why the scraper
+#                                       failed on the GCP VM.
+#
+# Then:  python scraper_worker.py
+requests>=2.31
+beautifulsoup4>=4.12
+dnspython>=2.4
+playwright>=1.40
+playwright-stealth>=2.0

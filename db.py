@@ -8,7 +8,9 @@ import json
 import logging
 import datetime
 import random
+import re
 import secrets
+from urllib.parse import urlsplit
 import hashlib
 import hmac as _hmac
 import os as _os
@@ -24,6 +26,11 @@ def get_db():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    # WAL lets readers run alongside a writer but still serialises writers.
+    # The scrape worker posts progress while the scheduler is sending, so a
+    # collision is expected -- wait it out instead of raising "database is
+    # locked" at whichever one loses the race.
+    conn.execute("PRAGMA busy_timeout = 10000")
     return conn
 
 
@@ -60,9 +67,12 @@ def init_db():
                 UNIQUE(campaign_id, step_num)
             );
 
+            -- email is nullable: the scraper stores no-email prospects.
+            -- Uniqueness comes from the partial index contacts_email_unique
+            -- below, not a table constraint, so NULLs are allowed to repeat.
             CREATE TABLE IF NOT EXISTS contacts (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                email      TEXT NOT NULL UNIQUE,
+                email      TEXT DEFAULT NULL,
                 first_name TEXT NOT NULL DEFAULT '',
                 last_name  TEXT NOT NULL DEFAULT '',
                 company    TEXT NOT NULL DEFAULT '',
@@ -137,6 +147,31 @@ def init_db():
                 UNIQUE(step_id, label)
             );
 
+            -- Scrape jobs are queued here by the web UI and claimed by a
+            -- worker running on the operator's own machine. The server never
+            -- launches a browser: the scraper needs a visible Chrome window
+            -- for CAPTCHA solving, which a headless VM cannot provide.
+            CREATE TABLE IF NOT EXISTS scrape_jobs (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                niche        TEXT    NOT NULL,
+                city         TEXT    NOT NULL,
+                max_results  INTEGER NOT NULL DEFAULT 50,
+                auto_import  INTEGER NOT NULL DEFAULT 1,
+                status       TEXT    NOT NULL DEFAULT 'queued',
+                progress     INTEGER NOT NULL DEFAULT 0,
+                total        INTEGER NOT NULL DEFAULT 0,
+                found        INTEGER NOT NULL DEFAULT 0,
+                imported     INTEGER NOT NULL DEFAULT 0,
+                logs         TEXT    NOT NULL DEFAULT '[]',
+                stop_flag    INTEGER NOT NULL DEFAULT 0,
+                resume_flag  INTEGER NOT NULL DEFAULT 0,
+                error        TEXT    NOT NULL DEFAULT '',
+                created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+                claimed_at   TEXT,
+                heartbeat_at TEXT,
+                finished_at  TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS users (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 username      TEXT    NOT NULL UNIQUE,
@@ -156,16 +191,36 @@ def init_db():
             "ALTER TABLE contacts ADD COLUMN mx_valid INTEGER DEFAULT NULL",
             "ALTER TABLE campaigns ADD COLUMN timezone TEXT DEFAULT NULL",
             "ALTER TABLE campaigns ADD COLUMN variables TEXT DEFAULT '{}'",
+            # Canonical host for a contact's website. Deduping on the raw
+            # website string failed constantly because Maps hands out
+            # http://x.ca, https://www.x.ca/ and http://x.ca/?utm_source=gmb
+            # for the same business.
+            "ALTER TABLE contacts ADD COLUMN domain TEXT NOT NULL DEFAULT ''",
+            # Points at the contact that won for this domain. Suppression is
+            # kept OUT of `status` on purpose: get_due_enrollments filters
+            # status='active', and follow-ups re-enter through that same
+            # query, so flipping a mid-sequence contact's status would
+            # silently cancel steps 2 and 3.
+            "ALTER TABLE contacts ADD COLUMN duplicate_of INTEGER DEFAULT NULL",
         ]:
             try:
                 conn.execute(_col_sql)
-            except Exception:
-                pass  # Column already exists
+            except Exception as exc:
+                # Almost always "duplicate column name" on an already-migrated DB,
+                # but log it — a genuine migration failure must not be invisible.
+                logger.debug("Column migration skipped: %s (%s)", _col_sql, exc)
 
-        # Make email nullable so the scraper can store no-email prospects
+        # Make email nullable on legacy databases created before the scraper
+        # needed to store no-email prospects. Fresh databases are already
+        # nullable (see CREATE TABLE above), so this never fires for them.
+        #
+        # This rebuild must list EVERY column added by the ALTER loop above --
+        # anything omitted here is silently dropped. That is exactly how
+        # mx_valid went missing (Fable Audit 2.1). Add new columns in both places.
         _col_info = conn.execute("PRAGMA table_info(contacts)").fetchall()
         _email_col = next((r for r in _col_info if r['name'] == 'email'), None)
         if _email_col and _email_col['notnull']:
+            logger.info("Migrating contacts.email to nullable (legacy schema)")
             conn.executescript("""
                 PRAGMA foreign_keys = OFF;
                 CREATE TABLE contacts_new (
@@ -179,12 +234,16 @@ def init_db():
                     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                     website           TEXT NOT NULL DEFAULT '',
                     address           TEXT NOT NULL DEFAULT '',
-                    soft_bounce_count INTEGER NOT NULL DEFAULT 0
+                    soft_bounce_count INTEGER NOT NULL DEFAULT 0,
+                    mx_valid          INTEGER DEFAULT NULL,
+                    domain            TEXT NOT NULL DEFAULT '',
+                    duplicate_of      INTEGER DEFAULT NULL
                 );
                 INSERT INTO contacts_new
                     SELECT id, email, first_name, last_name, company, extra, status,
                            created_at, COALESCE(website,''), COALESCE(address,''),
-                           COALESCE(soft_bounce_count, 0)
+                           COALESCE(soft_bounce_count, 0), mx_valid,
+                           COALESCE(domain,''), duplicate_of
                     FROM contacts;
                 DROP TABLE contacts;
                 ALTER TABLE contacts_new RENAME TO contacts;
@@ -204,11 +263,28 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS enrollments_due_idx     ON enrollments(campaign_id, status, next_send_at)",
             "CREATE INDEX IF NOT EXISTS enrollments_contact_idx ON enrollments(contact_id, status)",
             "CREATE INDEX IF NOT EXISTS contacts_status_idx     ON contacts(status)",
+            "CREATE INDEX IF NOT EXISTS contacts_domain_idx     ON contacts(domain) WHERE domain != ''",
         ):
             try:
                 conn.execute(idx_sql)
             except Exception as exc:
                 logger.debug("Index create skipped: %s (%s)", idx_sql, exc)
+
+        # Backfill domain for rows that predate the column.
+        try:
+            todo = conn.execute(
+                "SELECT id, website FROM contacts "
+                "WHERE domain = '' AND website != ''"
+            ).fetchall()
+            for row in todo:
+                conn.execute(
+                    "UPDATE contacts SET domain=? WHERE id=?",
+                    (canonical_domain(row["website"]), row["id"]),
+                )
+            if todo:
+                logger.info("Backfilled domain for %d contact(s)", len(todo))
+        except Exception as exc:
+            logger.warning("Domain backfill skipped: %s", exc)
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -242,6 +318,222 @@ def get_or_create_secret() -> str:
             "INSERT INTO settings(key,value) VALUES('_secret_key',?)", (key,)
         )
         return key
+
+
+def get_or_create_worker_api_key() -> str:
+    """
+    Shared secret the local scrape worker uses to authenticate.
+
+    The worker is not a browser and has no session cookie, so it presents this
+    as an X-API-Key header instead. Custom headers are not attached
+    cross-origin by browsers, so token auth on these routes is not exposed to
+    CSRF the way a cookie-authenticated route would be.
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key='_worker_api_key'"
+        ).fetchone()
+        if row and row["value"]:
+            return row["value"]
+        key = secrets.token_urlsafe(32)
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES('_worker_api_key',?)",
+            (key,),
+        )
+        return key
+
+
+def rotate_worker_api_key() -> str:
+    with get_db() as conn:
+        key = secrets.token_urlsafe(32)
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES('_worker_api_key',?)",
+            (key,),
+        )
+        return key
+
+
+# ── Scrape jobs ───────────────────────────────────────────────────────────────
+
+# Statuses a job can sit in while it is still someone's responsibility.
+SCRAPE_ACTIVE_STATUSES = ("queued", "claimed", "running", "captcha")
+
+# A worker that has not checked in for this long is treated as gone. It has to
+# comfortably exceed the worker's own post interval, or a busy scrape that goes
+# quiet during a slow page load would flap the UI to "offline".
+WORKER_STALE_SECONDS = 45
+
+
+def create_scrape_job(niche, city, max_results=50, auto_import=True) -> int:
+    with get_db() as conn:
+        cur = conn.execute("""
+            INSERT INTO scrape_jobs(niche, city, max_results, auto_import, logs)
+            VALUES(?,?,?,?,'[]')
+        """, (niche, city, int(max_results), 1 if auto_import else 0))
+        return cur.lastrowid
+
+
+def get_scrape_job(job_id: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM scrape_jobs WHERE id=?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_latest_scrape_job():
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM scrape_jobs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_active_scrape_job():
+    placeholders = ",".join("?" * len(SCRAPE_ACTIVE_STATUSES))
+    with get_db() as conn:
+        row = conn.execute(
+            f"SELECT * FROM scrape_jobs WHERE status IN ({placeholders}) "
+            "ORDER BY id ASC LIMIT 1",
+            SCRAPE_ACTIVE_STATUSES,
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def claim_scrape_job() -> dict:
+    """
+    Hand the oldest queued job to a worker, atomically.
+
+    The UPDATE ... WHERE status='queued' is the lock: if two workers race, only
+    one gets a rowcount of 1, so the job cannot be run twice.
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM scrape_jobs WHERE status='queued' ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return None
+        cur = conn.execute("""
+            UPDATE scrape_jobs
+               SET status='claimed',
+                   claimed_at=datetime('now'),
+                   heartbeat_at=datetime('now')
+             WHERE id=? AND status='queued'
+        """, (row["id"],))
+        if cur.rowcount != 1:
+            return None          # another worker won the race
+        return dict(conn.execute(
+            "SELECT * FROM scrape_jobs WHERE id=?", (row["id"],)
+        ).fetchone())
+
+
+def update_scrape_job(job_id: int, *, status=None, progress=None, total=None,
+                      found=None, imported=None, error=None, new_logs=None,
+                      finished=False) -> dict:
+    """
+    Apply a worker's progress report and return the current control flags.
+
+    Returning stop/resume in the same round trip is deliberate: this one call
+    is the heartbeat, the log upload, and the control channel, so the worker
+    learns about a Stop or Resume press without a second request.
+    """
+    with get_db() as conn:
+        sets, params = ["heartbeat_at=datetime('now')"], []
+        for column, value in (("status", status), ("progress", progress),
+                              ("total", total), ("found", found),
+                              ("imported", imported), ("error", error)):
+            if value is not None:
+                sets.append(f"{column}=?")
+                params.append(value)
+        if finished:
+            sets.append("finished_at=datetime('now')")
+
+        if new_logs:
+            row = conn.execute(
+                "SELECT logs FROM scrape_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            try:
+                existing = json.loads(row["logs"]) if row else []
+            except Exception:
+                existing = []
+            existing.extend(new_logs)
+            # Bounded so a long scrape cannot grow the row without limit.
+            sets.append("logs=?")
+            params.append(json.dumps(existing[-300:]))
+
+        params.append(job_id)
+        conn.execute(f"UPDATE scrape_jobs SET {','.join(sets)} WHERE id=?", params)
+
+        row = conn.execute(
+            "SELECT stop_flag, resume_flag, status FROM scrape_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            return {"stop": True, "resume": False, "status": "gone"}
+        # Resume is a one-shot edge: clear it once the worker has been told,
+        # or a single click would unblock every later CAPTCHA too.
+        if row["resume_flag"]:
+            conn.execute(
+                "UPDATE scrape_jobs SET resume_flag=0 WHERE id=?", (job_id,)
+            )
+        return {
+            "stop":   bool(row["stop_flag"]),
+            "resume": bool(row["resume_flag"]),
+            "status": row["status"],
+        }
+
+
+def flag_scrape_job(job_id: int, *, stop=False, resume=False):
+    column = "stop_flag" if stop else "resume_flag"
+    with get_db() as conn:
+        conn.execute(f"UPDATE scrape_jobs SET {column}=1 WHERE id=?", (job_id,))
+
+
+def touch_worker_seen():
+    """
+    Record that a worker just checked in.
+
+    Kept in settings rather than on the job row because the worker polls for
+    work when no job exists -- the UI still needs to show it as connected so
+    pressing Start is not a shot in the dark.
+    """
+    with get_db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key,value) "
+            "VALUES('_worker_last_seen', datetime('now'))"
+        )
+
+
+def worker_seconds_since_seen():
+    """Seconds since any worker last checked in, or None if never."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key='_worker_last_seen'"
+        ).fetchone()
+    if not row or not row["value"]:
+        return None
+    try:
+        seen = datetime.datetime.strptime(row["value"], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+    return max(0.0, (datetime.datetime.utcnow() - seen).total_seconds())
+
+
+def reap_stale_scrape_jobs():
+    """
+    Fail jobs whose worker vanished mid-run.
+
+    Without this a killed worker leaves a job stuck in 'running' forever, and
+    the UI refuses to start a new one because something is already active.
+    """
+    with get_db() as conn:
+        conn.execute(f"""
+            UPDATE scrape_jobs
+               SET status='error',
+                   error='Worker stopped reporting',
+                   finished_at=datetime('now')
+             WHERE status IN ('claimed','running','captcha')
+               AND heartbeat_at IS NOT NULL
+               AND (julianday('now') - julianday(heartbeat_at)) * 86400 > ?
+        """, (WORKER_STALE_SECONDS * 4,))
 
 
 # ── Campaigns ─────────────────────────────────────────────────────────────────
@@ -314,26 +606,146 @@ def delete_step(campaign_id, step_num):
 
 # ── Contacts ──────────────────────────────────────────────────────────────────
 
+def canonical_domain(website: str) -> str:
+    """
+    Reduce a website URL to the host it identifies.
+
+    'http://x.ca', 'https://www.x.ca/contact' and
+    'http://x.ca/?utm_source=gmb' are one business, and Google Maps hands out
+    all three shapes. Comparing raw strings created a duplicate row per URL
+    variant, so everything domain-related keys off this instead.
+    """
+    website = (website or "").strip().lower()
+    if not website:
+        return ""
+    if "//" not in website:
+        website = "https://" + website
+    try:
+        host = urlsplit(website).netloc
+    except Exception:
+        return ""
+    host = host.split("@")[-1].split(":")[0]      # drop userinfo and port
+    return host[4:] if host.startswith("www.") else host
+
+
+# Addresses that reach a mailbox nobody reads, or the wrong department. The
+# README's own advice is not to cold-email role accounts, so when a business
+# exposes several the personal one should win.
+_ROLE_PREFIXES = {
+    "info", "contact", "hello", "enquiries", "enquiry", "inquiries",
+    "office", "admin", "reception", "mail", "email", "general",
+}
+_AVOID_PREFIXES = {
+    "billing", "payment", "payments", "accounts", "accounting", "invoice",
+    "careers", "jobs", "hr", "recruitment", "noreply", "no-reply",
+    "donotreply", "webmaster", "postmaster", "abuse", "privacy", "legal",
+    "support", "help", "sales",
+}
+
+
+def email_rank(email: str) -> int:
+    """Lower sorts better. Personal < role < billing/careers/no-reply."""
+    local = (email or "").split("@")[0].strip().lower()
+    base = re.split(r"[.\-_+]", local)[0] if local else ""
+    if base in _AVOID_PREFIXES or local in _AVOID_PREFIXES:
+        return 2
+    if base in _ROLE_PREFIXES or local in _ROLE_PREFIXES:
+        return 1
+    return 0
+
+
+def _has_live_enrollment(conn, contact_id: int) -> bool:
+    """True if this contact is mid-sequence and must not be suppressed."""
+    row = conn.execute("""
+        SELECT 1 FROM enrollments
+         WHERE contact_id=?
+           AND status NOT IN ('completed','replied','unsubscribed','bounced')
+         LIMIT 1
+    """, (contact_id,)).fetchone()
+    return row is not None
+
+
+def _pick_domain_winner(conn, domain: str):
+    """
+    Decide which contact at `domain` is the sendable one, and link the rest.
+
+    Two rules, in order:
+      1. A contact already mid-sequence always wins. Demoting it would strand
+         the prospect after step 1 -- they would never receive the follow-ups,
+         with no error anywhere.
+      2. Otherwise the best-ranked address wins, oldest as the tiebreak.
+    """
+    if not domain:
+        return
+    rows = conn.execute("""
+        SELECT id, email FROM contacts
+         WHERE domain=? AND email IS NOT NULL AND email != ''
+           AND status NOT IN ('deleted','unsubscribed','bounced')
+         ORDER BY id ASC
+    """, (domain,)).fetchall()
+    if len(rows) < 2:
+        # Nothing to arbitrate; make sure a lone contact is not left suppressed.
+        for row in rows:
+            conn.execute(
+                "UPDATE contacts SET duplicate_of=NULL WHERE id=?", (row["id"],)
+            )
+        return
+
+    enrolled = [r for r in rows if _has_live_enrollment(conn, r["id"])]
+    if enrolled:
+        winner = enrolled[0]["id"]
+    else:
+        winner = sorted(rows, key=lambda r: (email_rank(r["email"]), r["id"]))[0]["id"]
+
+    for row in rows:
+        if row["id"] == winner:
+            conn.execute("UPDATE contacts SET duplicate_of=NULL WHERE id=?", (winner,))
+        elif _has_live_enrollment(conn, row["id"]):
+            # Already being emailed. Leave it alone rather than cutting a live
+            # sequence short; the operator can unenroll it deliberately.
+            conn.execute("UPDATE contacts SET duplicate_of=NULL WHERE id=?", (row["id"],))
+        else:
+            conn.execute(
+                "UPDATE contacts SET duplicate_of=? WHERE id=?", (winner, row["id"])
+            )
+
+
 def upsert_contacts(rows):
     """rows: list of dicts — email optional; required for active contacts, omit for prospects."""
     with get_db() as conn:
         inserted = 0
+        touched_domains = set()
+
         for r in rows:
             email = (r.get("email") or "").strip().lower()
             website = r.get("website", "")
             status = r.get("status", "active")
+            domain = canonical_domain(website)
+            if domain:
+                touched_domains.add(domain)
 
             if email and "@" in email:
+                if not domain:
+                    # Fall back to the address's own domain so contacts pasted
+                    # in without a website still participate in deduplication.
+                    domain = email.split("@")[-1]
+                    touched_domains.add(domain)
                 mx_valid = r.get("mx_valid")  # None = unchecked, 1 = valid, 0 = invalid
                 conn.execute("""
-                    INSERT INTO contacts(email,first_name,last_name,company,website,address,extra,status,mx_valid)
-                    VALUES(:email,:first_name,:last_name,:company,:website,:address,:extra,:status,:mx_valid)
+                    INSERT INTO contacts(email,first_name,last_name,company,website,address,extra,status,mx_valid,domain)
+                    VALUES(:email,:first_name,:last_name,:company,:website,:address,:extra,:status,:mx_valid,:domain)
                     ON CONFLICT(email) WHERE email IS NOT NULL AND email != '' DO UPDATE SET
                         first_name=COALESCE(NULLIF(excluded.first_name,''), contacts.first_name),
                         last_name=COALESCE(NULLIF(excluded.last_name,''),   contacts.last_name),
-                        company=COALESCE(NULLIF(excluded.company,''),       contacts.company),
-                        website=COALESCE(NULLIF(excluded.website,''),       contacts.website),
+                        -- company is deliberately NOT overwritten when we
+                        -- already have one: shared addresses (a dental group's
+                        -- payments@ appearing under several practices) would
+                        -- otherwise rename the contact to whichever business
+                        -- was scraped last.
+                        company=COALESCE(NULLIF(contacts.company,''),       excluded.company),
+                        website=COALESCE(NULLIF(contacts.website,''),       excluded.website),
                         address=COALESCE(NULLIF(excluded.address,''),       contacts.address),
+                        domain=COALESCE(NULLIF(contacts.domain,''),         excluded.domain),
                         mx_valid=COALESCE(excluded.mx_valid,                contacts.mx_valid)
                 """, {
                     "email":      email,
@@ -345,25 +757,96 @@ def upsert_contacts(rows):
                     "extra":      json.dumps(r.get("extra", {})),
                     "status":     status,
                     "mx_valid":   mx_valid,
+                    "domain":     domain,
                 })
+                # Record the other business this address turned up under, so
+                # the connection is not lost just because company was kept.
+                _note_alternate_company(conn, email, r.get("company", ""))
                 inserted += 1
-            elif website and status in ("form_only", "no_email"):
-                # Prospect record — no email found; skip if same website already stored
-                exists = conn.execute(
-                    "SELECT id FROM contacts WHERE website=? AND email IS NULL",
-                    (website,)
-                ).fetchone()
+
+            elif status in ("form_only", "no_email", "no_website"):
+                # Prospect record — no email found. Match on the canonical
+                # domain, not the raw URL, or one business becomes a row per
+                # URL variant Maps happens to return.
+                #
+                # no_website rows have no domain to match on, so they dedupe on
+                # the business name instead. They are kept rather than dropped:
+                # for a web-design agency, "this business has no website" is
+                # the strongest possible qualifying signal.
+                if domain:
+                    exists = conn.execute(
+                        "SELECT id FROM contacts WHERE domain=? AND (email IS NULL OR email='')",
+                        (domain,)
+                    ).fetchone()
+                elif r.get("company"):
+                    exists = conn.execute(
+                        "SELECT id FROM contacts WHERE company=? AND (email IS NULL OR email='')",
+                        (r["company"],)
+                    ).fetchone()
+                else:
+                    continue        # nothing to identify it by; skip
+
                 if not exists:
                     conn.execute("""
-                        INSERT INTO contacts(company,website,address,status,extra)
-                        VALUES(?,?,?,?,?)
+                        INSERT INTO contacts(company,website,address,status,extra,domain)
+                        VALUES(?,?,?,?,?,?)
                     """, (
                         r.get("company", ""), website,
                         r.get("address", ""), status,
-                        json.dumps(r.get("extra", {})),
+                        json.dumps(r.get("extra", {})), domain,
                     ))
                     inserted += 1
+
+        for domain in touched_domains:
+            _pick_domain_winner(conn, domain)
+
         return inserted
+
+
+def _note_alternate_company(conn, email: str, company: str):
+    """
+    Keep a record when one address is seen under a different business name.
+
+    Group practices share a billing address, so the same email legitimately
+    turns up under several listings. We keep the first company as the contact's
+    name; this stops the others from being silently discarded.
+    """
+    company = (company or "").strip()
+    if not company:
+        return
+    row = conn.execute(
+        "SELECT id, company, extra FROM contacts WHERE email=?", (email,)
+    ).fetchone()
+    if not row or row["company"] == company:
+        return
+    try:
+        extra = json.loads(row["extra"] or "{}")
+    except Exception:
+        extra = {}
+    seen = extra.get("also_seen_at") or []
+    if company not in seen and company != row["company"]:
+        seen.append(company)
+        extra["also_seen_at"] = seen[:10]
+        conn.execute(
+            "UPDATE contacts SET extra=? WHERE id=?", (json.dumps(extra), row["id"])
+        )
+
+
+def get_known_company_names() -> set:
+    """
+    Every company already stored, for the scraper's resume set.
+
+    The Maps scraper dedupes by the business name shown on the listing, so
+    this lets a new search skip businesses an earlier search already collected
+    -- overlapping niches like "dentists" and "dental clinics" in one city
+    otherwise re-scrape the same places from scratch.
+    """
+    with get_db() as conn:
+        return {
+            r["company"] for r in conn.execute(
+                "SELECT DISTINCT company FROM contacts WHERE company != ''"
+            ).fetchall()
+        }
 
 
 def get_contacts(limit=200, offset=0):
@@ -601,6 +1084,15 @@ def get_campaign_contact_report(campaign_id: int):
 
 
 def enroll_contacts_bulk(campaign_id, contact_ids):
+    """
+    Enroll contacts, skipping any that would produce a duplicate approach.
+
+    Returns (enrolled, skipped) where skipped explains why. The UNIQUE
+    constraint only stops re-enrolling in the SAME campaign; nothing stopped a
+    contact sitting in two campaigns at once and receiving two different cold
+    pitches in overlapping windows, which reads as spam to the recipient and
+    undoes the deliverability discipline the rest of the system maintains.
+    """
     now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     # Determine variant weights from step 1 (if A/B is configured)
@@ -610,10 +1102,51 @@ def enroll_contacts_bulk(campaign_id, contact_ids):
         ).fetchone()
     variants = get_step_variants(step1["id"]) if step1 else []
 
+    one_per_domain = get_settings().get("one_sequence_per_domain", "0") == "1"
+
     with get_db() as conn:
         enrolled = 0
+        skipped = {"other_campaign": 0, "duplicate_address": 0, "same_domain": 0}
+
         for cid in contact_ids:
             try:
+                row = conn.execute(
+                    "SELECT id, domain, duplicate_of FROM contacts WHERE id=?", (cid,)
+                ).fetchone()
+                if not row:
+                    continue
+
+                # Suppressed as a duplicate address at a business we already
+                # have a better contact for.
+                if row["duplicate_of"] is not None:
+                    skipped["duplicate_address"] += 1
+                    continue
+
+                # Already being worked by another campaign.
+                busy = conn.execute("""
+                    SELECT 1 FROM enrollments
+                     WHERE contact_id=? AND campaign_id != ?
+                       AND status NOT IN ('completed','replied','unsubscribed','bounced')
+                     LIMIT 1
+                """, (cid, campaign_id)).fetchone()
+                if busy:
+                    skipped["other_campaign"] += 1
+                    continue
+
+                # Optional stricter rule: one live sequence per business, not
+                # per address, for operators who would rather under-contact.
+                if one_per_domain and row["domain"]:
+                    same_domain = conn.execute("""
+                        SELECT 1 FROM enrollments e
+                          JOIN contacts c ON c.id = e.contact_id
+                         WHERE c.domain=? AND e.contact_id != ?
+                           AND e.status NOT IN ('completed','replied','unsubscribed','bounced')
+                         LIMIT 1
+                    """, (row["domain"], cid)).fetchone()
+                    if same_domain:
+                        skipped["same_domain"] += 1
+                        continue
+
                 variant_label = _pick_variant(variants) if variants else None
                 cur = conn.execute("""
                     INSERT OR IGNORE INTO enrollments
@@ -623,7 +1156,8 @@ def enroll_contacts_bulk(campaign_id, contact_ids):
                 enrolled += cur.rowcount
             except Exception as e:
                 logger.warning(f"Failed to enroll contact {cid}: {e}")
-        return enrolled
+
+        return enrolled, skipped
 
 
 def unenroll_contact(enroll_id: int):

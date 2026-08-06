@@ -15,6 +15,7 @@ Anti-spam mechanisms built in:
 
 import smtplib
 import imaplib
+import ssl
 import email as emaillib
 import email.message
 import email.utils
@@ -168,6 +169,15 @@ def is_business_hours(campaign: dict) -> bool:
 
 # ── Connection helpers ─────────────────────────────────────────────────────────
 
+# Python's smtplib and imaplib, given no SSL context, fall back to
+# ssl._create_stdlib_context() -- which sets verify_mode=CERT_NONE and
+# check_hostname=False. That means no certificate validation at all: anyone on
+# the network path can present any certificate and receive the SMTP/IMAP
+# password in the TLS session. create_default_context() verifies both the
+# chain and the hostname.
+_TLS_CONTEXT = ssl.create_default_context()
+
+
 def get_smtp(settings: dict):
     host = settings.get("smtp_host", "")
     port = int(settings.get("smtp_port", 587))
@@ -175,11 +185,11 @@ def get_smtp(settings: dict):
     pwd  = settings.get("smtp_pass", "")
 
     if port == 465:
-        server = smtplib.SMTP_SSL(host, port, timeout=15)
+        server = smtplib.SMTP_SSL(host, port, timeout=15, context=_TLS_CONTEXT)
     else:
         server = smtplib.SMTP(host, port, timeout=15)
         server.ehlo()
-        server.starttls()
+        server.starttls(context=_TLS_CONTEXT)
         server.ehlo()
 
     server.login(user, pwd)
@@ -202,7 +212,7 @@ def test_imap(settings: dict) -> tuple[bool, str]:
         pwd  = settings.get("imap_pass", "")
         if not host:
             return False, "IMAP host not configured"
-        M = imaplib.IMAP4_SSL(host, timeout=15)
+        M = imaplib.IMAP4_SSL(host, ssl_context=_TLS_CONTEXT, timeout=15)
         M.login(user, pwd)
         M.logout()
         return True, "IMAP connection successful ✓"
@@ -340,7 +350,7 @@ def _scan_inbox_for_replies(host: str, user: str, pwd: str):
     if not host or not user or not pwd:
         return
     try:
-        M = imaplib.IMAP4_SSL(host, timeout=20)
+        M = imaplib.IMAP4_SSL(host, ssl_context=_TLS_CONTEXT, timeout=20)
         M.login(user, pwd)
         M.select("INBOX", readonly=True)
 
@@ -514,7 +524,7 @@ def _scan_inbox_for_bounces(host: str, user: str, pwd: str, threshold: int):
     if not host or not user or not pwd:
         return
     try:
-        M = imaplib.IMAP4_SSL(host, timeout=20)
+        M = imaplib.IMAP4_SSL(host, ssl_context=_TLS_CONTEXT, timeout=20)
         M.login(user, pwd)
         M.select("INBOX")
 
@@ -523,7 +533,12 @@ def _scan_inbox_for_bounces(host: str, user: str, pwd: str, threshold: int):
         ids = data[0].split()
 
         for num in ids:
-            _, msg_data = M.fetch(num, "(RFC822)")
+            # BODY.PEEK[] reads without setting \Seen. Plain "(RFC822)" marks
+            # the message read as a side effect, so scanning for bounces was
+            # quietly marking every unread mail in the inbox from the last 7
+            # days -- fine on a dedicated sending mailbox, disruptive on one a
+            # human also reads. Only confirmed bounces get flagged, below.
+            _, msg_data = M.fetch(num, "(BODY.PEEK[])")
             raw = msg_data[0][1] if msg_data and msg_data[0] else b""
             parsed = emaillib.message_from_bytes(raw)
 

@@ -6,10 +6,25 @@
     </div>
   </div>
 
-  <div class="warning-box" style="margin-bottom:24px">
-    ⚠ The scraper opens a Chrome window on the machine running this app.
-    Works when running locally — not available on cloud deployments.
-    After scraping, contacts with emails are imported automatically.
+  <div id="sc-worker-banner" class="warning-box" style="margin-bottom:24px">
+    <div style="display:flex;align-items:center;gap:10px">
+      <span id="sc-worker-dot" style="width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none"></span>
+      <div>
+        <div id="sc-worker-title" style="font-weight:600">Checking for a worker…</div>
+        <div id="sc-worker-detail" style="font-size:12px;color:var(--muted);margin-top:3px">
+          Scrapes run on your own machine, not on this server — Chrome has to open
+          somewhere you can see it to solve CAPTCHAs.
+        </div>
+      </div>
+    </div>
+    <div id="sc-worker-help" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;color:var(--muted)">
+      On your machine, in the project folder:
+      <div class="mono" style="margin-top:6px;padding:8px 10px;background:var(--bg3);border-radius:6px;font-size:11px;line-height:1.7">
+        set SHOUTREACH_URL=<span id="sc-worker-url">…</span><br>
+        set SHOUTREACH_API_KEY=&lt;from Settings&gt;<br>
+        python scraper_worker.py
+      </div>
+    </div>
   </div>
 
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px">
@@ -62,7 +77,10 @@
 
       <div id="sc-captcha-box" style="display:none;background:rgba(245,166,35,.1);border:1px solid var(--amber);border-radius:8px;padding:14px;margin-bottom:12px">
         <div style="color:var(--amber);font-weight:600;margin-bottom:8px">⚠ CAPTCHA detected</div>
-        <div style="color:var(--muted);font-size:12px;margin-bottom:10px">Solve it in the Chrome window on your machine, then click Resume.</div>
+        <div style="color:var(--muted);font-size:12px;margin-bottom:10px">
+          Switch to the Chrome window <strong>on the machine running the worker</strong>
+          and solve it there, then click Resume.
+        </div>
         <button class="btn btn-amber btn-sm" onclick="resumeScraper()">✓ Resume</button>
       </div>
     </div>

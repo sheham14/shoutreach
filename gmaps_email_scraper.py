@@ -76,19 +76,37 @@ import argparse
 import csv
 import json
 import re
+import sys
 import threading
 import time
 import random
 import logging
+import urllib.parse
 from pathlib import Path
 from collections import Counter
 
 import email_validator as _ev
 
 import requests
+import urllib3
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
+
+# Small-business sites routinely have expired or misconfigured certificates.
+# We retry those once with verification off (see _fetch), so silence the noise.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# The console on Windows defaults to cp1252, which cannot encode the check
+# marks and block characters used in the log output below. Without this the
+# logging module swallows a UnicodeEncodeError per line and mangles the run.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass  # already UTF-8, or not a real stream (captured output)
 
 # ══════════════════════════════════════════════════════════════
 #  CONFIG  ← only section you need to edit
@@ -159,8 +177,21 @@ STATUS_BLOCKED    = "site_blocked"
 STATUS_TIMEOUT    = "site_timeout"
 STATUS_FORM_ONLY  = "contact_form_only"
 STATUS_NO_EMAIL   = "no_email_on_page"
+# Split out of the old catch-all site_blocked so the CSV says what actually
+# happened. Previously an expired certificate and a Cloudflare 403 both read
+# as "blocked", which made the failures look unfixable when most were not.
+STATUS_SSL_ERROR  = "site_ssl_error"
+STATUS_DNS_ERROR  = "site_dns_error"
+STATUS_DEAD       = "site_unreachable"
 
-CSV_FIELDS = ["name", "website", "address", "emails", "email_status"]
+# Statuses worth a second attempt through a real browser: the site answered
+# (or refused) in a way that a plain HTTP client often cannot get past.
+BROWSER_RETRY_STATUSES = (STATUS_BLOCKED, STATUS_NO_EMAIL, STATUS_FORM_ONLY)
+
+CSV_FIELDS = [
+    "name", "website", "address", "phone", "rating", "reviews", "category",
+    "emails", "email_status",
+]
 
 
 class ScraperJob:
@@ -199,6 +230,31 @@ class ScraperJob:
 #  CSV HELPERS
 # ──────────────────────────────────────────────────────────────
 
+def safe_filename(name: str) -> str:
+    """
+    Turn a niche/city string into a filesystem-safe filename fragment.
+    'St. John's Newfoundland' previously produced st_john's_...csv -- legal on
+    Windows but awkward to quote in every shell and script that touches it.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "_", (name or "").strip().lower())
+    return cleaned.strip("_") or "output"
+
+
+def read_csv_rows(path: str) -> list:
+    """
+    Every row in the output CSV, duplicates included.
+
+    print_summary used to count via load_existing_records(), which is keyed by
+    business name -- so two rows for the same business collapsed into one and
+    the totals silently under-reported.
+    """
+    p = Path(path)
+    if not p.exists():
+        return []
+    with open(p, newline="", encoding="utf-8") as f:
+        return [row for row in csv.DictReader(f)]
+
+
 def load_existing_records(path: str) -> dict:
     """
     Reads the output CSV if it exists.
@@ -206,13 +262,12 @@ def load_existing_records(path: str) -> dict:
     Used so resumed runs can skip already-processed businesses.
     """
     existing = {}
-    p = Path(path)
-    if not p.exists():
-        return existing
-    with open(p, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            existing[row["name"]] = row
-    log.info(f"Resume: loaded {len(existing)} existing records from '{path}'")
+    for row in read_csv_rows(path):
+        name = row.get("name")
+        if name:
+            existing[name] = row
+    if existing:
+        log.info(f"Resume: loaded {len(existing)} existing records from '{path}'")
     return existing
 
 
@@ -227,6 +282,24 @@ def append_to_csv(record: dict, path: str):
         if write_header:
             writer.writeheader()
         writer.writerow(record)
+
+
+def rewrite_csv_rows(records: list, path: str):
+    """
+    Replace the rows written during this run with their final state.
+
+    Rows are appended as each business is processed so a crash never loses the
+    run, but the browser fallback resolves some of them afterwards. Rather than
+    leave the file disagreeing with what was imported, rewrite it once at the
+    end -- preserving any rows from earlier runs that are not in this batch.
+    """
+    names_now = {r.get("name") for r in records}
+    kept = [r for r in read_csv_rows(path) if r.get("name") not in names_now]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+        for row in kept + records:
+            writer.writerow({k: row.get(k, "") for k in CSV_FIELDS})
 
 
 # ──────────────────────────────────────────────────────────────
@@ -258,19 +331,43 @@ def load_cookies(context, path: str):
 #  manually in the browser window.
 # ──────────────────────────────────────────────────────────────
 
-CAPTCHA_SIGNALS = [
-    "recaptcha",
-    "unusual traffic",
+# Phrases that only appear on a genuine Google challenge page. The previous
+# version substring-matched "captcha" against the whole page body, which fires
+# on any listing whose text happens to mention it -- and this check runs after
+# every card click, so a false positive stalls the run waiting for a CAPTCHA
+# that was never there.
+CAPTCHA_TEXT_SIGNALS = [
+    "unusual traffic from your computer network",
     "verify you're not a robot",
-    "captcha",
+    "our systems have detected unusual traffic",
 ]
 
-def handle_captcha_if_present(page, job=None):
+
+def _captcha_present(page) -> bool:
+    """
+    Structure first, text second. Google serves its interstitial from
+    /sorry/ and mounts the widget in a recaptcha iframe -- both are far more
+    reliable than reading the body text.
+    """
+    try:
+        if "/sorry/" in (page.url or ""):
+            return True
+    except Exception:
+        pass
+    try:
+        if page.query_selector('iframe[src*="recaptcha"], form#captcha-form, div#recaptcha'):
+            return True
+    except Exception:
+        pass
     try:
         body = page.inner_text("body").lower()
     except Exception:
-        return
-    if any(s in body for s in CAPTCHA_SIGNALS):
+        return False
+    return any(s in body for s in CAPTCHA_TEXT_SIGNALS)
+
+
+def handle_captcha_if_present(page, job=None):
+    if _captcha_present(page):
         if job:
             job.status = "captcha"
             job.log("⚠ CAPTCHA detected — solve it in the Chrome window, then click Resume in the app.", "WARN")
@@ -302,21 +399,91 @@ def handle_captcha_if_present(page, job=None):
 #    - Saves cookies on exit for the next run
 # ──────────────────────────────────────────────────────────────
 
+# Google's obfuscated class names change without notice. If a run suddenly
+# collects zero businesses, check this selector against the live DOM first.
+RESULT_CARD_SELECTOR = "a.hfpxzc"
+
+
+def _text_of(page, selector: str) -> str:
+    try:
+        el = page.query_selector(selector)
+        return (el.inner_text() or "").strip() if el else ""
+    except Exception:
+        return ""
+
+
+def _read_detail_panel(page) -> dict:
+    """
+    Scrape the open Maps detail panel.
+
+    Rating, review count and phone are all sitting there already and cost
+    nothing extra to read. They are what let you qualify a list before
+    spending sends on it -- and for a web agency, a business with no website
+    is a lead rather than a failure, which needs the phone number to act on.
+    """
+    website_el = None
+    try:
+        website_el = page.query_selector('a[data-item-id="authority"]')
+    except Exception:
+        pass
+    website = (website_el.get_attribute("href") or "") if website_el else ""
+
+    phone = ""
+    try:
+        phone_el = page.query_selector('button[data-item-id^="phone"]')
+        if phone_el:
+            phone = (phone_el.get_attribute("data-item-id") or "").split(":")[-1].strip()
+            if not phone:
+                phone = (phone_el.inner_text() or "").strip()
+    except Exception:
+        pass
+
+    # The rating block reads "4.8 stars 127 reviews" via aria-label.
+    rating, reviews = "", ""
+    try:
+        el = page.query_selector('div.F7nice span[aria-hidden="true"]')
+        if el:
+            rating = (el.inner_text() or "").strip()
+        el = page.query_selector('div.F7nice span[aria-label*="review"]')
+        if el:
+            label = el.get_attribute("aria-label") or ""
+            digits = re.sub(r"[^\d]", "", label)
+            reviews = digits
+    except Exception:
+        pass
+
+    return {
+        "website":  website.rstrip("/"),
+        "address":  _text_of(page, 'button[data-item-id="address"]').replace("\n", " "),
+        "phone":    phone,
+        "rating":   rating,
+        "reviews":  reviews,
+        "category": _text_of(page, "button.DkEaL"),
+    }
+
+
 def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) -> list:
     businesses = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=False,
-            args=["--start-maximized"],
-        )
+        # Prefer the real installed Chrome: it carries a genuine, current UA
+        # and build fingerprint, which bundled Chromium does not. Fall back if
+        # Chrome is not on this machine.
+        try:
+            browser = p.chromium.launch(
+                headless=False, channel="chrome", args=["--start-maximized"]
+            )
+        except Exception:
+            log.info("Chrome not available — falling back to bundled Chromium")
+            browser = p.chromium.launch(headless=False, args=["--start-maximized"])
+
         context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 900},
+            user_agent=BROWSER_UA,
+            # Let the viewport follow the real (maximized) window. Setting an
+            # explicit viewport alongside --start-maximized produced a maximized
+            # window rendering at a fixed 1280x900 -- a mismatch bot detection
+            # can see.
+            no_viewport=True,
         )
 
         load_cookies(context, COOKIE_FILE)
@@ -348,62 +515,71 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
         while len(businesses) < max_results:
             handle_captcha_if_present(page, job)
 
-            cards           = page.query_selector_all('a.hfpxzc')
+            # Read the names up front, then re-fetch each card by index right
+            # before clicking it. Clicking opens the detail panel and re-renders
+            # the feed, which invalidates every handle captured beforehand --
+            # the old code held the whole list across clicks, so later cards
+            # raised on .click() and were swallowed as "Skipped '<name>'".
+            cards           = page.query_selector_all(RESULT_CARD_SELECTOR)
+            pending         = []
+            for idx, card in enumerate(cards):
+                try:
+                    label = card.get_attribute("aria-label") or ""
+                except Exception:
+                    continue
+                if label:
+                    pending.append((idx, label))
+
             new_this_scroll = 0
 
-            for card in cards:
+            for idx, name in pending:
                 if len(businesses) >= max_results:
                     break
                 if job and job.stop_event.is_set():
                     break
 
-                name = card.get_attribute("aria-label") or ""
-                if not name or name in seen_names:
+                if name in seen_names:
                     continue
 
                 seen_names.add(name)
                 new_this_scroll += 1
 
                 try:
-                    card.click()
+                    fresh = page.query_selector_all(RESULT_CARD_SELECTOR)
+                    if idx >= len(fresh):
+                        continue          # feed shrank under us; catch it next scroll
+                    fresh[idx].click()
                     time.sleep(random.uniform(*MAP_SCROLL_DELAY))
 
                     page.wait_for_timeout(2000)
                     handle_captcha_if_present(page, job)
 
-                    # Website link on the Maps detail panel
-                    website_el = page.query_selector('a[data-item-id="authority"]')
-                    website = (
-                        (website_el.get_attribute("href") or "").rstrip("/")
-                        if website_el else ""
-                    )
+                    record = {"name": name}
+                    record.update(_read_detail_panel(page))
 
-                    # Address button on the Maps detail panel
-                    address_el = page.query_selector('button[data-item-id="address"]')
-                    address = (
-                        address_el.inner_text().replace("\n", " ")
-                        if address_el else ""
-                    )
-
-                    businesses.append({
-                        "name":    name,
-                        "website": website,
-                        "address": address,
-                    })
+                    businesses.append(record)
                     log.info(
                         f"  [{len(businesses)}/{max_results}] "
-                        f"{name} → {website or 'NO WEBSITE'}"
+                        f"{name} → {record['website'] or 'NO WEBSITE'}"
+                        + (f"  ({record['rating']}★ {record['reviews']})"
+                           if record.get("rating") else "")
                     )
 
                 except Exception as e:
                     log.warning(f"  Skipped '{name}': {e}")
 
             # Randomised scroll — amount and a mid-scroll micro-pause
-            # so the pattern never looks like a bot looping 1000px
-            scroll_px = random.randint(600, 1400)
-            results_panel.evaluate(f"el => el.scrollBy(0, {scroll_px})")
-            time.sleep(random.uniform(0.3, 0.8))
-            results_panel.evaluate(f"el => el.scrollBy(0, {random.randint(30, 120)})")
+            # so the pattern never looks like a bot looping 1000px.
+            # Re-query the panel: the handle taken before the click loop goes
+            # stale for the same reason the card handles do.
+            results_panel = page.query_selector('div[role="feed"]') or results_panel
+            try:
+                scroll_px = random.randint(600, 1400)
+                results_panel.evaluate(f"el => el.scrollBy(0, {scroll_px})")
+                time.sleep(random.uniform(0.3, 0.8))
+                results_panel.evaluate(f"el => el.scrollBy(0, {random.randint(30, 120)})")
+            except Exception as exc:
+                log.warning(f"  Scroll failed ({type(exc).__name__}) — retrying next pass")
             time.sleep(random.uniform(*MAP_SCROLL_DELAY))
 
             if new_this_scroll == 0:
@@ -439,14 +615,25 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
 #    - Returns both the email string AND a status label
 # ──────────────────────────────────────────────────────────────
 
+# Keep the Chrome version roughly current -- a years-old UA string is itself a
+# bot signal to WAFs. Bump it when you notice more 403s than usual.
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/138.0.0.0 Safari/537.36"
+)
+
 REQUEST_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": BROWSER_UA,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+    # Some WAFs flag requests that ask for a bare document with no navigation
+    # context. These are what a real Chrome tab sends on a top-level load.
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 # Signals that indicate a contact form is present but no email
@@ -469,89 +656,428 @@ def classify_page(soup: BeautifulSoup) -> str:
     return STATUS_NO_EMAIL
 
 
-def fetch_emails_from_url(url: str) -> tuple:
+# ──────────────────────────────────────────────────────────────
+#  HTTP SESSION
+#
+#  One pooled session per thread, with retries. Roughly half the
+#  sites previously written off as "site_blocked" were actually
+#  transient failures that a single retry recovers.
+# ──────────────────────────────────────────────────────────────
+
+_thread_local = threading.local()
+
+
+def _build_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update(REQUEST_HEADERS)
+    retry = Retry(
+        total=2,
+        backoff_factor=1,               # 0s, 1s, 2s between attempts
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=frozenset(["GET", "HEAD"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=8, pool_maxsize=16)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def _session() -> requests.Session:
+    """Sessions are not thread-safe, and the recall harness probes in parallel."""
+    if not hasattr(_thread_local, "session"):
+        _thread_local.session = _build_session()
+    return _thread_local.session
+
+
+def _normalize_entry_url(website: str) -> str:
     """
-    GETs a single URL and returns (set_of_emails, status).
-    Searches both rendered text and raw HTML source so it
-    catches emails inside href="mailto:..." links too.
+    Strip the query string and fragment off a Google Maps website link.
+
+    Maps hands out tracking-tagged URLs like
+    'http://avalondental.ca/?utm_source=google&utm_campaign=gmb'. The old code
+    concatenated paths onto that string, producing
+    '...&utm_campaign=gmb/contact' -- so every contact page fetch hit garbage
+    and only the homepage ever loaded.
     """
+    website = (website or "").strip()
+    if not website:
+        return ""
+    if "//" not in website:
+        website = "https://" + website
+    parts = urllib.parse.urlsplit(website)
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
+def _is_dns_failure(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(s in text for s in (
+        "nodename nor servname", "name or service not known",
+        "getaddrinfo failed", "failed to resolve", "no address associated",
+        "temporary failure in name resolution",
+    ))
+
+
+def _fetch(url: str):
+    """
+    GET one URL. Returns (response, error_status). Exactly one is non-None,
+    except for 4xx/5xx where both are set so the caller can still read the body.
+    """
+    session = _session()
+    # (connect timeout, read timeout) -- a slow server should not cost the
+    # same budget as an unreachable one.
+    timeouts = (5, REQUEST_TIMEOUT)
     try:
-        resp = requests.get(
-            url, headers=REQUEST_HEADERS, timeout=REQUEST_TIMEOUT
-        )
+        resp = session.get(url, timeout=timeouts, allow_redirects=True)
+    except requests.exceptions.SSLError:
+        # Expired/mismatched certs are routine on small business sites and are
+        # not a reason to drop a lead. Retry once without verification.
+        try:
+            resp = session.get(url, timeout=timeouts, allow_redirects=True, verify=False)
+        except Exception:
+            return None, STATUS_SSL_ERROR
     except requests.exceptions.Timeout:
-        return set(), STATUS_TIMEOUT
+        return None, STATUS_TIMEOUT
+    except requests.exceptions.ConnectionError as exc:
+        return None, (STATUS_DNS_ERROR if _is_dns_failure(exc) else STATUS_DEAD)
     except Exception:
-        return set(), STATUS_BLOCKED
+        return None, STATUS_DEAD
 
-    if resp.status_code in (403, 429, 503):
-        return set(), STATUS_BLOCKED
+    if resp.status_code in (401, 403, 429):
+        return resp, STATUS_BLOCKED
+    if resp.status_code >= 400:
+        # A missing subpage must not condemn the whole site -- the caller
+        # decides whether this was the homepage or just one candidate link.
+        return resp, STATUS_NO_EMAIL
+    return resp, None
 
+
+# ──────────────────────────────────────────────────────────────
+#  EMAIL EXTRACTION
+# ──────────────────────────────────────────────────────────────
+
+# Cloudflare's email-obfuscation writes <a href="/cdn-cgi/l/email-protection#hex">
+# and decodes it client-side. Plain HTTP scraping sees only the hex, so any site
+# using it looked email-free. The first byte is the XOR key.
+_CFEMAIL_RE = re.compile(r'data-cfemail="([0-9a-fA-F]+)"')
+
+# name [at] domain [dot] com  /  name(at)domain(dot)com
+_OBFUSCATED_RE = re.compile(
+    r"([a-zA-Z0-9._%+\-]+)\s*[\[\(]?\s*(?:at|@)\s*[\]\)]?\s*"
+    r"([a-zA-Z0-9.\-]+)\s*[\[\(]\s*(?:dot|\.)\s*[\]\)]\s*([a-zA-Z]{2,})",
+    re.IGNORECASE,
+)
+
+
+def _decode_cfemail(hex_str: str) -> str:
     try:
-        resp.raise_for_status()
+        raw = bytes.fromhex(hex_str)
+        key = raw[0]
+        return "".join(chr(b ^ key) for b in raw[1:])
     except Exception:
-        return set(), STATUS_BLOCKED
+        return ""
 
-    soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Strip <style> blocks before extracting visible text — they contain
-    # font license comments with author emails (e.g. Raleway, Lato).
+def _is_real_email(email: str) -> bool:
+    domain = email.split("@")[-1]
+    if domain.rsplit(".", 1)[-1] in _FAKE_TLDS:
+        return False
+    return not any(domain == b or domain.endswith("." + b) for b in EMAIL_BLACKLIST)
+
+
+def _clean_emails(candidates) -> set:
+    return {e.lower() for e in candidates if _is_real_email(e.lower())}
+
+
+def extract_emails(html: str, soup: BeautifulSoup) -> set:
+    """
+    Pull every address off one page, most reliable sources first.
+    Returns already-filtered addresses.
+    """
+    # 1. mailto: links -- unambiguous, an author put it there deliberately.
+    found = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if href.lower().startswith("mailto:"):
+            addr = urllib.parse.unquote(href[7:].split("?")[0]).strip()
+            found.update(EMAIL_REGEX.findall(addr))
+
+    # 2. Structured data -- schema.org LocalBusiness blocks carry a clean
+    #    "email" field on a good number of agency-built sites.
+    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        for match in EMAIL_REGEX.findall(tag.get_text() or ""):
+            found.add(match)
+
+    # 3. Cloudflare-obfuscated addresses.
+    for hex_str in _CFEMAIL_RE.findall(html):
+        decoded = _decode_cfemail(hex_str)
+        if decoded:
+            found.update(EMAIL_REGEX.findall(decoded))
+
+    # 4. Human obfuscation: "info [at] clinic [dot] ca".
+    for user, domain, tld in _OBFUSCATED_RE.findall(html):
+        found.add(f"{user}@{domain}.{tld}")
+
+    clean = _clean_emails(found)
+    if clean:
+        return clean
+
+    # 5. Fall back to scanning the whole page.
+    #
+    #    Strip <style> only, never <script>. Inline stylesheets carry bundled
+    #    font licences whose author addresses look completely real -- that is
+    #    where team@latofonts.com came from, and no domain blacklist can catch
+    #    a font designer's gmail. Script blocks are the opposite: CMS config
+    #    objects genuinely hold the business address (Drupal's
+    #    "practice_email", Wix and Squarespace contact settings), and the junk
+    #    they carry -- Sentry DSNs and analytics IDs -- is already covered by
+    #    EMAIL_BLACKLIST. Dropping scripts loses real leads.
     for tag in soup.find_all("style"):
         tag.decompose()
-
-    page_text = soup.get_text(separator=" ")
-
-    # Strip <style>...</style> blocks from raw HTML too before regex scan.
-    raw_no_css = re.sub(r"<style[\s\S]*?</style>", "", resp.text, flags=re.IGNORECASE)
-
-    # Search rendered text + raw HTML (catches obfuscated/encoded emails)
-    raw = (
-        set(EMAIL_REGEX.findall(page_text))
-        | set(EMAIL_REGEX.findall(raw_no_css))
+    stripped = re.sub(r"<style[\s\S]*?</style>", " ", html, flags=re.IGNORECASE)
+    return _clean_emails(
+        set(EMAIL_REGEX.findall(soup.get_text(separator=" ")))
+        | set(EMAIL_REGEX.findall(stripped))
     )
 
-    clean = set()
-    for e in raw:
-        e = e.lower()
-        domain = e.split("@")[-1]
-        tld = domain.rsplit(".", 1)[-1]
-        if tld in _FAKE_TLDS:
-            continue
-        if any(domain == b or domain.endswith("." + b) for b in EMAIL_BLACKLIST):
-            continue
-        clean.add(e)
 
-    if clean:
-        return clean, STATUS_FOUND
+# ──────────────────────────────────────────────────────────────
+#  CONTACT PAGE DISCOVERY
+# ──────────────────────────────────────────────────────────────
 
-    return set(), classify_page(soup)
+_CONTACT_LINK_RE = re.compile(
+    r"contact|about|team|staff|reach|connect|our-office|meet-us", re.IGNORECASE
+)
+MAX_DISCOVERED_LINKS = 4
+
+
+def discover_contact_links(soup: BeautifulSoup, base_url: str) -> list:
+    """
+    Find the site's real contact pages by reading its own navigation, rather
+    than guessing at /contact, /contact-us and hoping. Guessing misses
+    /contact-us-today, /en/contact, /book-appointment and every non-English
+    variant; the nav does not.
+    """
+    base_host = urllib.parse.urlsplit(base_url).netloc.lower()
+    scored = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        text = (a.get_text() or "").strip().lower()
+        if not (_CONTACT_LINK_RE.search(text) or _CONTACT_LINK_RE.search(href)):
+            continue
+        full = urllib.parse.urljoin(base_url, href)
+        full = urllib.parse.urldefrag(full)[0]
+        if urllib.parse.urlsplit(full).netloc.lower() != base_host:
+            continue
+        # "contact" outranks "about" -- it is likelier to carry an address.
+        rank = 0 if "contact" in text or "contact" in href.lower() else 1
+        scored.append((rank, full))
+
+    ordered, seen = [], set()
+    for _, url in sorted(scored, key=lambda x: x[0]):
+        if url not in seen:
+            seen.add(url)
+            ordered.append(url)
+    return ordered[:MAX_DISCOVERED_LINKS]
+
+
+# ──────────────────────────────────────────────────────────────
+#  PER-BUSINESS ORCHESTRATION
+# ──────────────────────────────────────────────────────────────
+
+def _soup_of(resp) -> BeautifulSoup:
+    return BeautifulSoup(resp.text, "html.parser")
 
 
 def get_emails_for_business(website: str) -> tuple:
     """
-    Iterates through CONTACT_PATHS for one business website.
-    Returns (emails_string, status_string).
-    Stops early if emails are found or site is unreachable.
+    Resolve one business website to (emails_string, status).
+
+    Fetches the homepage, follows the site's own contact links, and falls back
+    to guessed paths only when the page exposes no usable navigation.
     """
-    if not website:
+    entry = _normalize_entry_url(website)
+    if not entry:
         return "", STATUS_NO_WEBSITE
 
-    last_status = STATUS_NO_EMAIL
+    resp, err = _fetch(entry)
+    if resp is None:
+        return "", err                       # timeout / DNS / SSL / unreachable
+    if err == STATUS_BLOCKED:
+        return "", STATUS_BLOCKED            # queued for the browser fallback
 
-    for path in CONTACT_PATHS:
-        emails, status = fetch_emails_from_url(website + path)
-        last_status    = status
+    # Every later URL resolves against where we actually landed, so www ->
+    # apex and http -> https redirects do not silently break path joining.
+    base_url = resp.url
+    soup = _soup_of(resp)
+    home_html = resp.text
 
-        if emails:
-            return "; ".join(sorted(emails)), STATUS_FOUND
+    emails = extract_emails(home_html, soup)
+    if emails:
+        return "; ".join(sorted(emails)), STATUS_FOUND
 
-        # Site is down or actively blocking — no point trying more pages
-        if status in (STATUS_BLOCKED, STATUS_TIMEOUT):
-            return "", status
+    # Re-parse: extract_emails() decomposes <script>/<style> from the soup.
+    nav_soup = _soup_of(resp)
+    candidates = discover_contact_links(nav_soup, base_url)
 
+    if not candidates:
+        root = "{0.scheme}://{0.netloc}".format(urllib.parse.urlsplit(base_url))
+        candidates = [urllib.parse.urljoin(root, p) for p in CONTACT_PATHS if p]
+
+    last_status = classify_page(nav_soup)
+    for url in candidates:
         time.sleep(random.uniform(*SITE_REQUEST_DELAY))
+        sub_resp, sub_err = _fetch(url)
+        if sub_resp is None:
+            continue                          # one bad subpage is not a dead site
+        if sub_err == STATUS_BLOCKED:
+            last_status = STATUS_BLOCKED
+            continue
+        sub_soup = _soup_of(sub_resp)
+        sub_emails = extract_emails(sub_resp.text, sub_soup)
+        if sub_emails:
+            return "; ".join(sorted(sub_emails)), STATUS_FOUND
+        if sub_err is None:
+            found_form = classify_page(_soup_of(sub_resp))
+            if found_form == STATUS_FORM_ONLY:
+                last_status = STATUS_FORM_ONLY
 
     return "", last_status
+
+
+# ──────────────────────────────────────────────────────────────
+#  BROWSER FALLBACK
+#
+#  Last resort for sites the HTTP client cannot read: WAFs that
+#  refuse non-browser clients, and pages that inject the contact
+#  details with JavaScript after load. Runs once per scrape over
+#  the whole batch rather than per site, so the browser start-up
+#  cost is paid a single time.
+# ──────────────────────────────────────────────────────────────
+
+BROWSER_FALLBACK_TIMEOUT = 25000   # ms per navigation
+BROWSER_SETTLE_MS        = 2000    # let late JS paint the contact block
+
+
+def _browser_emails_on_page(page) -> set:
+    """Extract from the rendered DOM. Mirrors extract_emails' source order."""
+    html = page.content()
+    soup = BeautifulSoup(html, "html.parser")
+    emails = extract_emails(html, soup)
+    if emails:
+        return emails
+    # The rendered text can hold addresses that never appear in the markup,
+    # e.g. assembled from JS string fragments to defeat exactly this scrape.
+    try:
+        return _clean_emails(set(EMAIL_REGEX.findall(page.inner_text("body"))))
+    except Exception:
+        return set()
+
+
+def _browser_contact_links(page, base_url: str, limit: int = 2) -> list:
+    try:
+        pairs = page.eval_on_selector_all(
+            "a[href]",
+            "els => els.map(e => [ (e.innerText||'').toLowerCase(), e.href ])",
+        )
+    except Exception:
+        return []
+    base_host = urllib.parse.urlsplit(base_url).netloc.lower()
+    out = []
+    for text, href in pairs:
+        if not href or href.startswith(("mailto:", "tel:", "javascript:")):
+            continue
+        if not (_CONTACT_LINK_RE.search(text) or _CONTACT_LINK_RE.search(href)):
+            continue
+        if urllib.parse.urlsplit(href).netloc.lower() != base_host:
+            continue
+        href = urllib.parse.urldefrag(href)[0]
+        if href not in out:
+            out.append(href)
+    return out[:limit]
+
+
+def browser_fallback(websites: list, log_fn=None) -> dict:
+    """
+    Retry a batch of sites in a real browser.
+
+    `websites` is a list of website strings. Returns
+    {original_website: (emails_string, status)} for the ones that resolved --
+    sites that stay empty are simply absent, so the caller keeps its existing
+    status for them.
+
+    `log_fn` lets the web-UI job route these lines into its own live log;
+    without it they go to the module logger.
+    """
+    results = {}
+    targets = [w for w in websites if (w or "").strip()]
+    if not targets:
+        return results
+
+    def _say(msg):
+        if log_fn:
+            log_fn(msg)
+        else:
+            log.info(msg)
+
+    _say(f"Browser fallback: retrying {len(targets)} site(s) that HTTP could not read")
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=BROWSER_UA,
+                viewport={"width": 1366, "height": 900},
+                ignore_https_errors=True,   # matches the HTTP path's cert leniency
+            )
+            page = context.new_page()
+
+            # Images and fonts are pure cost here -- we only read text.
+            def _block(route):
+                if route.request.resource_type in ("image", "media", "font"):
+                    route.abort()
+                else:
+                    route.continue_()
+            try:
+                page.route("**/*", _block)
+            except Exception:
+                pass
+
+            for site in targets:
+                entry = _normalize_entry_url(site)
+                try:
+                    page.goto(entry, wait_until="domcontentloaded",
+                              timeout=BROWSER_FALLBACK_TIMEOUT)
+                    page.wait_for_timeout(BROWSER_SETTLE_MS)
+                except Exception as exc:
+                    _say(f"  browser: {entry} unreachable ({type(exc).__name__})")
+                    continue
+
+                emails = _browser_emails_on_page(page)
+                if not emails:
+                    for link in _browser_contact_links(page, page.url):
+                        try:
+                            page.goto(link, wait_until="domcontentloaded",
+                                      timeout=BROWSER_FALLBACK_TIMEOUT)
+                            page.wait_for_timeout(BROWSER_SETTLE_MS)
+                        except Exception:
+                            continue
+                        emails = _browser_emails_on_page(page)
+                        if emails:
+                            break
+
+                if emails:
+                    results[site] = ("; ".join(sorted(emails)), STATUS_FOUND)
+                    _say(f"  browser recovered: {sorted(emails)[0]}")
+
+            browser.close()
+    except Exception as exc:
+        _say(f"Browser fallback unavailable ({type(exc).__name__}: {exc})")
+
+    _say(f"Browser fallback recovered {len(results)} of {len(targets)} site(s)")
+    return results
 
 
 # ──────────────────────────────────────────────────────────────
@@ -559,8 +1085,10 @@ def get_emails_for_business(website: str) -> tuple:
 # ──────────────────────────────────────────────────────────────
 
 def print_summary(output_file: str):
-    records = load_existing_records(output_file)
-    counts  = Counter(r["email_status"] for r in records.values())
+    # Count every row, not the name-keyed dict -- two rows for the same
+    # business are two leads, and collapsing them under-reported the run.
+    records = read_csv_rows(output_file)
+    counts  = Counter(r.get("email_status", "") for r in records)
     total   = len(records)
 
     log.info("")
@@ -593,17 +1121,25 @@ def run_scraper_job(job: ScraperJob):
 
     try:
         search_query = f"{job.niche} in {job.city}"
-        cookie_file  = f"cookies_{job.city.lower().replace(' ', '_')}.json"
-        output_file  = (
-            f"{job.city.lower().replace(' ', '_')}_"
-            f"{job.niche.lower().replace(' ', '_')}.csv"
-        )
+        output_file  = f"{safe_filename(job.city)}_{safe_filename(job.niche)}.csv"
 
         job.log(f"Starting: {search_query}")
         job.log(f"Target: {job.max_results} results → {output_file}")
 
+        # ── Resume set ──────────────────────────────────────────────────────
+        # This used to pass an empty set, so the web UI had no resume support
+        # at all: running "dentists in St John's" after "dental clinics in
+        # St John's" re-scraped every overlapping business from scratch.
+        skip_names = set(load_existing_records(output_file).keys())
+        try:
+            skip_names |= _db.get_known_company_names()
+        except Exception as exc:
+            job.log(f"Could not read known companies from the database: {exc}", "WARN")
+        if skip_names:
+            job.log(f"Resume: skipping {len(skip_names)} business(es) already collected")
+
         # ── Step 1: Google Maps ─────────────────────────────────────────────
-        businesses = scrape_google_maps(search_query, job.max_results, set(), job)
+        businesses = scrape_google_maps(search_query, job.max_results, skip_names, job)
 
         if job.stop_event.is_set():
             job.log("Stopped by user.")
@@ -618,8 +1154,8 @@ def run_scraper_job(job: ScraperJob):
         job.total = len(businesses)
         job.log(f"Maps done — {job.total} businesses found. Scraping emails...")
 
-        # ── Step 2: Email scraping ──────────────────────────────────────────
-        contacts_to_import = []
+        # ── Step 2: Email scraping over HTTP ────────────────────────────────
+        processed = []
 
         for i, biz in enumerate(businesses):
             if job.stop_event.is_set():
@@ -630,11 +1166,42 @@ def run_scraper_job(job: ScraperJob):
             biz["emails"]       = emails
             biz["email_status"] = status
             job.progress = i + 1
+            processed.append(biz)
 
             if status == STATUS_FOUND:
                 job.found += 1
                 job.log(f"[{i+1}/{job.total}] ✓ {biz['name']} — {emails}")
-                for raw in emails.split(";"):
+            else:
+                job.log(f"[{i+1}/{job.total}] ✗ {biz['name']} — {status}")
+
+            # Write as we go: a crash mid-run must not cost the whole scrape.
+            # The file is rewritten with final values once the fallback ends.
+            append_to_csv({k: biz.get(k, "") for k in CSV_FIELDS}, output_file)
+            time.sleep(random.uniform(*SITE_REQUEST_DELAY))
+
+        # ── Step 2b: Browser fallback ───────────────────────────────────────
+        # One browser session for everything HTTP could not read, rather than
+        # paying browser start-up per site.
+        retry_sites = [
+            b["website"] for b in processed
+            if b.get("website") and b["email_status"] in BROWSER_RETRY_STATUSES
+        ]
+        if retry_sites and not job.stop_event.is_set():
+            recovered = browser_fallback(retry_sites, log_fn=job.log)
+            for biz in processed:
+                hit = recovered.get(biz.get("website"))
+                if hit:
+                    biz["emails"], biz["email_status"] = hit
+                    job.found += 1
+            if recovered:
+                rewrite_csv_rows(processed, output_file)
+
+        # ── Step 3: Build contacts from the final state ─────────────────────
+        contacts_to_import = []
+        for biz in processed:
+            status = biz["email_status"]
+            if status == STATUS_FOUND:
+                for raw in biz["emails"].split(";"):
                     raw = raw.strip()
                     if not raw:
                         continue
@@ -650,8 +1217,9 @@ def run_scraper_job(job: ScraperJob):
                         "address":    biz.get("address", ""),
                         "mx_valid":   1 if mx_ok else 0,
                     })
-            elif biz.get("website") and status != STATUS_NO_WEBSITE:
-                # Store as a prospect so the user can follow up manually
+            elif biz.get("website"):
+                # No email, but a real site -- keep it as a prospect to chase
+                # by hand rather than dropping the lead entirely.
                 prospect_status = "form_only" if status == STATUS_FORM_ONLY else "no_email"
                 contacts_to_import.append({
                     "email":   "",
@@ -660,14 +1228,8 @@ def run_scraper_job(job: ScraperJob):
                     "address": biz.get("address", ""),
                     "status":  prospect_status,
                 })
-                job.log(f"[{i+1}/{job.total}] – {biz['name']} — {status} (saved as prospect)")
-            else:
-                job.log(f"[{i+1}/{job.total}] ✗ {biz['name']} — {status}")
 
-            append_to_csv({k: biz.get(k, "") for k in CSV_FIELDS}, output_file)
-            time.sleep(random.uniform(*SITE_REQUEST_DELAY))
-
-        # ── Step 3: Auto-import to DB ───────────────────────────────────────
+        # ── Step 4: Auto-import to DB ───────────────────────────────────────
         if job.auto_import and contacts_to_import:
             job.imported = _db.upsert_contacts(contacts_to_import)
             job.log(f"✓ {job.imported} contacts imported into the database.")
@@ -698,9 +1260,9 @@ def main():
     NICHE       = args.niche
     CITY        = args.city
     MAX_RESULTS = args.max
-    OUTPUT_FILE = args.output or f"{CITY.lower().replace(' ', '_')}_{NICHE.lower().replace(' ', '_')}.csv"
+    OUTPUT_FILE  = args.output or f"{safe_filename(CITY)}_{safe_filename(NICHE)}.csv"
     SEARCH_QUERY = f"{NICHE} in {CITY}"
-    COOKIE_FILE  = f"cookies_{CITY.lower().replace(' ', '_')}.json"
+    COOKIE_FILE  = f"cookies_{safe_filename(CITY)}.json"
 
     log.info("══════════════════════════════════════════")
     log.info("  Google Maps Email Scraper  v3")
@@ -741,17 +1303,31 @@ def main():
         log.info(f"  → {biz['website'] or 'NO WEBSITE'}")
 
         emails, status = get_emails_for_business(biz["website"])
+        biz["emails"]       = emails
+        biz["email_status"] = status
 
         if status == STATUS_FOUND:
             log.info(f"  ✓ {emails}")
         else:
             log.info(f"  ✗ {status}")
 
-        append_to_csv(
-            {**biz, "emails": emails, "email_status": status},
-            OUTPUT_FILE,
-        )
+        append_to_csv({k: biz.get(k, "") for k in CSV_FIELDS}, OUTPUT_FILE)
         time.sleep(random.uniform(*SITE_REQUEST_DELAY))
+
+    # One browser pass over everything the HTTP client could not read.
+    retry_sites = [
+        b["website"] for b in businesses
+        if b.get("website") and b.get("email_status") in BROWSER_RETRY_STATUSES
+    ]
+    if retry_sites:
+        recovered = browser_fallback(retry_sites)
+        for biz in businesses:
+            hit = recovered.get(biz.get("website"))
+            if hit:
+                biz["emails"], biz["email_status"] = hit
+                log.info(f"  ✓ (browser) {biz['name']} — {biz['emails']}")
+        if recovered:
+            rewrite_csv_rows(businesses, OUTPUT_FILE)
 
     print_summary(OUTPUT_FILE)
 

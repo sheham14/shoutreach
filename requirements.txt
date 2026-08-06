@@ -1,7 +1,10 @@
+# Server dependencies — what the Flask app on GCP needs.
+#
+# Playwright is deliberately NOT here. The scraper runs on the operator's own
+# machine (see requirements-worker.txt and scraper_worker.py); installing a
+# browser automation stack on the server was pointless because a headless VM
+# cannot show the Chrome window a CAPTCHA has to be solved in.
 flask>=3.0
 gunicorn>=21.0
 requests>=2.31
-beautifulsoup4>=4.12
-playwright>=1.40
-playwright-stealth>=1.0
 dnspython>=2.4

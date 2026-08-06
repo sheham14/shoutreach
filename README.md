@@ -123,6 +123,57 @@ Follow this schedule strictly:
 
 ## Building Your First Campaign
 
+### 0. Get Leads — the Lead Scraper
+
+Scrapes Google Maps for a niche in a city, visits each business website, and
+pulls out an email.
+
+**The scraper does not run on the server.** Google serves CAPTCHAs that a human
+has to see and solve, so the browser has to open on a screen you are actually
+looking at. A headless VM cannot do that. Instead:
+
+- **ShoutReach** (wherever it is hosted) owns the queue, the contacts and the
+  campaigns.
+- **A worker on your own machine** claims jobs and drives Chrome locally.
+
+**One-time setup on your machine:**
+
+```bash
+pip install -r requirements-worker.txt
+playwright install chromium        # separate step — pip does not fetch the browser
+
+set SHOUTREACH_URL=https://your-shoutreach-host
+set SHOUTREACH_API_KEY=...         # Settings → Lead Scraper Worker → Copy
+```
+
+**Every time you want to scrape:**
+
+```bash
+python scraper_worker.py           # leave it running
+```
+
+Then open **Lead Scraper** in the web UI. The banner turns green when the worker
+connects. Enter a niche and city, press Start, and Chrome opens on your machine
+while progress streams back to the page. If a CAPTCHA appears, solve it in that
+Chrome window and click **Resume** in the UI.
+
+Leads with an email are imported to Contacts automatically. Businesses with a
+site but no findable address are stored as prospects to chase by hand, and
+businesses with **no website at all** are kept too — for a web-design offer,
+those are the strongest leads on the list.
+
+Duplicate protection is on by default: one address per business is enrollable
+(personal beats `info@` beats `billing@`), and a contact already in one campaign
+will not be enrolled in a second.
+
+You can also run a scrape without the web UI:
+
+```bash
+python gmaps_email_scraper.py --niche "HVAC" --city "Calgary Canada" --max 40
+```
+
+---
+
 ### 1. Import Contacts
 Go to **Contacts → Import CSV**
 
@@ -234,15 +285,21 @@ Click **▶ Activate**. The scheduler takes over.
 
 ```
 outreach/
-├── app.py          # Flask web app & API routes
-├── db.py           # SQLite database layer
-├── sender.py       # Email sending engine (SMTP + IMAP)
-├── scheduler.py    # Background job runner
-├── templates/
-│   └── index.html  # Dashboard UI
-├── requirements.txt
-├── README.md
-└── outreach.db     # Created automatically on first run
+├── app.py                     # Flask web app & API routes
+├── db.py                      # SQLite database layer
+├── sender.py                  # Email sending engine (SMTP + IMAP)
+├── scheduler.py               # Background job runner
+├── email_validator.py         # MX record validation
+│
+├── gmaps_email_scraper.py     # Scraping logic (runs on YOUR machine)
+├── scraper_worker.py          # Local worker — claims jobs, drives Chrome
+│
+├── templates/, static/        # Dashboard UI
+├── tests/                     # python tests/<name>.py
+├── docs/audits/               # Audit findings and their resolution state
+├── requirements.txt           # Server
+├── requirements-worker.txt    # Local worker
+└── outreach.db                # Created automatically on first run
 ```
 
 ---
@@ -266,5 +323,34 @@ outreach/
 
 ---
 
+**Lead Scraper says "No worker connected":**
+1. The worker is not running — start `python scraper_worker.py` on your machine
+2. `SHOUTREACH_URL` points somewhere else, or `SHOUTREACH_API_KEY` is stale
+   (rotating the key in Settings invalidates any running worker)
+3. The worker logs `Server rejected the API key` if the key is wrong
+
+**Scraper finds no businesses at all:**
+Google changes its obfuscated class names without notice. Check
+`RESULT_CARD_SELECTOR` in `gmaps_email_scraper.py` against the live page.
+
+---
+
+## Tests
+
+No framework needed — each file runs standalone and exits non-zero on failure:
+
+```bash
+python tests/test_migrations.py    # schema migrations
+python tests/test_extraction.py    # URL handling and email extraction (offline)
+python tests/test_duplicates.py    # duplicate and enrollment protection
+python tests/test_worker_api.py    # the scrape job queue and worker protocol
+python tests/test_security.py      # regression tests for closed audit findings
+
+python tests/recall_harness.py     # live measurement against real sites (slow)
+```
+
+---
+
 ## Questions or improvements?
 Edit any of the Python files — the code is straightforward and well-commented.
+Open audit findings are tracked in [docs/audits/](docs/audits/).
