@@ -48,6 +48,7 @@ import gmaps_email_scraper as scraper
 DEFAULT_SERVER    = os.environ.get("SHOUTREACH_URL", "http://localhost:5000")
 API_KEY           = os.environ.get("SHOUTREACH_API_KEY", "")
 POLL_SECONDS      = 5      # how often to ask for work when idle
+IMPORT_BATCH_SIZE = 20     # push leads every N businesses, not just at the end
 PROGRESS_SECONDS  = 5      # how often to push progress while running
 HTTP_TIMEOUT      = 30
 
@@ -323,6 +324,7 @@ def _run_scrape(server: Server, job: RemoteScraperJob):
 
     # ── Websites ────────────────────────────────────────────────────────
     processed = []
+    unpushed = []          # awaiting the next incremental import
     for i, biz in enumerate(businesses):
         if job.stop_event.is_set():
             job.log("Stopped by user.")
@@ -331,6 +333,7 @@ def _run_scrape(server: Server, job: RemoteScraperJob):
         biz["emails"], biz["email_status"] = emails, status
         job.progress = i + 1
         processed.append(biz)
+        unpushed.append(biz)
 
         if status == scraper.STATUS_FOUND:
             job.found += 1
@@ -341,7 +344,21 @@ def _run_scrape(server: Server, job: RemoteScraperJob):
         scraper.append_to_csv(
             {k: biz.get(k, "") for k in scraper.CSV_FIELDS}, output_file
         )
+
+        # Push in batches rather than only at the end. A run that dies at
+        # business 110 of 118 used to import nothing at all -- the leads
+        # existed solely in the local CSV. upsert_contacts is idempotent on
+        # email, so a partial batch costs nothing if the run is retried.
+        if job.auto_import and len(unpushed) >= IMPORT_BATCH_SIZE:
+            _push_batch(server, job, unpushed)
+            unpushed = []
+
         time.sleep(random.uniform(*scraper.SITE_REQUEST_DELAY))
+
+    if job.auto_import and unpushed and job.stop_event.is_set():
+        # Interrupted mid-run: get what we have to the server before exiting.
+        _push_batch(server, job, unpushed)
+        unpushed = []
 
     # ── Browser fallback ────────────────────────────────────────────────
     retry = [b["website"] for b in processed
@@ -357,24 +374,46 @@ def _run_scrape(server: Server, job: RemoteScraperJob):
             scraper.rewrite_csv_rows(processed, output_file)
     job.push()
 
-    # ── Push to the server ──────────────────────────────────────────────
-    rows = _build_contact_rows(processed, job)
-    if rows and job.auto_import:
-        result = server.import_contacts(rows)
-        if result and result.get("ok"):
-            job.imported = result.get("inserted", 0)
-            job.log(f"✓ {job.imported} contacts imported "
-                    f"({result.get('invalid_mx', 0)} with no MX record)")
-        else:
-            # The CSV is already on disk, so nothing is lost -- say where.
-            job.log(f"Could not reach the server to import. "
-                    f"Leads are saved in {output_file}", "ERROR")
-    elif rows:
+    # ── Push whatever is left ───────────────────────────────────────────
+    # The browser fallback may have resolved sites that were already pushed as
+    # prospects; re-sending them is safe because upsert_contacts merges on
+    # email and only fills empty fields.
+    if job.auto_import:
+        remaining = unpushed or []
+        recovered_after_push = [
+            b for b in processed
+            if b.get("email_status") == scraper.STATUS_FOUND and b not in remaining
+        ]
+        _push_batch(server, job, remaining + recovered_after_push)
+    else:
+        rows = _build_contact_rows(processed, job)
         job.log(f"{len(rows)} leads saved to {output_file} (auto-import off)")
 
     job.status = "done"
     job.log(f"Complete. {job.found}/{job.total} businesses had emails.")
     job.push(finished=True)
+
+
+def _push_batch(server: Server, job, businesses: list):
+    """
+    Send one batch of finished businesses to the server.
+
+    Failure is logged, not raised: the CSV on disk is the source of truth, and
+    a network blip partway through a long scrape must not end the run.
+    """
+    if not businesses:
+        return
+    rows = _build_contact_rows(businesses, job)
+    if not rows:
+        return
+    result = server.import_contacts(rows)
+    if result and result.get("ok"):
+        job.imported += result.get("inserted", 0)
+        job.log(f"  ↑ imported {result.get('inserted', 0)} "
+                f"({job.imported} so far)")
+    else:
+        job.log(f"  ↑ import failed for {len(rows)} lead(s) — they are still in "
+                f"the CSV and will be re-sent on the next run", "WARN")
 
 
 def _build_contact_rows(processed, job) -> list:
@@ -460,7 +499,15 @@ def main():
     server = Server(args.server, args.api_key)
 
     def _on_signal(signum, frame):
-        log.info("Shutting down after the current step...")
+        # A second Ctrl-C exits immediately. The first only sets a flag, which
+        # replaces Python's default of raising KeyboardInterrupt -- and that
+        # exception is the thing that would have broken a blocking socket read.
+        # Without this escape hatch, Ctrl-C cannot interrupt a hung request at
+        # all, which is exactly how a stalled scrape becomes unkillable.
+        if _shutdown.is_set():
+            log.warning("Second interrupt — exiting now.")
+            os._exit(130)
+        log.info("Shutting down after the current step... (Ctrl-C again to force)")
         _shutdown.set()
     signal.signal(signal.SIGINT, _on_signal)
     try:

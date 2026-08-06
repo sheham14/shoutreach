@@ -412,6 +412,49 @@ def _text_of(page, selector: str) -> str:
         return ""
 
 
+PANEL_MATCH_TIMEOUT = 10.0   # seconds to wait for the panel to catch up
+PANEL_RETRY_LIMIT   = 2      # attempts before giving up on a business
+
+
+def _wait_for_detail_panel(page, name: str, timeout: float = PANEL_MATCH_TIMEOUT) -> bool:
+    """
+    Wait until the open detail panel actually belongs to `name`.
+
+    Clicking a result card swaps the panel contents asynchronously. The old
+    code slept a fixed ~3-4s and then read whatever was on screen, so a slow
+    panel meant reading the PREVIOUS business's website, address and phone and
+    filing them under the new business's name -- the name comes from the card's
+    aria-label and is always right, which is what made the mismatch invisible.
+
+    Observed live: "Highgate Health" was recorded with Polygon Health's website
+    and email, and "MSK Health and Performance Clinic" with Physio Train's.
+
+    Returns False on timeout so the caller can skip rather than record a
+    business stapled to someone else's contact details.
+    """
+    target = (name or "").strip()
+    if not target:
+        return False
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            # The detail pane carries the business name as its aria-label.
+            # Preferred over the obfuscated heading class, which changes.
+            panel = page.query_selector('div[role="main"][aria-label]')
+            if panel:
+                label = (panel.get_attribute("aria-label") or "").strip()
+                if label == target:
+                    return True
+            # Fallback: the visible <h1> title.
+            heading = page.query_selector('div[role="main"] h1')
+            if heading and (heading.inner_text() or "").strip() == target:
+                return True
+        except Exception:
+            pass
+        page.wait_for_timeout(200)
+    return False
+
+
 def _read_detail_panel(page) -> dict:
     """
     Scrape the open Maps detail panel.
@@ -511,6 +554,7 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
 
         seen_names        = set(skip_names)
         consecutive_empty = 0
+        panel_failures    = {}   # name -> attempts, bounds the retry above
 
         while len(businesses) < max_results:
             handle_captcha_if_present(page, job)
@@ -550,9 +594,25 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
                         continue          # feed shrank under us; catch it next scroll
                     fresh[idx].click()
                     time.sleep(random.uniform(*MAP_SCROLL_DELAY))
-
-                    page.wait_for_timeout(2000)
                     handle_captcha_if_present(page, job)
+
+                    # Confirm the panel is showing THIS business before reading
+                    # it. Never fall back to a fixed sleep: that is what caused
+                    # businesses to be saved with the previous one's website.
+                    if not _wait_for_detail_panel(page, name):
+                        panel_failures[name] = panel_failures.get(name, 0) + 1
+                        if panel_failures[name] < PANEL_RETRY_LIMIT:
+                            # Put it back so a later scroll pass can retry --
+                            # but bounded, or a permanently broken panel would
+                            # loop forever and the scrape would never finish.
+                            seen_names.discard(name)
+                            log.info(f"  Panel slow for '{name}' — will retry")
+                        else:
+                            log.warning(
+                                f"  Skipped '{name}': detail panel never loaded. "
+                                f"Recording it would risk the previous business's details."
+                            )
+                        continue
 
                     record = {"name": name}
                     record.update(_read_detail_panel(page))
@@ -718,22 +778,117 @@ def _is_dns_failure(exc: Exception) -> bool:
     ))
 
 
+# requests' `timeout` is a per-socket-read deadline, NOT a total one: it resets
+# every time a byte arrives. A server that trickles the body a byte at a time
+# keeps the connection alive indefinitely, and a scrape parked on one such site
+# stalls the whole queue with no error and no way out. These two ceilings are
+# what actually bound the work.
+MAX_RESPONSE_BYTES = 3 * 1024 * 1024   # pages are text; 3 MB is already absurd
+BODY_READ_BUDGET   = 20                # seconds to stream one body, start to finish
+BUSINESS_BUDGET    = 90                # seconds for a whole business, all pages
+FETCH_HARD_DEADLINE = 30               # seconds before one request is abandoned
+
+
+def _force_close(resp):
+    """Tear the socket down so a blocked read raises instead of waiting."""
+    for closer in (getattr(resp, "raw", None), resp):
+        try:
+            if closer is not None:
+                closer.close()
+        except Exception:
+            pass
+
+
+def _read_body(resp) -> bool:
+    """
+    Stream the body under a hard wall-clock and size ceiling.
+
+    The deadline is enforced by a watchdog that closes the socket, NOT by
+    checking the clock between chunks. Checking between chunks looks correct
+    and does nothing: iter_content bottoms out in BufferedReader.read(n), which
+    blocks until it has all n bytes or hits EOF, so a server dribbling one byte
+    every couple of seconds never yields control back to the loop. Closing the
+    socket from another thread is what actually interrupts it.
+
+    Returns False if either ceiling was hit. The response keeps whatever
+    arrived -- a truncated page is still worth scanning for an address.
+    Populating `_content` is what lets `resp.text` work downstream despite
+    stream=True.
+    """
+    deadline = time.monotonic() + BODY_READ_BUDGET
+    watchdog = threading.Timer(BODY_READ_BUDGET, _force_close, args=(resp,))
+    watchdog.daemon = True
+    watchdog.start()
+
+    chunks, total, complete = [], 0, True
+    try:
+        # Modest chunks so normal pages still stream efficiently while the
+        # size cap stays responsive.
+        for chunk in resp.iter_content(chunk_size=8192):
+            if not chunk:
+                continue
+            chunks.append(chunk)
+            total += len(chunk)
+            if total >= MAX_RESPONSE_BYTES or time.monotonic() > deadline:
+                complete = False
+                break
+    except Exception:
+        # Includes the watchdog yanking the socket out from under the read.
+        complete = False
+    finally:
+        watchdog.cancel()
+        resp._content = b"".join(chunks)
+        resp._content_consumed = True
+        _force_close(resp)
+    return complete
+
+
 def _fetch(url: str):
     """
-    GET one URL. Returns (response, error_status). Exactly one is non-None,
-    except for 4xx/5xx where both are set so the caller can still read the body.
+    GET one URL under a hard deadline. Returns (response, error_status).
+
+    The request runs on a daemon thread we are willing to abandon. Nothing else
+    reliably bounds it: requests' timeout resets on every byte received, and
+    closing the socket from another thread does not unblock a pending recv on
+    Windows. If the thread does not finish in time we walk away and let it die
+    with the process -- one stalled lead must never hold up the queue, and the
+    observed failure was a site that parked a scrape for ten minutes.
     """
+    box = {}
+
+    def _work():
+        try:
+            box["result"] = _fetch_blocking(url)
+        except BaseException as exc:      # noqa: BLE001 - reported, not raised
+            box["error"] = exc
+
+    thread = threading.Thread(target=_work, name=f"fetch-{url[:40]}", daemon=True)
+    thread.start()
+    thread.join(FETCH_HARD_DEADLINE)
+
+    if thread.is_alive():
+        log.debug("Abandoned a stalled request after %ss: %s",
+                  FETCH_HARD_DEADLINE, url)
+        return None, STATUS_TIMEOUT
+    if "error" in box:
+        return None, STATUS_DEAD
+    return box.get("result", (None, STATUS_DEAD))
+
+
+def _fetch_blocking(url: str):
+    """The actual request. Always call it through _fetch, never directly."""
     session = _session()
     # (connect timeout, read timeout) -- a slow server should not cost the
-    # same budget as an unreachable one.
+    # same budget as an unreachable one. See _read_body for the total ceiling.
     timeouts = (5, REQUEST_TIMEOUT)
     try:
-        resp = session.get(url, timeout=timeouts, allow_redirects=True)
+        resp = session.get(url, timeout=timeouts, allow_redirects=True, stream=True)
     except requests.exceptions.SSLError:
         # Expired/mismatched certs are routine on small business sites and are
         # not a reason to drop a lead. Retry once without verification.
         try:
-            resp = session.get(url, timeout=timeouts, allow_redirects=True, verify=False)
+            resp = session.get(url, timeout=timeouts, allow_redirects=True,
+                               verify=False, stream=True)
         except Exception:
             return None, STATUS_SSL_ERROR
     except requests.exceptions.Timeout:
@@ -742,6 +897,9 @@ def _fetch(url: str):
         return None, (STATUS_DNS_ERROR if _is_dns_failure(exc) else STATUS_DEAD)
     except Exception:
         return None, STATUS_DEAD
+
+    if not _read_body(resp):
+        log.debug("Body truncated at the size/time ceiling: %s", url)
 
     if resp.status_code in (401, 403, 429):
         return resp, STATUS_BLOCKED
@@ -902,6 +1060,10 @@ def get_emails_for_business(website: str) -> tuple:
     if not entry:
         return "", STATUS_NO_WEBSITE
 
+    # Second ceiling, on top of the per-body one: five individually-legal but
+    # slow pages still add up, and no single lead is worth stalling the queue.
+    give_up_at = time.monotonic() + BUSINESS_BUDGET
+
     resp, err = _fetch(entry)
     if resp is None:
         return "", err                       # timeout / DNS / SSL / unreachable
@@ -928,6 +1090,9 @@ def get_emails_for_business(website: str) -> tuple:
 
     last_status = classify_page(nav_soup)
     for url in candidates:
+        if time.monotonic() > give_up_at:
+            log.debug("Budget exhausted for %s — moving on", entry)
+            break
         time.sleep(random.uniform(*SITE_REQUEST_DELAY))
         sub_resp, sub_err = _fetch(url)
         if sub_resp is None:
