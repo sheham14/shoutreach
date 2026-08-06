@@ -164,6 +164,62 @@ def test_suppressed_not_enrollable(db):
     check("and the reason is reported", skipped.get("duplicate_address") == 1, str(skipped))
 
 
+def test_freemail_is_not_a_business(db):
+    """
+    The bug this pins: a contact with no website fell back to its own email
+    domain as its identity, so every gmail.com lead was arbitrated against
+    every other one and all but the first were suppressed as duplicates.
+
+    Worst where it matters most -- a business with no website is the strongest
+    lead for a web-design offer, and it is also the one most likely to publish
+    a Gmail address and have no domain of its own.
+    """
+    print("\n8. FREEMAIL IS A MAILBOX PROVIDER, NOT A BUSINESS")
+
+    db.upsert_contacts([
+        {"email": "friend.one@gmail.com",   "first_name": "One"},
+        {"email": "friend.two@gmail.com",   "first_name": "Two"},
+        {"email": "friend.three@gmail.com", "first_name": "Three"},
+        {"email": "mate@outlook.com",       "first_name": "Four"},
+        {"email": "other@yahoo.co.uk",      "first_name": "Five"},
+    ])
+
+    freemail = ["friend.one@gmail.com", "friend.two@gmail.com",
+                "friend.three@gmail.com", "mate@outlook.com",
+                "other@yahoo.co.uk"]
+    rows = [contact_by_email(db, e) for e in freemail]
+    check("every freemail lead is kept", all(rows), str(freemail))
+    check("none is suppressed as a duplicate",
+          all(r["duplicate_of"] is None for r in rows),
+          str([(r["email"], r["duplicate_of"]) for r in rows]))
+    check("and none claims a freemail domain as its identity",
+          all(r["domain"] == "" for r in rows),
+          str([(r["email"], r["domain"]) for r in rows]))
+
+    # All of them must actually be enrollable -- suppression is invisible until
+    # you try to send, which is exactly how this stayed hidden.
+    c = db.create_campaign("Freemail campaign")
+    enrolled, skipped = db.enroll_contacts_bulk(c, [r["id"] for r in rows])
+    check("all five enroll", enrolled == 5, f"enrolled={enrolled} skipped={skipped}")
+
+    # A real business domain must still dedupe exactly as before.
+    db.upsert_contacts([
+        {"email": "info@realclinic.ca",    "company": "Real", "website": "https://realclinic.ca"},
+        {"email": "billing@realclinic.ca", "company": "Real", "website": "https://realclinic.ca"},
+    ])
+    kept = contact_by_email(db, "info@realclinic.ca")
+    dropped = contact_by_email(db, "billing@realclinic.ca")
+    check("a real business still keeps one address", kept["duplicate_of"] is None)
+    check("and suppresses the weaker one", dropped["duplicate_of"] == kept["id"],
+          f"duplicate_of={dropped['duplicate_of']}")
+
+    check("is_freemail knows the common providers",
+          all(db.is_freemail(d) for d in
+              ("gmail.com", "GMAIL.COM", "outlook.com", "yahoo.ca", "icloud.com")))
+    check("and does not flag a business domain",
+          not any(db.is_freemail(d) for d in ("realclinic.ca", "hexiv.co", "")))
+
+
 def main():
     work = tempfile.mkdtemp(prefix="dupes_")
     try:
@@ -175,6 +231,7 @@ def main():
         campaign_a = test_cross_campaign(db)
         test_followups_survive_dedupe(db, campaign_a)
         test_suppressed_not_enrollable(db)
+        test_freemail_is_not_a_business(db)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

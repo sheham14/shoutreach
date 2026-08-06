@@ -310,6 +310,27 @@ def init_db():
         except Exception as exc:
             logger.warning("Domain backfill skipped: %s", exc)
 
+        # Repair leads suppressed by treating a freemail domain as a business.
+        # Contacts with no website fell back to the address's own domain, so
+        # every gmail.com lead was arbitrated against every other one and all
+        # but the first were marked duplicate_of and refused at enrollment.
+        # Clear the domain (they dedupe on the exact address instead) and lift
+        # the suppression, or those leads stay silently unmailable.
+        try:
+            placeholders = ",".join("?" * len(FREEMAIL_DOMAINS))
+            freed = conn.execute(f"""
+                UPDATE contacts
+                   SET domain = '', duplicate_of = NULL
+                 WHERE domain IN ({placeholders})
+            """, tuple(FREEMAIL_DOMAINS)).rowcount
+            if freed:
+                logger.info(
+                    "Freed %d contact(s) that were suppressed as freemail-domain "
+                    "duplicates", freed,
+                )
+        except Exception as exc:
+            logger.warning("Freemail suppression repair skipped: %s", exc)
+
         # Backfill phone/category/rating/review_count for rows imported before
         # these had their own columns -- they're sitting in `extra` from a CSV
         # import (the scraper's CSV writes a "reviews" column; the DB column is
@@ -696,6 +717,33 @@ def canonical_domain(website: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+# Consumer mailbox providers. The domain of an address is used as a stand-in
+# for "which business is this?", which holds for smithdental.ca and collapses
+# badly for gmail.com: every Gmail lead would be treated as one business and
+# all but one silently suppressed.
+#
+# That is worst exactly where it hurts most -- a business with no website is
+# the strongest lead for a web-design offer, and it is also the one with no
+# domain of its own to identify it by, so it falls back to whatever freemail
+# address it publishes.
+FREEMAIL_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com",
+    "outlook.com", "hotmail.com", "hotmail.co.uk", "live.com", "msn.com",
+    "yahoo.com", "yahoo.co.uk", "yahoo.ca", "ymail.com", "rocketmail.com",
+    "icloud.com", "me.com", "mac.com",
+    "aol.com", "protonmail.com", "proton.me", "pm.me",
+    "gmx.com", "gmx.net", "mail.com", "zoho.com", "yandex.com",
+    "fastmail.com", "hushmail.com", "tutanota.com", "tuta.io",
+    "bell.net", "rogers.com", "shaw.ca", "telus.net", "sympatico.ca",
+    "nf.aibn.com", "bellaliant.com", "bellaliant.net",
+})
+
+
+def is_freemail(domain: str) -> bool:
+    """True when a domain identifies a mailbox provider, not a business."""
+    return (domain or "").strip().lower() in FREEMAIL_DOMAINS
+
+
 # Addresses that reach a mailbox nobody reads, or the wrong department. The
 # README's own advice is not to cold-email role accounts, so when a business
 # exposes several the personal one should win.
@@ -743,7 +791,11 @@ def _pick_domain_winner(conn, domain: str):
          with no error anywhere.
       2. Otherwise the best-ranked address wins, oldest as the tiebreak.
     """
-    if not domain:
+    if not domain or is_freemail(domain):
+        # Freemail is never a business identity -- arbitrating a "winner"
+        # across gmail.com would suppress every Gmail lead but one. Guarded
+        # here as well as at the call site so legacy rows that already carry a
+        # freemail domain cannot resurrect the bug.
         return
     rows = conn.execute("""
         SELECT id, email FROM contacts
@@ -796,8 +848,16 @@ def upsert_contacts(rows):
                 if not domain:
                     # Fall back to the address's own domain so contacts pasted
                     # in without a website still participate in deduplication.
-                    domain = email.split("@")[-1]
-                    touched_domains.add(domain)
+                    #
+                    # Freemail is excluded: gmail.com identifies a mailbox
+                    # provider, not a business, and treating it as an identity
+                    # collapsed every Gmail lead into one enrollable contact.
+                    # Such rows keep an empty domain and dedupe on the exact
+                    # address instead, via the contacts_email_unique index.
+                    candidate = email.split("@")[-1]
+                    if not is_freemail(candidate):
+                        domain = candidate
+                        touched_domains.add(domain)
                 mx_valid = r.get("mx_valid")  # None = unchecked, 1 = valid, 0 = invalid
                 conn.execute("""
                     INSERT INTO contacts(email,first_name,last_name,company,website,address,extra,status,mx_valid,domain,phone,category,rating,review_count,source_job_id)
@@ -1365,7 +1425,10 @@ def enroll_contacts_bulk(campaign_id, contact_ids):
 
                 # Optional stricter rule: one live sequence per business, not
                 # per address, for operators who would rather under-contact.
-                if one_per_domain and row["domain"]:
+                # Freemail is exempt: "one per domain" across gmail.com would
+                # mean one Gmail lead in flight at a time, across the whole
+                # database.
+                if one_per_domain and row["domain"] and not is_freemail(row["domain"]):
                     same_domain = conn.execute("""
                         SELECT 1 FROM enrollments e
                           JOIN contacts c ON c.id = e.contact_id
