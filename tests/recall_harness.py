@@ -111,7 +111,7 @@ def probe(row):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", default="*.csv", help="glob for input CSVs")
+    ap.add_argument("--csv", default="scraper_output/*.csv", help="glob for input CSVs")
     ap.add_argument("--workers", type=int, default=8,
                     help="parallel sites; the extractor sleeps between pages, "
                          "so this is what keeps the run to a couple of minutes")

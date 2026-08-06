@@ -1,28 +1,112 @@
 const CONTACT_COLS = [
-  { key: 'email',      label: 'Email' },
-  { key: 'first_name', label: 'First Name' },
-  { key: 'last_name',  label: 'Last Name' },
-  { key: 'company',    label: 'Company' },
-  { key: 'website',    label: 'Website' },
-  { key: 'address',    label: 'Address' },
-  { key: 'status',     label: 'Status' },
-  { key: 'created_at', label: 'Added' },
+  { key: 'email',         label: 'Email' },
+  { key: 'first_name',    label: 'First Name' },
+  { key: 'last_name',     label: 'Last Name' },
+  { key: 'company',       label: 'Company' },
+  { key: 'phone',         label: 'Phone' },
+  { key: 'website',       label: 'Website' },
+  { key: 'rating',        label: 'Rating' },
+  { key: 'review_count',  label: 'Reviews' },
+  { key: 'category',      label: 'Category' },
+  { key: 'address',       label: 'Address' },
+  { key: 'source_job_id', label: 'List' },
+  { key: 'status',        label: 'Status' },
+  { key: 'created_at',    label: 'Added' },
 ];
 
-let contactHiddenCols  = new Set();
+// Hidden by default purely to keep the table narrow enough to read — all of
+// them are one click away under ⊞ Columns.
+let contactHiddenCols  = new Set(['address', 'category']);
 let contactSortCol     = '';
-let contactSortDir     = 'asc';
+let contactSortDir     = 'desc';
 let contactEditId      = null;
 let contactSelectedIds = new Set();
 
+// Server-side paging state. The table used to hold every contact in the
+// browser; it now holds one page, and every filter is applied in SQL.
+let contactRows        = [];
+let contactPage        = 1;
+let contactPerPage     = 50;
+let contactTotal       = 0;
+let contactPages       = 1;
+let contactSourceId    = '';     // '' = every list, 'manual' = hand-added/CSV
+let contactSources     = [];
+let contactSearchTimer = null;
+
 async function loadContacts() {
-  allContacts = await api('/api/contacts');
+  contactPage = 1;
   contactSelectedIds.clear();
-  _updateDeleteSelectedBtn();
+  await loadContactSources();
   _renderContactColDropdown();
-  renderContactsTable();
+  await fetchContactsPage();
   loadUnsubscribed();
   loadInvalidMx();
+}
+
+async function loadContactSources() {
+  contactSources = await api('/api/contacts/sources') || [];
+  const sel = document.getElementById('contacts-source-filter');
+  if (!sel) return;
+  const total = contactSources.reduce((n, s) => n + s.count, 0);
+  sel.innerHTML =
+    `<option value="">All lists (${total})</option>` +
+    contactSources.map(s =>
+      `<option value="${esc(String(s.job_id))}">${esc(s.label)} (${s.count})</option>`
+    ).join('');
+  sel.value = contactSourceId;
+}
+
+function _contactQueryString(extra = {}) {
+  const p = new URLSearchParams();
+  const q = (document.getElementById('contacts-search')?.value || '').trim();
+  if (q) p.set('q', q);
+  if (contactSourceId) p.set('source_job_id', contactSourceId);
+  if (document.getElementById('contacts-show-deleted')?.checked) p.set('include_deleted', '1');
+  Object.entries(extra).forEach(([k, v]) => p.set(k, v));
+  return p.toString();
+}
+
+async function fetchContactsPage() {
+  const params = { page: contactPage, per_page: contactPerPage };
+  if (contactSortCol) { params.sort_col = contactSortCol; params.sort_dir = contactSortDir; }
+  const data = await api('/api/contacts?' + _contactQueryString(params));
+
+  if (!data || data.error || !data.rows) {
+    toast((data && data.error) || 'Failed to load contacts', 'err');
+    return;
+  }
+
+  contactRows  = data.rows;
+  contactTotal = data.total;
+  contactPages = data.pages;
+  contactPage  = data.page;
+  // Kept in sync so the edit/delete handlers, which look a contact up by id,
+  // still find the row the user just clicked.
+  allContacts  = data.rows;
+
+  renderContactsTable();
+  _updateDeleteSelectedBtn();
+}
+
+function contactSearch() {
+  clearTimeout(contactSearchTimer);
+  contactSearchTimer = setTimeout(() => {
+    contactPage = 1;
+    fetchContactsPage();
+  }, 300);
+}
+
+function contactFilterChanged() {
+  contactSourceId = document.getElementById('contacts-source-filter')?.value || '';
+  contactPage = 1;
+  fetchContactsPage();
+}
+
+function contactPageStep(dir) {
+  const next = contactPage + dir;
+  if (next < 1 || next > contactPages) return;
+  contactPage = next;
+  fetchContactsPage();
 }
 
 let _unsubscribed = [];
@@ -97,39 +181,33 @@ function exportInvalidMx() {
   a.click();
 }
 
+function _sourceLabel(jobId) {
+  if (jobId === null || jobId === undefined || jobId === '') return 'Manual / CSV';
+  const hit = contactSources.find(s => String(s.job_id) === String(jobId));
+  return hit ? hit.label : `Scrape #${jobId}`;
+}
+
 function renderContactsTable() {
-  const showDeleted = document.getElementById('contacts-show-deleted')?.checked;
-  const q = (document.getElementById('contacts-search')?.value || '').toLowerCase();
-
-  let data = allContacts.filter(c => {
-    if (!showDeleted && c.status === 'deleted') return false;
-    if (!q) return true;
-    return (c.email || '').toLowerCase().includes(q) ||
-           (c.first_name || '').toLowerCase().includes(q) ||
-           (c.last_name || '').toLowerCase().includes(q) ||
-           (c.company || '').toLowerCase().includes(q) ||
-           (c.address || '').toLowerCase().includes(q) ||
-           (c.website || '').toLowerCase().includes(q);
-  });
-
-  if (contactSortCol) {
-    data = [...data].sort((a, b) => {
-      const av = (a[contactSortCol] || '').toString().toLowerCase();
-      const bv = (b[contactSortCol] || '').toString().toLowerCase();
-      const cmp = av.localeCompare(bv);
-      return contactSortDir === 'asc' ? cmp : -cmp;
-    });
-  }
-
   const visibleCols = CONTACT_COLS.filter(c => !contactHiddenCols.has(c.key));
-  const allVisibleIds = data.map(c => c.id);
-  const allSelected = allVisibleIds.length > 0 && allVisibleIds.every(id => contactSelectedIds.has(id));
+  const pageIds     = contactRows.map(c => c.id);
+  const pageAllSel  = pageIds.length > 0 && pageIds.every(id => contactSelectedIds.has(id));
 
-  document.getElementById('contacts-count').textContent = `${data.length} contacts`;
+  const from = contactTotal === 0 ? 0 : (contactPage - 1) * contactPerPage + 1;
+  const to   = Math.min(contactPage * contactPerPage, contactTotal);
+  document.getElementById('contacts-count').textContent =
+    contactTotal ? `${from}–${to} of ${contactTotal}` : '0 contacts';
+
+  const pageLabel = document.getElementById('contacts-page-label');
+  if (pageLabel) pageLabel.textContent = `Page ${contactPage} of ${contactPages}`;
+  const prevBtn = document.getElementById('contacts-prev');
+  const nextBtn = document.getElementById('contacts-next');
+  if (prevBtn) prevBtn.disabled = contactPage <= 1;
+  if (nextBtn) nextBtn.disabled = contactPage >= contactPages;
 
   document.getElementById('contacts-thead').innerHTML = '<tr>' +
-    `<th style="width:36px"><input type="checkbox" ${allSelected ? 'checked' : ''}
-        onchange="toggleSelectAllContacts(this.checked)" style="cursor:pointer" /></th>` +
+    `<th style="width:36px"><input type="checkbox" ${pageAllSel ? 'checked' : ''}
+        onchange="toggleSelectAllContacts(this.checked)" style="cursor:pointer"
+        title="Select everything on this page" /></th>` +
     visibleCols.map(col => {
       const active  = contactSortCol === col.key;
       const arrow   = active ? (contactSortDir === 'asc' ? '▲' : '▼') : '⇅';
@@ -142,12 +220,13 @@ function renderContactsTable() {
     '<th style="width:80px"></th></tr>';
 
   const tbody = document.getElementById('contacts-table');
-  if (!data.length) {
+  if (!contactRows.length) {
     tbody.innerHTML = `<tr><td colspan="${visibleCols.length + 2}" class="empty-state"><p>No contacts found.</p></td></tr>`;
+    _renderSelectAllMatchingBar();
     return;
   }
 
-  tbody.innerHTML = data.map(c => {
+  tbody.innerHTML = contactRows.map(c => {
     const checked = contactSelectedIds.has(c.id) ? 'checked' : '';
     const cells = visibleCols.map(col => {
       if (col.key === 'status') return `<td>${contactStatusBadge(c.status)}</td>`;
@@ -156,6 +235,16 @@ function renderContactsTable() {
         return `<td class="mono text-muted" style="font-size:11px">${esc(d)}</td>`;
       }
       if (col.key === 'email') return `<td class="mono" style="font-size:12px">${esc(c.email)}</td>`;
+      if (col.key === 'phone') return `<td class="mono" style="font-size:12px">${esc(c.phone)}</td>`;
+      if (col.key === 'rating') {
+        return `<td class="mono" style="font-size:12px">${c.rating == null ? '' : esc(c.rating) + '★'}</td>`;
+      }
+      if (col.key === 'review_count') {
+        return `<td class="mono text-muted" style="font-size:12px">${c.review_count == null ? '' : esc(c.review_count)}</td>`;
+      }
+      if (col.key === 'source_job_id') {
+        return `<td class="text-muted" style="font-size:11px">${esc(_sourceLabel(c.source_job_id))}</td>`;
+      }
       return `<td>${esc(c[col.key])}</td>`;
     }).join('');
     return `<tr>
@@ -167,12 +256,58 @@ function renderContactsTable() {
       </td>
     </tr>`;
   }).join('');
+
+  _renderSelectAllMatchingBar();
+}
+
+// Select-all ticks the current page only. Silently selecting rows the user
+// cannot see would make "Delete Selected" far more destructive than it looks,
+// so reaching the rest of a filtered list is a separate, explicit click.
+function _renderSelectAllMatchingBar() {
+  const bar = document.getElementById('contacts-selectall-bar');
+  if (!bar) return;
+  const pageIds    = contactRows.map(c => c.id);
+  const pageAllSel = pageIds.length > 0 && pageIds.every(id => contactSelectedIds.has(id));
+  const more       = contactTotal > contactRows.length;
+
+  if (pageAllSel && more && contactSelectedIds.size < contactTotal) {
+    bar.style.display = 'block';
+    bar.innerHTML =
+      `All ${contactRows.length} on this page are selected.
+       <a href="#" onclick="selectAllMatching();return false"
+          style="color:var(--blue);text-decoration:underline">
+         Select all ${contactTotal} matching this filter</a>`;
+  } else if (contactSelectedIds.size > 0) {
+    bar.style.display = 'block';
+    bar.innerHTML =
+      `${contactSelectedIds.size} selected.
+       <a href="#" onclick="clearContactSelection();return false"
+          style="color:var(--blue);text-decoration:underline">Clear selection</a>`;
+  } else {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+  }
+}
+
+async function selectAllMatching() {
+  const res = await api('/api/contacts/ids?' + _contactQueryString());
+  if (!res || !res.ids) { toast('Could not expand the selection', 'err'); return; }
+  res.ids.forEach(id => contactSelectedIds.add(id));
+  _updateDeleteSelectedBtn();
+  renderContactsTable();
+}
+
+function clearContactSelection() {
+  contactSelectedIds.clear();
+  _updateDeleteSelectedBtn();
+  renderContactsTable();
 }
 
 function contactSort(col, dir) {
   contactSortCol = col;
   contactSortDir = dir;
-  renderContactsTable();
+  contactPage = 1;
+  fetchContactsPage();
 }
 
 function _renderContactColDropdown() {
@@ -211,43 +346,23 @@ function toggleContactSelect(id, checked) {
   if (checked) contactSelectedIds.add(id);
   else contactSelectedIds.delete(id);
   _updateDeleteSelectedBtn();
-  _rerenderSelectAll();
+  _syncSelectAllCheckbox();
+  _renderSelectAllMatchingBar();
 }
 
 function toggleSelectAllContacts(checked) {
-  const showDeleted = document.getElementById('contacts-show-deleted')?.checked;
-  const q = (document.getElementById('contacts-search')?.value || '').toLowerCase();
-  allContacts
-    .filter(c => {
-      if (!showDeleted && c.status === 'deleted') return false;
-      if (!q) return true;
-      return (c.email || '').toLowerCase().includes(q) ||
-             (c.first_name || '').toLowerCase().includes(q) ||
-             (c.last_name || '').toLowerCase().includes(q) ||
-             (c.company || '').toLowerCase().includes(q) ||
-             (c.address || '').toLowerCase().includes(q) ||
-             (c.website || '').toLowerCase().includes(q);
-    })
-    .forEach(c => checked ? contactSelectedIds.add(c.id) : contactSelectedIds.delete(c.id));
+  contactRows.forEach(c =>
+    checked ? contactSelectedIds.add(c.id) : contactSelectedIds.delete(c.id));
   _updateDeleteSelectedBtn();
   renderContactsTable();
 }
 
-function _rerenderSelectAll() {
-  const showDeleted = document.getElementById('contacts-show-deleted')?.checked;
-  const q = (document.getElementById('contacts-search')?.value || '').toLowerCase();
-  const visible = allContacts.filter(c => {
-    if (!showDeleted && c.status === 'deleted') return false;
-    if (!q) return true;
-    return (c.email || '').toLowerCase().includes(q) ||
-           (c.first_name || '').toLowerCase().includes(q) ||
-           (c.last_name || '').toLowerCase().includes(q) ||
-           (c.company || '').toLowerCase().includes(q) ||
-           (c.address || '').toLowerCase().includes(q) ||
-           (c.website || '').toLowerCase().includes(q);
-  });
+function _syncSelectAllCheckbox() {
   const cb = document.querySelector('#contacts-thead input[type=checkbox]');
-  if (cb) cb.checked = visible.length > 0 && visible.every(c => contactSelectedIds.has(c.id));
+  if (cb) {
+    cb.checked = contactRows.length > 0 &&
+                 contactRows.every(c => contactSelectedIds.has(c.id));
+  }
 }
 
 function _updateDeleteSelectedBtn() {
@@ -261,8 +376,12 @@ function _updateDeleteSelectedBtn() {
 async function deleteSelectedContacts() {
   const n = contactSelectedIds.size;
   if (!n) return;
-  if (!confirm(`Permanently delete ${n} contact${n > 1 ? 's' : ''}? This cannot be undone.`)) return;
-  await api('/api/contacts/bulk-delete', 'POST', { ids: [...contactSelectedIds] });
+  // Selection can now reach past the visible page, so name the number and say
+  // where it came from before doing something irreversible.
+  const scope = n > contactRows.length ? ' (including rows on other pages)' : '';
+  if (!confirm(`Permanently delete ${n} contact${n > 1 ? 's' : ''}${scope}? This cannot be undone.`)) return;
+  const res = await api('/api/contacts/bulk-delete', 'POST', { ids: [...contactSelectedIds] });
+  if (res && res.error) { toast(res.error, 'err'); return; }
   toast(`Deleted ${n} contact${n > 1 ? 's' : ''}`);
   loadContacts();
 }
@@ -381,20 +500,38 @@ async function deleteContact(id) {
 
 // ── Enroll ────────────────────────────────────────────────────────────────────
 
+// The enroll list searches server-side for the same reason the main table
+// does: it can only ever show a slice, and filtering a slice in the browser
+// would hide contacts that genuinely match.
+const ENROLL_PAGE_SIZE = 200;
+let _enrollSearchTimer = null;
+
 async function openEnrollModal() {
-  allContacts = await api('/api/contacts');
-  renderEnrollList(allContacts);
+  const filterEl = document.getElementById('enroll-filter');
+  if (filterEl) filterEl.value = '';
+  await fetchEnrollList('');
   openModal('modal-enroll');
 }
 
-function renderEnrollList(contacts) {
+async function fetchEnrollList(q) {
+  const p = new URLSearchParams({ status: 'active', per_page: ENROLL_PAGE_SIZE });
+  if (q) p.set('q', q);
+  const data = await api('/api/contacts?' + p.toString());
+  renderEnrollList(data && data.rows ? data.rows : [], data ? data.total : 0);
+}
+
+function renderEnrollList(contacts, total = 0) {
   const el = document.getElementById('enroll-list');
-  const active = contacts.filter(c => c.status === 'active');
-  if (!active.length) {
+  if (!contacts.length) {
     el.innerHTML = '<div class="empty-state"><p>No active contacts</p></div>';
     return;
   }
-  el.innerHTML = active.map(c => `
+  const truncated = total > contacts.length
+    ? `<div class="text-muted" style="padding:8px 14px;font-size:11px;border-bottom:1px solid var(--border)">
+         Showing ${contacts.length} of ${total} — search to narrow, or use Enroll All.
+       </div>`
+    : '';
+  el.innerHTML = truncated + contacts.map(c => `
     <label style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer">
       <input type="checkbox" value="${c.id}" class="enroll-cb" />
       <div>
@@ -406,13 +543,9 @@ function renderEnrollList(contacts) {
 }
 
 function filterEnrollList() {
-  const q = document.getElementById('enroll-filter').value.toLowerCase();
-  const filtered = allContacts.filter(c =>
-    c.email.toLowerCase().includes(q) ||
-    (c.company || '').toLowerCase().includes(q) ||
-    (c.first_name || '').toLowerCase().includes(q)
-  );
-  renderEnrollList(filtered);
+  clearTimeout(_enrollSearchTimer);
+  const q = document.getElementById('enroll-filter').value.trim();
+  _enrollSearchTimer = setTimeout(() => fetchEnrollList(q), 300);
 }
 
 // Some contacts are deliberately skipped: already in another campaign, or a

@@ -75,6 +75,7 @@
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 import threading
@@ -84,8 +85,6 @@ import logging
 import urllib.parse
 from pathlib import Path
 from collections import Counter
-
-import email_validator as _ev
 
 import requests
 import urllib3
@@ -116,7 +115,14 @@ NICHE  = "dental clinics"    # ← niche / business type
 CITY   = "Brampton Canada"    # ← city + country
 
 MAX_RESULTS  = 70         # leads to collect per run
-OUTPUT_FILE  = "brampton_dental.csv"   # ← change per city/run
+
+# Where CSVs and saved browser cookies land -- subfolders of the project
+# instead of loose files at the root, so a run doesn't scatter files you have
+# to hunt for next to app.py.
+OUTPUT_DIR  = "scraper_output"
+COOKIES_DIR = "cookies"
+
+OUTPUT_FILE  = f"{OUTPUT_DIR}/brampton_dental.csv"   # ← change per city/run
 
 # Timing — leave these alone, they mimic human behaviour
 MAP_SCROLL_DELAY   = (1.2, 2.5)   # seconds between Map scrolls (random range)
@@ -141,7 +147,12 @@ CONTACT_PATHS = [
 SEARCH_QUERY = f"{NICHE} in {CITY}"
 
 # Cookie file named per city so each city keeps its own session
-COOKIE_FILE = f"cookies_{CITY.lower().replace(' ', '_')}.json"
+COOKIE_FILE = f"{COOKIES_DIR}/cookies_{CITY.lower().replace(' ', '_')}.json"
+
+
+def ensure_output_dirs():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(COOKIES_DIR, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -194,36 +205,29 @@ CSV_FIELDS = [
 ]
 
 
-class ScraperJob:
-    """State container for a web-UI-triggered scrape run."""
-
-    def __init__(self, niche, city, max_results, auto_import=True):
-        self.niche        = niche
-        self.city         = city
-        self.max_results  = max_results
-        self.auto_import  = auto_import
-
-        self.stop_event    = threading.Event()
-        self.captcha_event = threading.Event()
-
-        self.status   = "running"   # running | captcha | done | stopped | error
-        self.logs     = []          # [{msg, level}, ...]
-        self.progress = 0           # businesses whose email phase is done
-        self.total    = 0           # businesses found on Maps
-        self.found    = 0           # businesses with at least one email
-        self.imported = 0           # contacts upserted into the DB
-
-    def log(self, msg, level="INFO"):
-        self.logs.append({"msg": msg, "level": level})
-        if len(self.logs) > 300:
-            self.logs = self.logs[-300:]
-
-    def stop(self):
-        self.stop_event.set()
-
-    def resume(self):
-        """Called by the web UI when the user has solved a CAPTCHA."""
-        self.captcha_event.set()
+def _qualifying_fields(biz: dict) -> dict:
+    """
+    Pull phone/category/rating/review_count off a scraped business record for
+    db.upsert_contacts(). rating/reviews come off the Maps panel as text
+    ("4.8", "127") -- coerce them, dropping anything that doesn't parse
+    rather than storing a value the DB column would reject.
+    """
+    rating = None
+    try:
+        rating = float(biz["rating"]) if biz.get("rating") else None
+    except (TypeError, ValueError):
+        pass
+    review_count = None
+    try:
+        review_count = int(biz["reviews"]) if biz.get("reviews") else None
+    except (TypeError, ValueError):
+        pass
+    return {
+        "phone":        biz.get("phone", ""),
+        "category":     biz.get("category", ""),
+        "rating":       rating,
+        "review_count": review_count,
+    }
 
 
 # ──────────────────────────────────────────────────────────────
@@ -366,22 +370,46 @@ def _captcha_present(page) -> bool:
     return any(s in body for s in CAPTCHA_TEXT_SIGNALS)
 
 
+def _job_log(job, msg, level="INFO"):
+    """
+    Report progress to the web UI when running under a job, otherwise to the
+    terminal. scrape_google_maps used to log with the bare module logger,
+    which only ever reached the worker's own terminal -- the web UI's live
+    log stayed empty for the entire Maps phase, which could run for minutes.
+    """
+    if job:
+        job.log(msg, level)
+    else:
+        {"INFO": log.info, "WARN": log.warning, "ERROR": log.error}.get(level, log.info)(msg)
+
+
 def handle_captcha_if_present(page, job=None):
-    if _captcha_present(page):
-        if job:
-            job.status = "captcha"
-            job.log("⚠ CAPTCHA detected — solve it in the Chrome window, then click Resume in the app.", "WARN")
-            job.captcha_event.wait()   # blocks until resume() is called from the web UI
-            job.captcha_event.clear()  # reset for the next CAPTCHA
-            job.status = "running"
-            job.log("Resuming after CAPTCHA...")
-        else:
-            log.warning("")
-            log.warning("⚠  CAPTCHA detected!")
-            log.warning("   Solve it in the Chrome window, then come back here.")
-            input("   Press ENTER to continue → ")
-            time.sleep(2)
-            log.info("Resuming...")
+    if not _captcha_present(page):
+        return
+
+    if job is None:
+        log.warning("")
+        log.warning("⚠  CAPTCHA detected!")
+        log.warning("   Solve it in the Chrome window, then come back here.")
+        input("   Press ENTER to continue → ")
+        time.sleep(2)
+        log.info("Resuming...")
+        return
+
+    job.log("⚠ CAPTCHA detected — solve it in the Chrome window, then click Resume in the app.", "WARN")
+
+    # The only job type left is the worker's remote one, whose Resume arrives
+    # over HTTP -- so poll for it. The in-process ScraperJob that set
+    # captcha_event locally is gone; waiting on that event here would block
+    # forever, since nothing on this machine ever sets it.
+    if hasattr(job, "wait_for_resume"):
+        job.wait_for_resume()
+    else:
+        job.status = "captcha"
+        job.captcha_event.wait()
+        job.captcha_event.clear()
+        job.status = "running"
+    job.log("Resuming after CAPTCHA...")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -517,7 +545,7 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
                 headless=False, channel="chrome", args=["--start-maximized"]
             )
         except Exception:
-            log.info("Chrome not available — falling back to bundled Chromium")
+            _job_log(job, "Chrome not available — falling back to bundled Chromium")
             browser = p.chromium.launch(headless=False, args=["--start-maximized"])
 
         context = browser.new_context(
@@ -537,7 +565,7 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
         Stealth().apply_stealth_sync(page)
 
         url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
-        log.info(f"Opening: {url}")
+        _job_log(job, f"Opening: {url}")
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         time.sleep(3)
 
@@ -545,9 +573,11 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
 
         results_panel = page.query_selector('div[role="feed"]')
         if not results_panel:
-            log.error(
-                "Results sidebar not found — Google may have updated its layout.\n"
-                "Check the browser window and see what's on screen."
+            _job_log(
+                job,
+                "Results sidebar not found — Google may have updated its layout. "
+                "Check the browser window and see what's on screen.",
+                "ERROR",
             )
             browser.close()
             return []
@@ -606,11 +636,13 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
                             # but bounded, or a permanently broken panel would
                             # loop forever and the scrape would never finish.
                             seen_names.discard(name)
-                            log.info(f"  Panel slow for '{name}' — will retry")
+                            _job_log(job, f"  Panel slow for '{name}' — will retry")
                         else:
-                            log.warning(
+                            _job_log(
+                                job,
                                 f"  Skipped '{name}': detail panel never loaded. "
-                                f"Recording it would risk the previous business's details."
+                                f"Recording it would risk the previous business's details.",
+                                "WARN",
                             )
                         continue
 
@@ -618,7 +650,13 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
                     record.update(_read_detail_panel(page))
 
                     businesses.append(record)
-                    log.info(
+                    if job:
+                        # Lets the UI's progress bar and "Found" stat move
+                        # during the Maps phase instead of sitting at 0 until
+                        # the whole phase finishes.
+                        job.total = len(businesses)
+                    _job_log(
+                        job,
                         f"  [{len(businesses)}/{max_results}] "
                         f"{name} → {record['website'] or 'NO WEBSITE'}"
                         + (f"  ({record['rating']}★ {record['reviews']})"
@@ -626,7 +664,7 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
                     )
 
                 except Exception as e:
-                    log.warning(f"  Skipped '{name}': {e}")
+                    _job_log(job, f"  Skipped '{name}': {e}", "WARN")
 
             # Randomised scroll — amount and a mid-scroll micro-pause
             # so the pattern never looks like a bot looping 1000px.
@@ -639,7 +677,7 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
                 time.sleep(random.uniform(0.3, 0.8))
                 results_panel.evaluate(f"el => el.scrollBy(0, {random.randint(30, 120)})")
             except Exception as exc:
-                log.warning(f"  Scroll failed ({type(exc).__name__}) — retrying next pass")
+                _job_log(job, f"  Scroll failed ({type(exc).__name__}) — retrying next pass", "WARN")
             time.sleep(random.uniform(*MAP_SCROLL_DELAY))
 
             if new_this_scroll == 0:
@@ -648,18 +686,18 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
                 consecutive_empty = 0
 
             if consecutive_empty >= 5:
-                log.info("5 scrolls with no new results — end of list reached.")
+                _job_log(job, "5 scrolls with no new results — end of list reached.")
                 break
 
             end_el = page.query_selector("p.fontBodyMedium > span")
             if end_el and "end of results" in (end_el.inner_text() or "").lower():
-                log.info("Google confirmed: end of results.")
+                _job_log(job, "Google confirmed: end of results.")
                 break
 
         save_cookies(context, COOKIE_FILE)
         browser.close()
 
-    log.info(f"Maps scrape complete. {len(businesses)} businesses collected.")
+    _job_log(job, f"Maps scrape complete. {len(businesses)} businesses collected.")
     return businesses
 
 
@@ -1275,143 +1313,6 @@ def print_summary(output_file: str):
 #  MAIN
 # ──────────────────────────────────────────────────────────────
 
-def run_scraper_job(job: ScraperJob):
-    """
-    Full scrape orchestrated by a ScraperJob.
-    Runs in a background thread launched by the web app.
-    Progress, logs, and CAPTCHA state are written to the job object
-    and polled by the frontend every 2 seconds.
-    """
-    import db as _db
-
-    try:
-        search_query = f"{job.niche} in {job.city}"
-        output_file  = f"{safe_filename(job.city)}_{safe_filename(job.niche)}.csv"
-
-        job.log(f"Starting: {search_query}")
-        job.log(f"Target: {job.max_results} results → {output_file}")
-
-        # ── Resume set ──────────────────────────────────────────────────────
-        # This used to pass an empty set, so the web UI had no resume support
-        # at all: running "dentists in St John's" after "dental clinics in
-        # St John's" re-scraped every overlapping business from scratch.
-        skip_names = set(load_existing_records(output_file).keys())
-        try:
-            skip_names |= _db.get_known_company_names()
-        except Exception as exc:
-            job.log(f"Could not read known companies from the database: {exc}", "WARN")
-        if skip_names:
-            job.log(f"Resume: skipping {len(skip_names)} business(es) already collected")
-
-        # ── Step 1: Google Maps ─────────────────────────────────────────────
-        businesses = scrape_google_maps(search_query, job.max_results, skip_names, job)
-
-        if job.stop_event.is_set():
-            job.log("Stopped by user.")
-            job.status = "stopped"
-            return
-
-        if not businesses:
-            job.log("No businesses found. Check niche/city and try again.", "WARN")
-            job.status = "done"
-            return
-
-        job.total = len(businesses)
-        job.log(f"Maps done — {job.total} businesses found. Scraping emails...")
-
-        # ── Step 2: Email scraping over HTTP ────────────────────────────────
-        processed = []
-
-        for i, biz in enumerate(businesses):
-            if job.stop_event.is_set():
-                job.log("Stopped by user.")
-                break
-
-            emails, status = get_emails_for_business(biz["website"])
-            biz["emails"]       = emails
-            biz["email_status"] = status
-            job.progress = i + 1
-            processed.append(biz)
-
-            if status == STATUS_FOUND:
-                job.found += 1
-                job.log(f"[{i+1}/{job.total}] ✓ {biz['name']} — {emails}")
-            else:
-                job.log(f"[{i+1}/{job.total}] ✗ {biz['name']} — {status}")
-
-            # Write as we go: a crash mid-run must not cost the whole scrape.
-            # The file is rewritten with final values once the fallback ends.
-            append_to_csv({k: biz.get(k, "") for k in CSV_FIELDS}, output_file)
-            time.sleep(random.uniform(*SITE_REQUEST_DELAY))
-
-        # ── Step 2b: Browser fallback ───────────────────────────────────────
-        # One browser session for everything HTTP could not read, rather than
-        # paying browser start-up per site.
-        retry_sites = [
-            b["website"] for b in processed
-            if b.get("website") and b["email_status"] in BROWSER_RETRY_STATUSES
-        ]
-        if retry_sites and not job.stop_event.is_set():
-            recovered = browser_fallback(retry_sites, log_fn=job.log)
-            for biz in processed:
-                hit = recovered.get(biz.get("website"))
-                if hit:
-                    biz["emails"], biz["email_status"] = hit
-                    job.found += 1
-            if recovered:
-                rewrite_csv_rows(processed, output_file)
-
-        # ── Step 3: Build contacts from the final state ─────────────────────
-        contacts_to_import = []
-        for biz in processed:
-            status = biz["email_status"]
-            if status == STATUS_FOUND:
-                for raw in biz["emails"].split(";"):
-                    raw = raw.strip()
-                    if not raw:
-                        continue
-                    mx_ok = _ev.check_mx(raw)
-                    if not mx_ok:
-                        job.log(f"  ↳ {raw} — invalid MX (saved for review)")
-                    contacts_to_import.append({
-                        "email":      raw,
-                        "company":    biz.get("name", ""),
-                        "first_name": "",
-                        "last_name":  "",
-                        "website":    biz.get("website", ""),
-                        "address":    biz.get("address", ""),
-                        "mx_valid":   1 if mx_ok else 0,
-                    })
-            elif biz.get("website"):
-                # No email, but a real site -- keep it as a prospect to chase
-                # by hand rather than dropping the lead entirely.
-                prospect_status = "form_only" if status == STATUS_FORM_ONLY else "no_email"
-                contacts_to_import.append({
-                    "email":   "",
-                    "company": biz.get("name", ""),
-                    "website": biz.get("website", ""),
-                    "address": biz.get("address", ""),
-                    "status":  prospect_status,
-                })
-
-        # ── Step 4: Auto-import to DB ───────────────────────────────────────
-        if job.auto_import and contacts_to_import:
-            job.imported = _db.upsert_contacts(contacts_to_import)
-            job.log(f"✓ {job.imported} contacts imported into the database.")
-        elif contacts_to_import:
-            job.log(f"{len(contacts_to_import)} emails found — saved to {output_file} (auto-import was off).")
-
-        job.log(
-            f"Complete. {job.found}/{job.total} businesses had emails. "
-            f"{job.imported} contacts imported."
-        )
-        job.status = "done"
-
-    except Exception as e:
-        job.log(f"Scraper error: {e}", "ERROR")
-        job.status = "error"
-
-
 def main():
     global NICHE, CITY, MAX_RESULTS, OUTPUT_FILE, SEARCH_QUERY, COOKIE_FILE
 
@@ -1422,12 +1323,17 @@ def main():
     parser.add_argument("--output", default=None,         help="Output CSV filename (auto-generated if omitted)")
     args = parser.parse_args()
 
+    ensure_output_dirs()
+
     NICHE       = args.niche
     CITY        = args.city
     MAX_RESULTS = args.max
-    OUTPUT_FILE  = args.output or f"{safe_filename(CITY)}_{safe_filename(NICHE)}.csv"
+    # --output is an explicit path from the operator -- honour it as-is rather
+    # than forcing it under OUTPUT_DIR. The auto-generated default still goes
+    # there, same as a web-triggered run.
+    OUTPUT_FILE  = args.output or f"{OUTPUT_DIR}/{safe_filename(CITY)}_{safe_filename(NICHE)}.csv"
     SEARCH_QUERY = f"{NICHE} in {CITY}"
-    COOKIE_FILE  = f"cookies_{safe_filename(CITY)}.json"
+    COOKIE_FILE  = f"{COOKIES_DIR}/cookies_{safe_filename(CITY)}.json"
 
     log.info("══════════════════════════════════════════")
     log.info("  Google Maps Email Scraper  v3")

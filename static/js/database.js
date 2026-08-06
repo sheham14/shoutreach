@@ -1,5 +1,6 @@
 let dbCurrentTable = null;
 let dbCurrentPage  = 1;
+let dbLastGoodPage = 1;   // reverted to on a failed fetch, so Next/Prev can't drift out of sync
 let dbSearchTimer  = null;
 let dbSortCol      = '';
 let dbSortDir      = 'desc';
@@ -20,6 +21,7 @@ async function loadDbTables() {
 async function openDbTable(name) {
   dbCurrentTable = name;
   dbCurrentPage  = 1;
+  dbLastGoodPage = 1;
   dbSortCol      = '';
   dbSortDir      = 'desc';
   dbHiddenCols   = new Set();
@@ -41,6 +43,18 @@ async function fetchDbPage() {
   let url = `/api/db/table/${dbCurrentTable}?page=${dbCurrentPage}&q=${q}`;
   if (dbSortCol) url += `&sort_col=${encodeURIComponent(dbSortCol)}&sort_dir=${dbSortDir}`;
   const data = await api(url);
+
+  if (data.error || !data.rows) {
+    // A failed request used to throw here on data.rows.length with no
+    // feedback -- the page number had already been bumped by dbPage(), so
+    // the Next button looked like it did nothing while quietly drifting out
+    // of sync with what was on screen. Revert to the last page that actually
+    // loaded so the next click resumes from where the user really is.
+    toast(data.error || 'Failed to load this page', 'err');
+    dbCurrentPage = dbLastGoodPage;
+    return;
+  }
+  dbLastGoodPage = data.page;
 
   document.getElementById('db-row-count').textContent = `${data.total} rows`;
   document.getElementById('db-page-label').textContent =

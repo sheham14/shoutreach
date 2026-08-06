@@ -86,6 +86,23 @@ async function pollScraperStatus() {
   document.getElementById('sc-captcha-box').style.display =
     d.status === 'captcha' ? 'block' : 'none';
 
+  // Heartbeat freshness -- the log line itself is usually proof enough the
+  // job is alive, but a slow page load can go 10-20s between lines, and a
+  // silent worker crash otherwise only surfaces after the 3-minute auto-fail.
+  // This gives an earlier, calibrated "is it actually stuck" signal.
+  const hbEl = document.getElementById('sc-heartbeat');
+  const jobActive = d.status === 'running' || d.status === 'captcha';
+  if (jobActive && d.heartbeat_secs != null) {
+    const stale = d.heartbeat_secs > 30;
+    hbEl.style.display = 'block';
+    hbEl.style.color = stale ? 'var(--amber)' : 'var(--muted)';
+    hbEl.textContent = stale
+      ? `⚠ No update in ${d.heartbeat_secs}s — may be stuck (auto-fails after 3 min of silence)`
+      : `Last update ${d.heartbeat_secs}s ago`;
+  } else {
+    hbEl.style.display = 'none';
+  }
+
   if (d.error) {
     document.getElementById('sc-progress-text').textContent = d.error;
   }

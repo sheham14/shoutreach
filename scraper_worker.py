@@ -38,6 +38,7 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 
 import requests
 
@@ -66,6 +67,28 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 _shutdown = threading.Event()
+
+# Remembers SHOUTREACH_URL / SHOUTREACH_API_KEY between terminal sessions so
+# they only have to be set once. Lives next to this file, not the CSV output
+# (which can reasonably live elsewhere) -- deliberately git-ignored since it
+# holds a live credential.
+CONFIG_PATH = Path(__file__).resolve().parent / ".worker_config.json"
+
+
+def _load_cached_config() -> dict:
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_cached_config(server: str, api_key: str):
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump({"server": server, "api_key": api_key}, f, indent=2)
+    except Exception as exc:
+        log.warning(f"Could not save worker config to {CONFIG_PATH}: {exc}")
 
 
 # ── Server client ─────────────────────────────────────────────────────────────
@@ -123,13 +146,15 @@ class Server:
 
 class RemoteScraperJob:
     """
-    Stands in for the in-process ScraperJob the scraper was written against.
+    The job object the scraper reports progress through.
 
-    It keeps the same surface -- .log(), .status, .progress, .stop_event,
-    .captcha_event -- so run_scraper_job() needs no changes. The difference is
-    that state goes over HTTP to the server instead of being read out of memory
-    by Flask, and the CAPTCHA wait polls for the Resume flag rather than
-    blocking on a local threading.Event.
+    Originally this stood in for an in-process ScraperJob that Flask ran in a
+    background thread and read out of memory; that never worked on a headless
+    server and has been deleted, so this is now the only job type there is.
+
+    It carries .log(), .status, .progress, .stop_event and .captcha_event, but
+    state goes over HTTP to the server, and the CAPTCHA wait polls for the
+    Resume flag rather than blocking on a local threading.Event.
     """
 
     def __init__(self, server: Server, job_id: int, niche, city,
@@ -238,25 +263,6 @@ class RemoteScraperJob:
         self.captcha_event.set()
 
 
-def _install_captcha_bridge(job: RemoteScraperJob):
-    """
-    Point the scraper's CAPTCHA handler at the remote Resume flag.
-
-    run_scraper_job calls handle_captcha_if_present(page, job), which blocks on
-    job.captcha_event.wait(). That event only ever gets set by an in-process
-    Flask route, which no longer exists — so swap the wait for a poll of the
-    server flag, and restore the original when the job ends.
-    """
-    original = scraper.handle_captcha_if_present
-
-    def patched(page, job_arg=None):
-        if scraper._captcha_present(page):
-            job.wait_for_resume()
-
-    scraper.handle_captcha_if_present = patched
-    return original
-
-
 # ── Running one job ───────────────────────────────────────────────────────────
 
 def run_job(server: Server, spec: dict):
@@ -267,7 +273,12 @@ def run_job(server: Server, spec: dict):
     log.info(f"Claimed job {job.job_id}: {job.niche} in {job.city} "
              f"(max {job.max_results})")
 
-    original_handler = _install_captcha_bridge(job)
+    # No CAPTCHA monkeypatch here any more. This used to swap out
+    # scraper.handle_captcha_if_present for the duration of a job, because that
+    # function waited on a threading.Event only an in-process Flask job could
+    # set. That job type is gone, so the scraper now polls wait_for_resume()
+    # directly -- and the CAPTCHA warning reaches the live log, which the
+    # patched version skipped straight past.
     ticker = threading.Thread(target=_heartbeat_loop, args=(job,), daemon=True)
     ticker.start()
 
@@ -277,8 +288,6 @@ def run_job(server: Server, spec: dict):
         log.exception("Job failed")
         job.status = "error"
         job.push(error=str(exc)[:500], finished=True)
-    finally:
-        scraper.handle_captcha_if_present = original_handler
 
 
 def _heartbeat_loop(job: RemoteScraperJob):
@@ -291,8 +300,9 @@ def _heartbeat_loop(job: RemoteScraperJob):
 
 def _run_scrape(server: Server, job: RemoteScraperJob):
     """The scrape itself. Mirrors run_scraper_job, reporting over HTTP."""
+    scraper.ensure_output_dirs()
     search_query = f"{job.niche} in {job.city}"
-    output_file  = f"{scraper.safe_filename(job.city)}_{scraper.safe_filename(job.niche)}.csv"
+    output_file  = f"{scraper.OUTPUT_DIR}/{scraper.safe_filename(job.city)}_{scraper.safe_filename(job.niche)}.csv"
 
     job.log(f"Starting: {search_query}")
     job.log(f"Target: {job.max_results} results → {output_file}")
@@ -426,14 +436,19 @@ def _build_contact_rows(processed, job) -> list:
     """
     import email_validator as _ev
 
-    def _extra(biz):
-        """Maps details that have no dedicated column, for qualifying leads."""
-        return {k: v for k, v in {
-            "phone":    biz.get("phone", ""),
-            "rating":   biz.get("rating", ""),
-            "reviews":  biz.get("reviews", ""),
-            "category": biz.get("category", ""),
-        }.items() if v}
+    def _qualifiers(biz):
+        """
+        Phone, category, rating and review count.
+
+        These used to be packed into the `extra` JSON blob, which meant the
+        Contacts table showed one opaque column instead of the fields you
+        actually qualify a lead on. They are real columns now; `source_job_id`
+        rides along so every lead remembers which scrape produced it.
+        """
+        # getattr, not job.job_id: an untagged lead is a cosmetic loss, but an
+        # AttributeError here would throw away a whole finished batch.
+        return {**scraper._qualifying_fields(biz),
+                "source_job_id": getattr(job, "job_id", None)}
 
     rows = []
     for biz in processed:
@@ -452,7 +467,7 @@ def _build_contact_rows(processed, job) -> list:
                     "website":    biz.get("website", ""),
                     "address":    biz.get("address", ""),
                     "mx_valid":   1 if mx_ok else 0,
-                    "extra":      _extra(biz),
+                    **_qualifiers(biz),
                 })
         elif biz.get("website"):
             rows.append({
@@ -461,7 +476,7 @@ def _build_contact_rows(processed, job) -> list:
                 "website": biz.get("website", ""),
                 "address": biz.get("address", ""),
                 "status":  "form_only" if status == scraper.STATUS_FORM_ONLY else "no_email",
-                "extra":   _extra(biz),
+                **_qualifiers(biz),
             })
         else:
             # No website at all. These used to be logged and thrown away, but
@@ -474,7 +489,7 @@ def _build_contact_rows(processed, job) -> list:
                 "website": "",
                 "address": biz.get("address", ""),
                 "status":  "no_website",
-                "extra":   _extra(biz),
+                **_qualifiers(biz),
             })
     return rows
 
@@ -482,21 +497,46 @@ def _build_contact_rows(processed, job) -> list:
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main():
+    cached = _load_cached_config()
+
     ap = argparse.ArgumentParser(description="ShoutReach local scrape worker")
-    ap.add_argument("--server", default=DEFAULT_SERVER,
-                    help="ShoutReach base URL (or set SHOUTREACH_URL)")
-    ap.add_argument("--api-key", default=API_KEY,
-                    help="Worker API key (or set SHOUTREACH_API_KEY)")
+    ap.add_argument("--server", default=None,
+                    help="ShoutReach base URL (or set SHOUTREACH_URL). "
+                         "Remembered after the first successful run.")
+    ap.add_argument("--api-key", default=None,
+                    help="Worker API key (or set SHOUTREACH_API_KEY). "
+                         "Remembered after the first successful run.")
     ap.add_argument("--once", action="store_true",
                     help="Run a single job then exit, for testing")
+    ap.add_argument("--forget", action="store_true",
+                    help="Clear the remembered server/API key and exit")
     args = ap.parse_args()
 
-    if not args.api_key:
-        log.error("No API key. Set SHOUTREACH_API_KEY, or pass --api-key.")
+    if args.forget:
+        try:
+            CONFIG_PATH.unlink()
+        except FileNotFoundError:
+            pass
+        log.info("Remembered worker config cleared.")
+        return 0
+
+    # Precedence: explicit flag > env var > what was remembered last time.
+    server_url = args.server or os.environ.get("SHOUTREACH_URL") or cached.get("server") or DEFAULT_SERVER
+    api_key    = args.api_key or os.environ.get("SHOUTREACH_API_KEY") or cached.get("api_key") or API_KEY
+
+    if not api_key:
+        log.error("No API key. Set SHOUTREACH_API_KEY, or pass --api-key, once --")
+        log.error("it will be remembered and every run after that needs neither.")
         log.error("Find it in the web UI under Settings -> Lead Scraper.")
         return 2
 
-    server = Server(args.server, args.api_key)
+    if cached.get("server") != server_url or cached.get("api_key") != api_key:
+        _save_cached_config(server_url, api_key)
+        log.info(f"Saved worker config to {CONFIG_PATH.name} "
+                 "— future runs won't need SHOUTREACH_URL/SHOUTREACH_API_KEY "
+                 "(use --forget to clear it).")
+
+    server = Server(server_url, api_key)
 
     def _on_signal(signum, frame):
         # A second Ctrl-C exits immediately. The first only sets a flag, which
@@ -515,7 +555,7 @@ def main():
     except (AttributeError, ValueError):
         pass
 
-    log.info(f"Worker ready. Server: {args.server}")
+    log.info(f"Worker ready. Server: {server_url}")
     log.info("Waiting for jobs — press Start in the web UI.")
 
     idle_logged = False

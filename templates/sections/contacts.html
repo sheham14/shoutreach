@@ -15,12 +15,19 @@
     <div class="card-header">
       <div class="flex gap-2 items-center">
         <input id="contacts-search" placeholder="Search..."
-               oninput="renderContactsTable()"
+               oninput="contactSearch()"
                style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
                       padding:6px 12px;color:var(--text);font-size:13px;outline:none;width:220px;
                       font-family:var(--font)" />
+        <select id="contacts-source-filter" onchange="contactFilterChanged()"
+                title="Filter by the scrape that produced these leads"
+                style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+                       padding:6px 10px;color:var(--text);font-size:13px;outline:none;
+                       max-width:260px;font-family:var(--font);cursor:pointer">
+          <option value="">All lists</option>
+        </select>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
-          <input type="checkbox" id="contacts-show-deleted" onchange="renderContactsTable()" style="cursor:pointer" />
+          <input type="checkbox" id="contacts-show-deleted" onchange="contactFilterChanged()" style="cursor:pointer" />
           Show deleted
         </label>
       </div>
@@ -36,11 +43,20 @@
         </div>
       </div>
     </div>
+    <div id="contacts-selectall-bar"
+         style="display:none;padding:8px 16px;background:var(--bg3);
+                border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)"></div>
     <div class="table-wrap">
       <table>
         <thead id="contacts-thead"></thead>
         <tbody id="contacts-table"></tbody>
       </table>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;
+                padding:12px 16px;border-top:1px solid var(--border)">
+      <button class="btn btn-ghost btn-sm" id="contacts-prev" onclick="contactPageStep(-1)">← Prev</button>
+      <span id="contacts-page-label" class="text-muted text-small mono"></span>
+      <button class="btn btn-ghost btn-sm" id="contacts-next" onclick="contactPageStep(1)">Next →</button>
     </div>
   </div>
 

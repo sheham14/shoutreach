@@ -6,6 +6,11 @@ outreach.db-wal
 # Scraped data and browser cookies
 *.csv
 cookies_*.json
+/scraper_output/
+/cookies/
+
+# Worker's remembered server URL + API key
+.worker_config.json
 
 # Python
 __pycache__/

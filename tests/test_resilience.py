@@ -125,26 +125,45 @@ def test_incremental_import():
     check("_push_batch exists", hasattr(scraper_worker, "_push_batch"))
 
     pushed = []
+    sent_rows = []
 
     class FakeServer:
         def import_contacts(self, rows):
             pushed.append(len(rows))
+            sent_rows.extend(rows)
             return {"ok": True, "inserted": len(rows), "invalid_mx": 0}
 
     class FakeJob:
         imported = 0
+        job_id   = 7      # every lead is tagged with the scrape that found it
         def log(self, msg, level="INFO"):
             pass
 
     job = FakeJob()
     scraper_worker._push_batch(FakeServer(), job, [
         {"name": "A", "website": "http://a.ca", "emails": "a@a.ca",
-         "email_status": scraper.STATUS_FOUND, "address": ""},
+         "email_status": scraper.STATUS_FOUND, "address": "",
+         "phone": "555-1234", "rating": "4.7", "reviews": "88",
+         "category": "Dentist"},
         {"name": "B", "website": "http://b.ca", "emails": "",
          "email_status": scraper.STATUS_FORM_ONLY, "address": ""},
     ])
     check("a batch reaches the server", pushed == [2], str(pushed))
     check("the running total is updated", job.imported == 2, str(job.imported))
+
+    # These four used to be buried in the `extra` JSON blob, so the Contacts
+    # table showed one opaque column instead of the fields you qualify on --
+    # and the web-triggered path was fixed while this one silently was not.
+    lead = next((r for r in sent_rows if r.get("email") == "a@a.ca"), {})
+    check("phone is sent as its own field", lead.get("phone") == "555-1234", str(lead.get("phone")))
+    check("rating is coerced to a number", lead.get("rating") == 4.7, str(lead.get("rating")))
+    check("review count is coerced to an int", lead.get("review_count") == 88,
+          str(lead.get("review_count")))
+    check("category is sent", lead.get("category") == "Dentist", str(lead.get("category")))
+    check("the lead is tagged with its scrape", lead.get("source_job_id") == 7,
+          str(lead.get("source_job_id")))
+    check("prospects with no email are tagged too",
+          all(r.get("source_job_id") == 7 for r in sent_rows), str(sent_rows))
 
     # A failing server must not end the run -- the CSV is the source of truth.
     class BrokenServer:
@@ -246,11 +265,73 @@ def test_panel_race_guard():
           "PANEL_RETRY_LIMIT" in src)
 
 
+def test_captcha_waits_on_the_remote_flag():
+    """
+    A CAPTCHA must block until Resume arrives from the server -- and must never
+    block on a local threading.Event.
+
+    The deleted in-process ScraperJob set captcha_event in the same process.
+    Nothing does that any more, so waiting on it here would hang the scrape
+    forever with no way out. The worker used to paper over this by monkey-
+    patching the handler for the duration of a job; the handler now polls
+    wait_for_resume() itself, so this pins the behaviour that replaced it.
+    """
+    print("\n6. A CAPTCHA WAITS ON THE SERVER'S RESUME FLAG")
+
+    calls = {"waited": 0}
+    logs = []
+
+    class RemoteLikeJob:
+        status = "running"
+        def log(self, msg, level="INFO"):
+            logs.append(msg)
+        def wait_for_resume(self):
+            calls["waited"] += 1
+
+    class BlockingEventJob:
+        """The old shape: only a threading.Event, which nobody would ever set."""
+        status = "running"
+        captcha_event = threading.Event()
+        def log(self, msg, level="INFO"):
+            logs.append(msg)
+
+    original = scraper._captcha_present
+    try:
+        scraper._captcha_present = lambda page: True
+        scraper.handle_captcha_if_present(object(), RemoteLikeJob())
+        check("a remote job polls the server for Resume", calls["waited"] == 1,
+              str(calls))
+        check("the CAPTCHA is announced in the live log",
+              any("CAPTCHA detected" in m for m in logs), str(logs))
+        check("and so is the resume", any("Resuming" in m for m in logs), str(logs))
+
+        # The event fallback must still work when a job really does provide one
+        # -- set it first so the test cannot hang if the branch is taken.
+        job = BlockingEventJob()
+        job.captcha_event.set()
+        scraper.handle_captcha_if_present(object(), job)
+        check("an event-style job still resumes once its event is set",
+              job.status == "running")
+
+        scraper._captcha_present = lambda page: False
+        before = calls["waited"]
+        scraper.handle_captcha_if_present(object(), RemoteLikeJob())
+        check("no CAPTCHA means no wait", calls["waited"] == before)
+    finally:
+        scraper._captcha_present = original
+
+    src = open(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "scraper_worker.py"), encoding="utf-8").read()
+    check("the worker no longer monkeypatches the CAPTCHA handler",
+          "_install_captcha_bridge" not in src)
+
+
 def main():
     test_ceilings_are_configured()
     test_incremental_import()
     test_second_interrupt_forces_exit()
     test_panel_race_guard()
+    test_captcha_waits_on_the_remote_flag()
     test_trickle_does_not_hang()      # slowest, so last
 
     print()

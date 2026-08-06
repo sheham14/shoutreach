@@ -202,6 +202,20 @@ def init_db():
             # query, so flipping a mid-sequence contact's status would
             # silently cancel steps 2 and 3.
             "ALTER TABLE contacts ADD COLUMN duplicate_of INTEGER DEFAULT NULL",
+            # Promoted out of the `extra` JSON blob: the scraper always reads
+            # these off the Maps detail panel, and they're what make a lead
+            # worth qualifying by hand (a bad phone number or a 2-star rating
+            # says more than the email address does).
+            "ALTER TABLE contacts ADD COLUMN phone TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE contacts ADD COLUMN category TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE contacts ADD COLUMN rating REAL DEFAULT NULL",
+            "ALTER TABLE contacts ADD COLUMN review_count INTEGER DEFAULT NULL",
+            # Which scrape found this lead -- powers the "lead list" filter in
+            # Contacts. Deliberately NOT a foreign key: leads must outlive the
+            # scrape_jobs row that produced them, and a pruned job should
+            # degrade to an "unknown source" label, not block the delete or
+            # orphan the contact. NULL means manually added or CSV-imported.
+            "ALTER TABLE contacts ADD COLUMN source_job_id INTEGER DEFAULT NULL",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -237,13 +251,20 @@ def init_db():
                     soft_bounce_count INTEGER NOT NULL DEFAULT 0,
                     mx_valid          INTEGER DEFAULT NULL,
                     domain            TEXT NOT NULL DEFAULT '',
-                    duplicate_of      INTEGER DEFAULT NULL
+                    duplicate_of      INTEGER DEFAULT NULL,
+                    phone             TEXT NOT NULL DEFAULT '',
+                    category          TEXT NOT NULL DEFAULT '',
+                    rating            REAL DEFAULT NULL,
+                    review_count      INTEGER DEFAULT NULL,
+                    source_job_id     INTEGER DEFAULT NULL
                 );
                 INSERT INTO contacts_new
                     SELECT id, email, first_name, last_name, company, extra, status,
                            created_at, COALESCE(website,''), COALESCE(address,''),
                            COALESCE(soft_bounce_count, 0), mx_valid,
-                           COALESCE(domain,''), duplicate_of
+                           COALESCE(domain,''), duplicate_of,
+                           COALESCE(phone,''), COALESCE(category,''),
+                           rating, review_count, source_job_id
                     FROM contacts;
                 DROP TABLE contacts;
                 ALTER TABLE contacts_new RENAME TO contacts;
@@ -264,6 +285,9 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS enrollments_contact_idx ON enrollments(contact_id, status)",
             "CREATE INDEX IF NOT EXISTS contacts_status_idx     ON contacts(status)",
             "CREATE INDEX IF NOT EXISTS contacts_domain_idx     ON contacts(domain) WHERE domain != ''",
+            "CREATE INDEX IF NOT EXISTS logs_created_at_idx     ON logs(created_at)",
+            "CREATE INDEX IF NOT EXISTS contacts_source_job_idx ON contacts(source_job_id) WHERE source_job_id IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS contacts_created_at_idx ON contacts(created_at)",
         ):
             try:
                 conn.execute(idx_sql)
@@ -285,6 +309,45 @@ def init_db():
                 logger.info("Backfilled domain for %d contact(s)", len(todo))
         except Exception as exc:
             logger.warning("Domain backfill skipped: %s", exc)
+
+        # Backfill phone/category/rating/review_count for rows imported before
+        # these had their own columns -- they're sitting in `extra` from a CSV
+        # import (the scraper's CSV writes a "reviews" column; the DB column is
+        # review_count to read better next to rating).
+        try:
+            todo = conn.execute("""
+                SELECT id, extra FROM contacts
+                WHERE phone = '' AND category = '' AND rating IS NULL
+                  AND review_count IS NULL AND extra != '{}'
+            """).fetchall()
+            backfilled = 0
+            for row in todo:
+                try:
+                    extra = json.loads(row["extra"] or "{}")
+                except Exception:
+                    continue
+                if not any(k in extra for k in ("phone", "category", "rating", "reviews")):
+                    continue
+                rating = None
+                try:
+                    rating = float(extra["rating"]) if extra.get("rating") not in (None, "") else None
+                except (TypeError, ValueError):
+                    pass
+                review_count = None
+                try:
+                    review_count = int(extra["reviews"]) if extra.get("reviews") not in (None, "") else None
+                except (TypeError, ValueError):
+                    pass
+                conn.execute(
+                    "UPDATE contacts SET phone=?, category=?, rating=?, review_count=? WHERE id=?",
+                    (extra.get("phone", ""), extra.get("category", ""),
+                     rating, review_count, row["id"]),
+                )
+                backfilled += 1
+            if backfilled:
+                logger.info("Backfilled phone/category/rating for %d contact(s)", backfilled)
+        except Exception as exc:
+            logger.warning("Phone/category/rating backfill skipped: %s", exc)
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -502,19 +565,24 @@ def touch_worker_seen():
         )
 
 
+def _seconds_since(ts_str):
+    """Seconds between now (UTC) and a 'YYYY-MM-DD HH:MM:SS' timestamp, or None."""
+    if not ts_str:
+        return None
+    try:
+        then = datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+    return max(0.0, (datetime.datetime.utcnow() - then).total_seconds())
+
+
 def worker_seconds_since_seen():
     """Seconds since any worker last checked in, or None if never."""
     with get_db() as conn:
         row = conn.execute(
             "SELECT value FROM settings WHERE key='_worker_last_seen'"
         ).fetchone()
-    if not row or not row["value"]:
-        return None
-    try:
-        seen = datetime.datetime.strptime(row["value"], "%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return None
-    return max(0.0, (datetime.datetime.utcnow() - seen).total_seconds())
+    return _seconds_since(row["value"] if row else None)
 
 
 def reap_stale_scrape_jobs():
@@ -732,8 +800,8 @@ def upsert_contacts(rows):
                     touched_domains.add(domain)
                 mx_valid = r.get("mx_valid")  # None = unchecked, 1 = valid, 0 = invalid
                 conn.execute("""
-                    INSERT INTO contacts(email,first_name,last_name,company,website,address,extra,status,mx_valid,domain)
-                    VALUES(:email,:first_name,:last_name,:company,:website,:address,:extra,:status,:mx_valid,:domain)
+                    INSERT INTO contacts(email,first_name,last_name,company,website,address,extra,status,mx_valid,domain,phone,category,rating,review_count,source_job_id)
+                    VALUES(:email,:first_name,:last_name,:company,:website,:address,:extra,:status,:mx_valid,:domain,:phone,:category,:rating,:review_count,:source_job_id)
                     ON CONFLICT(email) WHERE email IS NOT NULL AND email != '' DO UPDATE SET
                         first_name=COALESCE(NULLIF(excluded.first_name,''), contacts.first_name),
                         last_name=COALESCE(NULLIF(excluded.last_name,''),   contacts.last_name),
@@ -746,18 +814,31 @@ def upsert_contacts(rows):
                         website=COALESCE(NULLIF(contacts.website,''),       excluded.website),
                         address=COALESCE(NULLIF(excluded.address,''),       contacts.address),
                         domain=COALESCE(NULLIF(contacts.domain,''),         excluded.domain),
-                        mx_valid=COALESCE(excluded.mx_valid,                contacts.mx_valid)
+                        mx_valid=COALESCE(excluded.mx_valid,                contacts.mx_valid),
+                        phone=COALESCE(NULLIF(contacts.phone,''),           excluded.phone),
+                        category=COALESCE(NULLIF(contacts.category,''),     excluded.category),
+                        rating=COALESCE(excluded.rating,                    contacts.rating),
+                        review_count=COALESCE(excluded.review_count,        contacts.review_count),
+                        -- First scrape that found this lead wins, so a business
+                        -- turning up again in a later search stays filed under
+                        -- the list you originally built.
+                        source_job_id=COALESCE(contacts.source_job_id,      excluded.source_job_id)
                 """, {
-                    "email":      email,
-                    "first_name": r.get("first_name", ""),
-                    "last_name":  r.get("last_name", ""),
-                    "company":    r.get("company", ""),
-                    "website":    website,
-                    "address":    r.get("address", ""),
-                    "extra":      json.dumps(r.get("extra", {})),
-                    "status":     status,
-                    "mx_valid":   mx_valid,
-                    "domain":     domain,
+                    "email":         email,
+                    "first_name":    r.get("first_name", ""),
+                    "last_name":     r.get("last_name", ""),
+                    "company":       r.get("company", ""),
+                    "website":       website,
+                    "address":       r.get("address", ""),
+                    "extra":         json.dumps(r.get("extra", {})),
+                    "status":        status,
+                    "mx_valid":      mx_valid,
+                    "domain":        domain,
+                    "phone":         r.get("phone", ""),
+                    "category":      r.get("category", ""),
+                    "rating":        r.get("rating") or None,
+                    "review_count":  r.get("review_count") or None,
+                    "source_job_id": r.get("source_job_id") or None,
                 })
                 # Record the other business this address turned up under, so
                 # the connection is not lost just because company was kept.
@@ -788,12 +869,15 @@ def upsert_contacts(rows):
 
                 if not exists:
                     conn.execute("""
-                        INSERT INTO contacts(company,website,address,status,extra,domain)
-                        VALUES(?,?,?,?,?,?)
+                        INSERT INTO contacts(company,website,address,status,extra,domain,phone,category,rating,review_count,source_job_id)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?)
                     """, (
                         r.get("company", ""), website,
                         r.get("address", ""), status,
                         json.dumps(r.get("extra", {})), domain,
+                        r.get("phone", ""), r.get("category", ""),
+                        r.get("rating") or None, r.get("review_count") or None,
+                        r.get("source_job_id") or None,
                     ))
                     inserted += 1
 
@@ -855,6 +939,152 @@ def get_contacts(limit=200, offset=0):
             "SELECT * FROM contacts ORDER BY created_at DESC LIMIT ? OFFSET ?",
             (limit, offset)
         ).fetchall()]
+
+
+# ── Contacts: server-side paging, filtering and the lead-list ("cabinet") view ─
+#
+# The Contacts tab used to pull every row and filter in the browser, hard-capped
+# at 500. Past that it silently showed only the newest 500 -- which a per-scrape
+# filter would then narrow further, under-reporting a list with no warning. All
+# filtering therefore happens in SQL now, against the whole table.
+
+# Whitelist: sort_col is interpolated into the SQL string, so it can never come
+# straight from the query string.
+_CONTACT_SORT_COLUMNS = frozenset({
+    "id", "email", "first_name", "last_name", "company", "website", "address",
+    "status", "created_at", "phone", "category", "rating", "review_count",
+    "domain", "mx_valid",
+})
+
+# Search covers what someone would plausibly type looking for a lead.
+_CONTACT_SEARCH_COLUMNS = (
+    "email", "first_name", "last_name", "company",
+    "website", "address", "phone", "category",
+)
+
+# Sentinel for "added by hand or CSV import, not by any scrape".
+SOURCE_MANUAL = "manual"
+
+
+def _contact_filters(q="", source_job_id=None, status=None, include_deleted=False):
+    """Build the shared WHERE clause for the contact list views."""
+    clauses, params = [], []
+
+    if not include_deleted:
+        clauses.append("status != 'deleted'")
+
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+
+    if source_job_id is not None and source_job_id != "":
+        if str(source_job_id) == SOURCE_MANUAL:
+            clauses.append("source_job_id IS NULL")
+        else:
+            clauses.append("source_job_id = ?")
+            params.append(int(source_job_id))
+
+    q = (q or "").strip()
+    if q:
+        like = " OR ".join(f'COALESCE("{c}",\'\') LIKE ?' for c in _CONTACT_SEARCH_COLUMNS)
+        clauses.append(f"({like})")
+        params.extend([f"%{q}%"] * len(_CONTACT_SEARCH_COLUMNS))
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
+def get_contacts_page(page=1, per_page=50, q="", source_job_id=None, status=None,
+                      include_deleted=False, sort_col="", sort_dir="desc"):
+    """One page of contacts plus the total matching the same filter."""
+    page     = max(1, int(page or 1))
+    per_page = max(1, min(int(per_page or 50), 500))
+    offset   = (page - 1) * per_page
+
+    sort_dir = "asc" if str(sort_dir).lower() == "asc" else "desc"
+    if sort_col in _CONTACT_SORT_COLUMNS:
+        # NULLs and '' sort last either way, so an empty phone column doesn't
+        # push the rows you actually want to the top of an ascending sort.
+        order_by = f'NULLIF("{sort_col}", \'\') IS NULL, "{sort_col}" {sort_dir.upper()}'
+    else:
+        sort_col = ""
+        order_by = "created_at DESC, id DESC"
+
+    where, params = _contact_filters(q, source_job_id, status, include_deleted)
+
+    with get_db() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM contacts {where}", params
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT * FROM contacts {where} ORDER BY {order_by} LIMIT ? OFFSET ?",
+            params + [per_page, offset],
+        ).fetchall()
+
+    return {
+        "rows":     [dict(r) for r in rows],
+        "total":    total,
+        "page":     page,
+        "per_page": per_page,
+        "pages":    max(1, (total + per_page - 1) // per_page),
+        "sort_col": sort_col,
+        "sort_dir": sort_dir,
+    }
+
+
+def get_contact_ids_matching(q="", source_job_id=None, status=None, include_deleted=False):
+    """
+    Every contact id matching a filter, ignoring paging.
+
+    Backs "select all N matching" -- without it, select-all could only ever
+    reach the rows on screen, so a bulk delete over a filtered list would
+    silently act on one page's worth.
+    """
+    where, params = _contact_filters(q, source_job_id, status, include_deleted)
+    with get_db() as conn:
+        return [r["id"] for r in conn.execute(
+            f"SELECT id FROM contacts {where}", params
+        ).fetchall()]
+
+
+def get_contact_sources():
+    """
+    The lead lists: one entry per scrape that produced contacts, newest first,
+    plus a 'manual' bucket for hand-added and CSV-imported rows.
+
+    LEFT JOIN, not a foreign key -- a contact whose scrape_jobs row has gone
+    still counts, it just shows as an unknown source rather than vanishing
+    from the filter.
+    """
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT c.source_job_id           AS job_id,
+                   j.niche                   AS niche,
+                   j.city                    AS city,
+                   j.created_at              AS scraped_at,
+                   COUNT(*)                  AS count
+              FROM contacts c
+              LEFT JOIN scrape_jobs j ON j.id = c.source_job_id
+             WHERE c.status != 'deleted'
+             GROUP BY c.source_job_id
+             ORDER BY (c.source_job_id IS NULL), c.source_job_id DESC
+        """).fetchall()
+
+    out = []
+    for r in rows:
+        if r["job_id"] is None:
+            label = "Added manually / CSV"
+        elif r["niche"] or r["city"]:
+            date = (r["scraped_at"] or "")[:10]
+            label = f"{r['niche']} — {r['city']}" + (f" · {date}" if date else "")
+        else:
+            label = f"Scrape #{r['job_id']} (details deleted)"
+        out.append({
+            "job_id": r["job_id"] if r["job_id"] is not None else SOURCE_MANUAL,
+            "label":  label,
+            "count":  r["count"],
+        })
+    return out
 
 
 def get_contact_by_email(email_addr: str):
@@ -1436,6 +1666,16 @@ def get_logs(limit=50):
         return [dict(r) for r in conn.execute(
             "SELECT * FROM logs ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()]
+
+
+def prune_logs(retention_days=60) -> int:
+    """Delete app log rows older than retention_days. Called daily by the scheduler."""
+    with get_db() as conn:
+        cur = conn.execute(
+            "DELETE FROM logs WHERE created_at < datetime('now', ?)",
+            (f"-{int(retention_days)} days",),
+        )
+        return cur.rowcount
 
 
 # ── Users & Auth ──────────────────────────────────────────────────────────────

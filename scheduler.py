@@ -217,6 +217,18 @@ def run_bounce_check():
         db.add_log(f"Bounce check error: {e}", "ERROR")
 
 
+LOG_RETENTION_DAYS = 60
+
+
+def run_log_prune():
+    try:
+        deleted = db.prune_logs(LOG_RETENTION_DAYS)
+        if deleted:
+            logger.info(f"Pruned {deleted} log row(s) older than {LOG_RETENTION_DAYS} days")
+    except Exception as e:
+        logger.exception("Log prune error")
+
+
 # ── Background thread runner ──────────────────────────────────────────────────
 
 def _run_loop():
@@ -224,9 +236,11 @@ def _run_loop():
     Infinite loop running in a daemon thread.
     - Processes queue every 60 seconds (or sooner when request_run_now fires)
     - Checks replies every 5 minutes
+    - Prunes old log rows once a day
     """
     global _run_now_reply_check
     last_reply_check = 0
+    last_log_prune   = 0
 
     while not _stop_event.is_set():
         process_queue()
@@ -238,6 +252,10 @@ def _run_loop():
             run_reply_check()
             run_bounce_check()
             last_reply_check = now
+
+        if now - last_log_prune > 86400:  # 24 hours
+            run_log_prune()
+            last_log_prune = now
 
         # Sleep up to 60s, but wake immediately on request_run_now() or stop().
         _wake_event.wait(timeout=60)

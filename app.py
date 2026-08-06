@@ -1133,9 +1133,57 @@ def api_delete_step(cid, step_num):
 
 # ── API: Contacts ─────────────────────────────────────────────────────────────
 
+def _contact_query_args():
+    """The filter half of a contacts query, shared by the list and id routes."""
+    return {
+        "q":               request.args.get("q", ""),
+        "source_job_id":   request.args.get("source_job_id") or None,
+        "status":          request.args.get("status") or None,
+        "include_deleted": request.args.get("include_deleted") == "1",
+    }
+
+
 @app.route("/api/contacts", methods=["GET"])
 def api_get_contacts():
-    return jsonify(db.get_contacts(limit=500))
+    """
+    One page of contacts, filtered server-side.
+
+    This used to return a bare list capped at 500 rows that the browser then
+    filtered. Past 500 contacts that silently hid the rest -- and a lead-list
+    filter applied to a truncated window under-reports without saying so.
+    """
+    try:
+        page     = int(request.args.get("page", 1))
+        per_page = int(request.args.get("per_page", 50))
+    except (TypeError, ValueError):
+        page, per_page = 1, 50
+
+    return jsonify(db.get_contacts_page(
+        page=page,
+        per_page=per_page,
+        sort_col=request.args.get("sort_col", ""),
+        sort_dir=request.args.get("sort_dir", "desc"),
+        **_contact_query_args(),
+    ))
+
+
+@app.route("/api/contacts/sources", methods=["GET"])
+def api_contact_sources():
+    """The lead lists — one per scrape, plus a bucket for manual/CSV adds."""
+    return jsonify(db.get_contact_sources())
+
+
+@app.route("/api/contacts/ids", methods=["GET"])
+def api_contact_ids():
+    """
+    Every id matching the current filter, for "select all N matching".
+
+    Without this, select-all could only ever reach the rows on the current
+    page, so a bulk action over a filtered list would quietly apply to 50 of
+    them.
+    """
+    ids = db.get_contact_ids_matching(**_contact_query_args())
+    return jsonify({"ids": ids, "total": len(ids)})
 
 
 @app.route("/api/contacts/import", methods=["POST"])
@@ -1186,8 +1234,22 @@ def api_import_contacts():
 
     # Extract non-standard columns into the `extra` JSON field
     _STANDARD_COLS = {"email", "first_name", "last_name", "company",
-                      "website", "address", "status", "extra", "mx_valid"}
+                      "website", "address", "status", "extra", "mx_valid",
+                      "phone", "category", "rating", "review_count",
+                      "source_job_id"}
     for row in rows:
+        # The scraper's own CSV names this column "reviews"; the DB column is
+        # "review_count" to read better next to "rating". Re-uploading that
+        # CSV through Import should land it as a real column, not in `extra`.
+        if "reviews" in row and "review_count" not in row:
+            row["review_count"] = row.pop("reviews")
+        # A pasted CSV can carry anything in this field; it indexes a real
+        # table, so coerce it and drop what isn't a number.
+        if row.get("source_job_id") not in (None, ""):
+            try:
+                row["source_job_id"] = int(row["source_job_id"])
+            except (TypeError, ValueError):
+                row["source_job_id"] = None
         custom = {k: v for k, v in row.items() if k not in _STANDARD_COLS and v not in (None, "")}
         if custom:
             existing = row.get("extra") or {}
@@ -1500,6 +1562,7 @@ def _job_payload(job: dict) -> dict:
         logs = json.loads(job.get("logs") or "[]")
     except Exception:
         logs = []
+    heartbeat_secs = db._seconds_since(job.get("heartbeat_at"))
     return {
         "job_id":   job["id"],
         "status":   job["status"],
@@ -1511,6 +1574,7 @@ def _job_payload(job: dict) -> dict:
         "niche":    job["niche"],
         "city":     job["city"],
         "logs":     logs[-80:],
+        "heartbeat_secs": None if heartbeat_secs is None else int(heartbeat_secs),
     }
 
 

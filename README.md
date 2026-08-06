@@ -144,8 +144,28 @@ playwright install chromium        # separate step — pip does not fetch the br
 
 ```
 
-Then set the server URL and key — get the key from **Settings → Lead Scraper
-Worker → Copy**. Note the quoting differs by shell:
+**First run**, give it the server URL and key once — get the key from
+**Settings → Lead Scraper Worker → Copy**:
+
+```bash
+python scraper_worker.py --server https://your-shoutreach-host --api-key your-key-here
+```
+
+That saves both into `.worker_config.json` next to `scraper_worker.py` (git-ignored —
+it holds a live credential, so it never gets committed). **Every run after that**,
+just:
+
+```bash
+python scraper_worker.py           # leave it running
+```
+
+No environment variables to re-set per terminal session. If you rotate the key in
+Settings, run `python scraper_worker.py --forget` to clear the saved one, then pass
+`--api-key` again once.
+
+You can still use environment variables or `--server`/`--api-key` instead — they
+take priority over what's saved, in case you're pointing at a different server for
+one run:
 
 ```powershell
 # PowerShell — quotes required
@@ -165,31 +185,42 @@ export SHOUTREACH_URL=https://your-shoutreach-host
 export SHOUTREACH_API_KEY=your-key-here
 ```
 
-These last only for that terminal window. To skip them entirely:
-
-```
-python scraper_worker.py --server https://your-shoutreach-host --api-key your-key-here
-```
-
-**Every time you want to scrape:**
-
-```bash
-python scraper_worker.py           # leave it running
-```
-
 Then open **Lead Scraper** in the web UI. The banner turns green when the worker
 connects. Enter a niche and city, press Start, and Chrome opens on your machine
-while progress streams back to the page. If a CAPTCHA appears, solve it in that
-Chrome window and click **Resume** in the UI.
+while progress streams back to the page — Google Maps scrolling included, not
+just the email-scraping step. If a CAPTCHA appears, solve it in that Chrome
+window and click **Resume** in the UI.
 
 Leads with an email are imported to Contacts automatically. Businesses with a
 site but no findable address are stored as prospects to chase by hand, and
 businesses with **no website at all** are kept too — for a web-design offer,
-those are the strongest leads on the list.
+those are the strongest leads on the list. Phone, category, rating and review
+count come along too — enough to qualify a list before spending a single send
+on it.
 
 Duplicate protection is on by default: one address per business is enrollable
 (personal beats `info@` beats `billing@`), and a contact already in one campaign
 will not be enrolled in a second.
+
+**Lead lists.** Every lead remembers which scrape found it, so **Contacts** has
+a list filter — "dentists — Toronto Canada · Aug 4", "plumbers — Calgary
+Canada · Aug 6", plus a bucket for anything added by hand or CSV. It is a
+filter over one shared table, not separate tables per scrape, and that is
+deliberate: deduplication, unsubscribes and bounce suppression all have to
+apply across every list at once. Split the leads into per-scrape tables and the
+same business found under two searches becomes two enrollable contacts — two
+cold emails to one business, which is exactly what the duplicate protection
+above exists to prevent.
+
+Filtering, searching, sorting and paging all run in SQL against the whole
+table, so a filtered list reports the real total rather than whatever fitted in
+the first page. Select-all ticks the current page; when more rows match, a
+"Select all N matching this filter" link appears, so a bulk delete can never
+quietly reach further than what you asked for.
+
+Output CSVs land in `scraper_output/`, and saved browser cookies in `cookies/`
+— both git-ignored, both inside the project folder rather than scattered loose
+at the root.
 
 You can also run a scrape without the web UI:
 
@@ -318,6 +349,9 @@ outreach/
 │
 ├── gmaps_email_scraper.py     # Scraping logic (runs on YOUR machine)
 ├── scraper_worker.py          # Local worker — claims jobs, drives Chrome
+├── .worker_config.json        # Saved worker URL/API key (git-ignored, created on first run)
+├── scraper_output/            # Scraped CSVs (git-ignored)
+├── cookies/                   # Saved Maps browser sessions (git-ignored)
 │
 ├── templates/, static/        # Dashboard UI
 ├── tests/                     # python tests/<name>.py
@@ -350,8 +384,9 @@ outreach/
 
 **Lead Scraper says "No worker connected":**
 1. The worker is not running — start `python scraper_worker.py` on your machine
-2. `SHOUTREACH_URL` points somewhere else, or `SHOUTREACH_API_KEY` is stale
-   (rotating the key in Settings invalidates any running worker)
+2. The saved (or env var) URL points somewhere else, or the API key is stale
+   (rotating the key in Settings invalidates any running worker — run
+   `python scraper_worker.py --forget` then pass `--api-key` once with the new one)
 3. The worker logs `Server rejected the API key` if the key is wrong
 
 **Scraper finds no businesses at all:**
@@ -365,13 +400,15 @@ Google changes its obfuscated class names without notice. Check
 No framework needed — each file runs standalone and exits non-zero on failure:
 
 ```bash
-python tests/test_migrations.py    # schema migrations
-python tests/test_extraction.py    # URL handling and email extraction (offline)
-python tests/test_duplicates.py    # duplicate and enrollment protection
-python tests/test_worker_api.py    # the scrape job queue and worker protocol
-python tests/test_security.py      # regression tests for closed audit findings
+python tests/test_migrations.py       # schema migrations
+python tests/test_extraction.py       # URL handling and email extraction (offline)
+python tests/test_duplicates.py       # duplicate and enrollment protection
+python tests/test_worker_api.py       # the scrape job queue and worker protocol
+python tests/test_contacts_paging.py  # contact paging, lead lists, select-all
+python tests/test_resilience.py       # worker batching and crash recovery
+python tests/test_security.py         # regression tests for closed audit findings
 
-python tests/recall_harness.py     # live measurement against real sites (slow)
+python tests/recall_harness.py        # live measurement against real sites (slow)
 ```
 
 ---
