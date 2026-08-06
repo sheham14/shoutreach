@@ -57,8 +57,11 @@ function aiProviderChanged(keepModel) {
 }
 
 async function loadSettings() {
-  const originEl = document.getElementById("cfg-worker-origin");
-  if (originEl) originEl.textContent = window.location.origin;
+  // Both shell variants show the origin; PowerShell quotes it, cmd does not.
+  ["cfg-worker-origin", "cfg-worker-origin-cmd"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = window.location.origin;
+  });
 
   const s = await api("/api/settings");
   document.getElementById("cfg-global-cap").value = s.global_daily_cap || "200";

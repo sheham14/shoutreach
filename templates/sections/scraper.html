@@ -20,8 +20,13 @@
     <div id="sc-worker-help" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;color:var(--muted)">
       On your machine, in the project folder:
       <div class="mono" style="margin-top:6px;padding:8px 10px;background:var(--bg3);border-radius:6px;font-size:11px;line-height:1.7">
-        set SHOUTREACH_URL=<span id="sc-worker-url">…</span><br>
+        <span style="color:var(--muted)"># PowerShell</span><br>
+        $env:SHOUTREACH_URL = "<span id="sc-worker-url">…</span>"<br>
+        $env:SHOUTREACH_API_KEY = "&lt;from Settings&gt;"<br>
+        <span style="color:var(--muted)">:: cmd.exe — no quotes</span><br>
+        set SHOUTREACH_URL=<span id="sc-worker-url-cmd">…</span><br>
         set SHOUTREACH_API_KEY=&lt;from Settings&gt;<br>
+        <br>
         python scraper_worker.py
       </div>
     </div>

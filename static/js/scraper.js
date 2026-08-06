@@ -51,6 +51,8 @@ function _renderWorkerBanner(d) {
   if (!dot) return;
 
   if (urlEl) urlEl.textContent = window.location.origin;
+  const urlElCmd = document.getElementById('sc-worker-url-cmd');
+  if (urlElCmd) urlElCmd.textContent = window.location.origin;
 
   if (d.worker_online) {
     dot.style.background = 'var(--green)';

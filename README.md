@@ -142,8 +142,33 @@ looking at. A headless VM cannot do that. Instead:
 pip install -r requirements-worker.txt
 playwright install chromium        # separate step — pip does not fetch the browser
 
+```
+
+Then set the server URL and key — get the key from **Settings → Lead Scraper
+Worker → Copy**. Note the quoting differs by shell:
+
+```powershell
+# PowerShell — quotes required
+$env:SHOUTREACH_URL = "https://your-shoutreach-host"
+$env:SHOUTREACH_API_KEY = "your-key-here"
+```
+
+```bat
+:: cmd.exe — do NOT quote; cmd stores the quotes as part of the value
 set SHOUTREACH_URL=https://your-shoutreach-host
-set SHOUTREACH_API_KEY=...         # Settings → Lead Scraper Worker → Copy
+set SHOUTREACH_API_KEY=your-key-here
+```
+
+```bash
+# macOS / Linux
+export SHOUTREACH_URL=https://your-shoutreach-host
+export SHOUTREACH_API_KEY=your-key-here
+```
+
+These last only for that terminal window. To skip them entirely:
+
+```
+python scraper_worker.py --server https://your-shoutreach-host --api-key your-key-here
 ```
 
 **Every time you want to scrape:**

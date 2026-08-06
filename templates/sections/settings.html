@@ -136,8 +136,14 @@
     </div>
     <div class="form-hint" style="margin-top:14px">On your machine:</div>
     <div class="mono" style="margin-top:6px;padding:10px 12px;background:var(--bg3);border-radius:6px;font-size:11px;line-height:1.8">
-      set SHOUTREACH_URL=<span id="cfg-worker-origin">…</span><br>
+      <span style="color:var(--muted)"># PowerShell — quotes required</span><br>
+      $env:SHOUTREACH_URL = "<span id="cfg-worker-origin">…</span>"<br>
+      $env:SHOUTREACH_API_KEY = "&lt;the key above&gt;"<br>
+      <br>
+      <span style="color:var(--muted)">:: cmd.exe — no quotes, they become part of the value</span><br>
+      set SHOUTREACH_URL=<span id="cfg-worker-origin-cmd">…</span><br>
       set SHOUTREACH_API_KEY=&lt;the key above&gt;<br>
+      <br>
       python scraper_worker.py
     </div>
   </div>
