@@ -764,14 +764,28 @@ def upsert_contacts(rows):
                 _note_alternate_company(conn, email, r.get("company", ""))
                 inserted += 1
 
-            elif website and status in ("form_only", "no_email"):
+            elif status in ("form_only", "no_email", "no_website"):
                 # Prospect record — no email found. Match on the canonical
                 # domain, not the raw URL, or one business becomes a row per
                 # URL variant Maps happens to return.
-                exists = conn.execute(
-                    "SELECT id FROM contacts WHERE domain=? AND (email IS NULL OR email='')",
-                    (domain,)
-                ).fetchone()
+                #
+                # no_website rows have no domain to match on, so they dedupe on
+                # the business name instead. They are kept rather than dropped:
+                # for a web-design agency, "this business has no website" is
+                # the strongest possible qualifying signal.
+                if domain:
+                    exists = conn.execute(
+                        "SELECT id FROM contacts WHERE domain=? AND (email IS NULL OR email='')",
+                        (domain,)
+                    ).fetchone()
+                elif r.get("company"):
+                    exists = conn.execute(
+                        "SELECT id FROM contacts WHERE company=? AND (email IS NULL OR email='')",
+                        (r["company"],)
+                    ).fetchone()
+                else:
+                    continue        # nothing to identify it by; skip
+
                 if not exists:
                     conn.execute("""
                         INSERT INTO contacts(company,website,address,status,extra,domain)

@@ -188,7 +188,10 @@ STATUS_DEAD       = "site_unreachable"
 # (or refused) in a way that a plain HTTP client often cannot get past.
 BROWSER_RETRY_STATUSES = (STATUS_BLOCKED, STATUS_NO_EMAIL, STATUS_FORM_ONLY)
 
-CSV_FIELDS = ["name", "website", "address", "emails", "email_status"]
+CSV_FIELDS = [
+    "name", "website", "address", "phone", "rating", "reviews", "category",
+    "emails", "email_status",
+]
 
 
 class ScraperJob:
@@ -401,6 +404,64 @@ def handle_captcha_if_present(page, job=None):
 RESULT_CARD_SELECTOR = "a.hfpxzc"
 
 
+def _text_of(page, selector: str) -> str:
+    try:
+        el = page.query_selector(selector)
+        return (el.inner_text() or "").strip() if el else ""
+    except Exception:
+        return ""
+
+
+def _read_detail_panel(page) -> dict:
+    """
+    Scrape the open Maps detail panel.
+
+    Rating, review count and phone are all sitting there already and cost
+    nothing extra to read. They are what let you qualify a list before
+    spending sends on it -- and for a web agency, a business with no website
+    is a lead rather than a failure, which needs the phone number to act on.
+    """
+    website_el = None
+    try:
+        website_el = page.query_selector('a[data-item-id="authority"]')
+    except Exception:
+        pass
+    website = (website_el.get_attribute("href") or "") if website_el else ""
+
+    phone = ""
+    try:
+        phone_el = page.query_selector('button[data-item-id^="phone"]')
+        if phone_el:
+            phone = (phone_el.get_attribute("data-item-id") or "").split(":")[-1].strip()
+            if not phone:
+                phone = (phone_el.inner_text() or "").strip()
+    except Exception:
+        pass
+
+    # The rating block reads "4.8 stars 127 reviews" via aria-label.
+    rating, reviews = "", ""
+    try:
+        el = page.query_selector('div.F7nice span[aria-hidden="true"]')
+        if el:
+            rating = (el.inner_text() or "").strip()
+        el = page.query_selector('div.F7nice span[aria-label*="review"]')
+        if el:
+            label = el.get_attribute("aria-label") or ""
+            digits = re.sub(r"[^\d]", "", label)
+            reviews = digits
+    except Exception:
+        pass
+
+    return {
+        "website":  website.rstrip("/"),
+        "address":  _text_of(page, 'button[data-item-id="address"]').replace("\n", " "),
+        "phone":    phone,
+        "rating":   rating,
+        "reviews":  reviews,
+        "category": _text_of(page, "button.DkEaL"),
+    }
+
+
 def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) -> list:
     businesses = []
 
@@ -493,28 +554,15 @@ def scrape_google_maps(query: str, max_results: int, skip_names: set, job=None) 
                     page.wait_for_timeout(2000)
                     handle_captcha_if_present(page, job)
 
-                    # Website link on the Maps detail panel
-                    website_el = page.query_selector('a[data-item-id="authority"]')
-                    website = (
-                        (website_el.get_attribute("href") or "").rstrip("/")
-                        if website_el else ""
-                    )
+                    record = {"name": name}
+                    record.update(_read_detail_panel(page))
 
-                    # Address button on the Maps detail panel
-                    address_el = page.query_selector('button[data-item-id="address"]')
-                    address = (
-                        address_el.inner_text().replace("\n", " ")
-                        if address_el else ""
-                    )
-
-                    businesses.append({
-                        "name":    name,
-                        "website": website,
-                        "address": address,
-                    })
+                    businesses.append(record)
                     log.info(
                         f"  [{len(businesses)}/{max_results}] "
-                        f"{name} → {website or 'NO WEBSITE'}"
+                        f"{name} → {record['website'] or 'NO WEBSITE'}"
+                        + (f"  ({record['rating']}★ {record['reviews']})"
+                           if record.get("rating") else "")
                     )
 
                 except Exception as e:

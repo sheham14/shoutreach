@@ -387,6 +387,15 @@ def _build_contact_rows(processed, job) -> list:
     """
     import email_validator as _ev
 
+    def _extra(biz):
+        """Maps details that have no dedicated column, for qualifying leads."""
+        return {k: v for k, v in {
+            "phone":    biz.get("phone", ""),
+            "rating":   biz.get("rating", ""),
+            "reviews":  biz.get("reviews", ""),
+            "category": biz.get("category", ""),
+        }.items() if v}
+
     rows = []
     for biz in processed:
         status = biz["email_status"]
@@ -404,6 +413,7 @@ def _build_contact_rows(processed, job) -> list:
                     "website":    biz.get("website", ""),
                     "address":    biz.get("address", ""),
                     "mx_valid":   1 if mx_ok else 0,
+                    "extra":      _extra(biz),
                 })
         elif biz.get("website"):
             rows.append({
@@ -412,6 +422,20 @@ def _build_contact_rows(processed, job) -> list:
                 "website": biz.get("website", ""),
                 "address": biz.get("address", ""),
                 "status":  "form_only" if status == scraper.STATUS_FORM_ONLY else "no_email",
+                "extra":   _extra(biz),
+            })
+        else:
+            # No website at all. These used to be logged and thrown away, but
+            # for a web-design agency a business with no site is the strongest
+            # lead on the list, not a failure -- the phone number makes it
+            # actionable.
+            rows.append({
+                "email":   "",
+                "company": biz.get("name", ""),
+                "website": "",
+                "address": biz.get("address", ""),
+                "status":  "no_website",
+                "extra":   _extra(biz),
             })
     return rows
 
