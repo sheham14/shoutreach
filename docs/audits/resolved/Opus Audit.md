@@ -1,5 +1,12 @@
 # Opus Audit — ShoutReach
 
+> **Retired 2026-08-05.** Every finding here was verified as fixed by the later
+> Fable audit (see its §1 verification table). The handful this pass deliberately
+> deferred are restated in [Fable Audit §5](../Fable%20Audit.md), which is the
+> canonical list of what is still open. Kept as a record of the hardening work.
+
+---
+
 **Auditor:** Claude (Opus 4.7), acting as senior staff engineer
 **Date:** 2026-05-26
 **Repo:** sheham14/shoutreach @ master (cd33e7c)

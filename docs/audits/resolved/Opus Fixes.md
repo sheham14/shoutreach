@@ -1,5 +1,11 @@
 # Opus Fixes — ShoutReach
 
+> **Retired 2026-08-05.** A changelog of fixes that were applied and subsequently
+> verified against the code by the Fable audit. Historical record; nothing here is
+> an open action.
+
+---
+
 **Companion to:** [Opus Audit.md](Opus%20Audit.md)
 **Date:** 2026-05-26
 **Scope of this pass:** security shortlist + correctness bugs + the user-reported reply-detection regression. Architectural rewrites (Postgres, queue, multi-tenancy, test suite) were intentionally out of scope.
