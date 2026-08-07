@@ -342,12 +342,29 @@ async function deleteAccount(id) {
   loadAccounts();
 }
 
+// Tests what is on screen, including a password you just pasted. It used to
+// send only the account id, so the server tested the SAVED credentials -- a
+// freshly pasted app password reported "authentication failed" for the old
+// one, and a new account could not be tested at all before saving.
 async function testAccountSMTP() {
-  if (!_accountEditId) {
-    toast("Save the account first", "err");
+  const el = document.getElementById("acct-smtp-result");
+  const p = _accountPayload();
+  if (!p.smtp_host) {
+    el.textContent = "Enter an SMTP host first";
+    el.style.color = "var(--red)";
     return;
   }
-  await testAccountSMTPById(_accountEditId);
+  el.textContent = "Testing...";
+  el.style.color = "var(--muted)";
+  const res = await api("/api/accounts/test-smtp", "POST", {
+    id: _accountEditId,
+    smtp_host: p.smtp_host,
+    smtp_port: p.smtp_port,
+    smtp_user: p.smtp_user,
+    smtp_pass: p.smtp_pass,
+  });
+  el.textContent = res.message || res.error || "No response";
+  el.style.color = res.ok ? "var(--green)" : "var(--red)";
 }
 
 async function testAccountSMTPById(id) {
@@ -363,14 +380,22 @@ async function testAccountSMTPById(id) {
 }
 
 async function testAccountIMAP() {
-  if (!_accountEditId) {
-    toast("Save the account first", "err");
+  const el = document.getElementById("acct-imap-result");
+  const p = _accountPayload();
+  if (!p.imap_host) {
+    el.textContent = "Enter an IMAP host first";
+    el.style.color = "var(--red)";
     return;
   }
-  const el = document.getElementById("acct-imap-result");
   el.textContent = "Testing...";
-  const res = await api(`/api/accounts/${_accountEditId}/test-imap`, "POST");
-  el.textContent = res.message;
+  el.style.color = "var(--muted)";
+  const res = await api("/api/accounts/test-imap", "POST", {
+    id: _accountEditId,
+    imap_host: p.imap_host,
+    imap_user: p.imap_user,
+    imap_pass: p.imap_pass,
+  });
+  el.textContent = res.message || res.error || "No response";
   el.style.color = res.ok ? "var(--green)" : "var(--red)";
 }
 

@@ -587,6 +587,81 @@ def api_delete_account(aid):
     return jsonify({"ok": True})
 
 
+def _port_or(default, raw):
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _unmask_pass(submitted, account_id, field):
+    """
+    Resolve a password coming from the account form.
+
+    An untouched field still holds the mask the GET route substituted, so fall
+    back to what is stored rather than trying to authenticate with six bullet
+    characters.
+    """
+    if submitted and submitted != _SECRET_PLACEHOLDER:
+        return submitted
+    if account_id:
+        existing = db.get_smtp_account(account_id) or {}
+        return existing.get(field, "")
+    return submitted or ""
+
+
+@app.route("/api/accounts/test-smtp", methods=["POST"])
+@admin_required
+def api_test_smtp_config():
+    """
+    Test the credentials currently in the form, not the ones in the database.
+
+    The by-id routes below read the saved account, so pasting a new password
+    and pressing Test reported a failure for the OLD password -- the new one
+    never left the browser. That made a correct credential look rejected, and
+    it also meant a brand-new account could not be tested before saving.
+    """
+    d   = request.json or {}
+    aid = d.get("id")
+    aid = int(aid) if aid else None
+
+    cfg = {
+        "smtp_host": (d.get("smtp_host") or "").strip(),
+        "smtp_port": _port_or(587, d.get("smtp_port")),
+        "smtp_user": (d.get("smtp_user") or "").strip(),
+        "smtp_pass": _unmask_pass(d.get("smtp_pass"), aid, "smtp_pass"),
+    }
+    if not cfg["smtp_host"]:
+        return jsonify({"ok": False, "message": "SMTP host is required"}), 400
+    if not cfg["smtp_pass"]:
+        return jsonify({"ok": False, "message": "SMTP password is required"}), 400
+
+    ok, msg = email_sender.test_smtp(cfg)
+    return jsonify({"ok": ok, "message": msg})
+
+
+@app.route("/api/accounts/test-imap", methods=["POST"])
+@admin_required
+def api_test_imap_config():
+    """IMAP counterpart of api_test_smtp_config — tests the form, not the DB."""
+    d   = request.json or {}
+    aid = d.get("id")
+    aid = int(aid) if aid else None
+
+    cfg = {
+        "imap_host": (d.get("imap_host") or "").strip(),
+        "imap_user": (d.get("imap_user") or "").strip(),
+        "imap_pass": _unmask_pass(d.get("imap_pass"), aid, "imap_pass"),
+    }
+    if not cfg["imap_host"]:
+        return jsonify({"ok": False, "message": "IMAP host is required"}), 400
+    if not cfg["imap_pass"]:
+        return jsonify({"ok": False, "message": "IMAP password is required"}), 400
+
+    ok, msg = email_sender.test_imap(cfg)
+    return jsonify({"ok": ok, "message": msg})
+
+
 @app.route("/api/accounts/<int:aid>/test-smtp", methods=["POST"])
 @admin_required
 def api_test_account_smtp(aid):

@@ -376,6 +376,29 @@ outreach/
 2. Check that IMAP/SMTP is enabled in your Gmail settings
 3. Try port 465 with SSL if 587 doesn't work
 
+**"Authentication failed" when adding a new sending account:**
+
+With two-factor authentication on, neither Zoho nor Gmail will accept the
+normal login password over SMTP or IMAP — only an **app-specific password**.
+These are per-user, so one generated for an existing mailbox will not work for
+a new one:
+
+- **Zoho** — sign in at accounts.zoho.com *as that user*, not as the admin,
+  then Security → App Passwords → Generate. It is shown once. Paste it into
+  both the SMTP and IMAP password fields; the username stays the full address.
+- **Gmail** — myaccount.google.com → Security → App Passwords (2FA required).
+
+Two more things to check on a newly created seat:
+
+- The user must complete an interactive webmail login at least once. A mailbox
+  still on a temporary or must-change password refuses SMTP auth.
+- IMAP is enabled **per mailbox** and is off by default in Zoho. Signed in as
+  that user: Settings → Mail Accounts → the address → IMAP → Enable.
+
+Test SMTP and Test IMAP check the credentials **currently in the form**, so a
+password can be verified before saving, and a newly pasted one is tested
+rather than the one already stored.
+
 **Scheduler not running:**
 - Refresh the page — the scheduler starts automatically with the Flask app
 - Check the green dot in the bottom-left of the dashboard
@@ -405,6 +428,7 @@ python tests/test_extraction.py       # URL handling and email extraction (offli
 python tests/test_duplicates.py       # duplicate and enrollment protection
 python tests/test_worker_api.py       # the scrape job queue and worker protocol
 python tests/test_contacts_paging.py  # contact paging, lead lists, select-all
+python tests/test_accounts.py         # sending-account credential handling
 python tests/test_resilience.py       # worker batching and crash recovery
 python tests/test_security.py         # regression tests for closed audit findings
 
