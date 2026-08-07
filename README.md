@@ -295,6 +295,32 @@ If you're ever interested in [offer], I'm happy to chat.
 [Your name]
 ```
 
+### 3a. A/B Testing a Step (optional)
+
+Each step starts with one email that goes to everyone. Press **+ Add Variant**
+and the copy you have already written becomes **Variant A**, with an empty
+**Variant B** beside it — so the editor always shows exactly as many boxes as
+there are versions actually being sent. Delete back down to one and it folds
+back into the plain editor.
+
+Weights set the split. A contact is assigned one variant **when they are
+enrolled** and keeps it for the whole sequence, so you are testing two
+sequences rather than re-rolling at every step. A step that does not define
+the contact's variant just sends its own copy, which means a later step can be
+tested on its own without duplicating the earlier ones.
+
+Contacts enrolled *before* you set the variants up have no assignment. They are
+filled in — weighted, not all dumped into A — when you press **Activate**, with
+one exception: anyone who has already been sent something keeps what they have,
+since switching arms mid-thread would change the pitch halfway through a
+conversation.
+
+Each contact's assigned variant shows in the campaign's contact table, and
+**Variant Stats** on the campaign breaks down sent/replied/bounced per arm.
+
+> Expect to need a few hundred sends **per arm** before a difference means
+> anything — at a 1–3% reply rate, early results are mostly noise.
+
 ### 4. Enroll Contacts
 In the campaign detail view, click **Enroll** and select your contacts.
 
@@ -429,6 +455,7 @@ python tests/test_duplicates.py       # duplicate and enrollment protection
 python tests/test_worker_api.py       # the scrape job queue and worker protocol
 python tests/test_contacts_paging.py  # contact paging, lead lists, select-all
 python tests/test_accounts.py         # sending-account credential handling
+python tests/test_variants.py         # A/B variant assignment and backfill
 python tests/test_resilience.py       # worker batching and crash recovery
 python tests/test_security.py         # regression tests for closed audit findings
 

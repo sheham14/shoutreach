@@ -377,6 +377,7 @@ function _clearStepModal() {
   document.getElementById('step-subject').value = '';
   document.getElementById('step-body').value = '';
   document.getElementById('step-variants-list').innerHTML = '';
+  _setBaseFieldsVisible(true);
   _updateVariantWeightTotal();
   const sw = document.getElementById('spam-warning');
   if (sw) sw.style.display = 'none';
@@ -403,28 +404,61 @@ async function editStep(stepNum) {
   document.getElementById('step-delay').value     = s.delay_days;
   document.getElementById('step-subject').value   = s.subject;
   document.getElementById('step-body').value      = s.body_html;
-  // Load existing variants
+
+  // Every step owns at least one variant now, so a single one is just "this
+  // step's copy" -- show it in the plain editor instead of as a lone Variant A
+  // block with a meaningless 100% weight next to it.
   document.getElementById('step-variants-list').innerHTML = '';
-  (s.variants || []).forEach(v => _addVariantBlock(v.label, v.subject, v.body_html, v.weight));
+  const variants = s.variants || [];
+  if (variants.length > 1) {
+    variants.forEach(v => _addVariantBlock(v.label, v.subject, v.body_html, v.weight));
+    _setBaseFieldsVisible(false);
+  } else {
+    if (variants.length === 1) {
+      document.getElementById('step-subject').value = variants[0].subject;
+      document.getElementById('step-body').value    = variants[0].body_html;
+    }
+    _setBaseFieldsVisible(true);
+  }
   _updateVariantWeightTotal();
+  _updateSpamWarning();
   openModal('modal-step');
 }
 
 async function saveStep() {
   const stepNum = +document.getElementById('step-num-input').value;
-  const subject = document.getElementById('step-subject').value.trim();
-  const body    = document.getElementById('step-body').value.trim();
   const delay   = +document.getElementById('step-delay').value;
 
-  if (!subject || !body) { toast('Subject and body are required', 'err'); return; }
-
-  const variantBlocks = document.querySelectorAll('#step-variants-list .variant-block');
-  const variants = [...variantBlocks].map(block => ({
-    label:    block.dataset.label,
-    subject:  block.querySelector('.v-subject').value.trim(),
+  const variants = _variantBlocks().map(block => ({
+    label:     block.dataset.label,
+    subject:   block.querySelector('.v-subject').value.trim(),
     body_html: block.querySelector('.v-body').value.trim(),
-    weight:   parseInt(block.querySelector('.v-weight').value) || 0,
-  })).filter(v => v.subject && v.body_html);
+    weight:    parseInt(block.querySelector('.v-weight').value) || 0,
+  }));
+
+  let subject, body;
+  if (variants.length) {
+    // Validate every arm: a blank variant used to be dropped silently, so a
+    // half-finished B would save as a one-arm step while still looking like a
+    // configured test on screen.
+    const blank = variants.find(v => !v.subject || !v.body_html);
+    if (blank) {
+      toast(`Variant ${blank.label} needs a subject and a body`, 'err');
+      return;
+    }
+    if (variants.some(v => v.weight <= 0)) {
+      toast('Every variant needs a weight above 0', 'err');
+      return;
+    }
+    // The step's own copy mirrors the first arm; it is the fallback for any
+    // send whose label cannot be resolved.
+    subject = variants[0].subject;
+    body    = variants[0].body_html;
+  } else {
+    subject = document.getElementById('step-subject').value.trim();
+    body    = document.getElementById('step-body').value.trim();
+    if (!subject || !body) { toast('Subject and body are required', 'err'); return; }
+  }
 
   await api(`/api/campaigns/${currentCampaignId}/steps`, 'POST', {
     step_num: stepNum, subject, body_html: body, delay_days: delay, variants,
@@ -517,10 +551,43 @@ async function refreshPreview() {
 
 const _LABELS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
+// The step editor shows exactly as many copy editors as the step has arms.
+//
+// Copy used to live in a base subject/body PLUS an optional variant list, so a
+// two-arm test presented three editors and it was not obvious which one got
+// sent to whom. The base is now simply the step's only arm: adding a variant
+// promotes what you have already written to Variant A and gives you an empty
+// Variant B, and deleting back down to one arm folds it into the plain editor.
+function _variantBlocks() {
+  return [...document.querySelectorAll('#step-variants-list .variant-block')];
+}
+
+function _setBaseFieldsVisible(visible) {
+  const el = document.getElementById('step-no-variant-fields');
+  if (el) el.style.display = visible ? '' : 'none';
+  const hint = document.getElementById('step-variants-hint');
+  if (hint) {
+    hint.textContent = visible
+      ? 'One version of this email goes to everyone. Add a variant to split traffic and A/B test it.'
+      : 'Each contact is assigned one variant when they are enrolled and keeps it for the whole sequence.';
+  }
+}
+
 function addStepVariant() {
-  const existing = document.querySelectorAll('#step-variants-list .variant-block');
-  const label = _LABELS[existing.length] || `V${existing.length + 1}`;
-  _addVariantBlock(label, '', '', 50);
+  const existing = _variantBlocks();
+
+  if (existing.length === 0) {
+    // Promote what is already written rather than stranding it: without this
+    // the copy in the plain editor would silently stop being the thing sent.
+    const subject = document.getElementById('step-subject').value;
+    const body    = document.getElementById('step-body').value;
+    _addVariantBlock('A', subject, body, 50);
+    _addVariantBlock('B', '', '', 50);
+    _setBaseFieldsVisible(false);
+  } else {
+    const label = _LABELS[existing.length] || `V${existing.length + 1}`;
+    _addVariantBlock(label, '', '', 50);
+  }
   _updateVariantWeightTotal();
 }
 
@@ -558,8 +625,23 @@ function _addVariantBlock(label, subject, body, weight) {
 
 function removeVariantBlock(btn) {
   btn.closest('.variant-block').remove();
-  // Re-label remaining blocks
-  document.querySelectorAll('#step-variants-list .variant-block').forEach((block, i) => {
+
+  // Down to a single arm is not a test. Fold it back into the plain editor
+  // rather than leaving one lonely "Variant A" block, so the editor always
+  // reflects how many different emails actually go out.
+  const remaining = _variantBlocks();
+  if (remaining.length === 1) {
+    const only = remaining[0];
+    document.getElementById('step-subject').value = only.querySelector('.v-subject').value;
+    document.getElementById('step-body').value    = only.querySelector('.v-body').value;
+    only.remove();
+  }
+  if (_variantBlocks().length === 0) {
+    _setBaseFieldsVisible(true);
+  }
+
+  // Re-label whatever is left so the labels stay contiguous from A.
+  _variantBlocks().forEach((block, i) => {
     const label = _LABELS[i] || `V${i + 1}`;
     block.dataset.label = label;
     block.querySelector('span').textContent = `Variant ${label}`;
@@ -567,6 +649,7 @@ function removeVariantBlock(btn) {
     block.querySelector('.v-body').placeholder = `Body for Variant ${label}`;
   });
   _updateVariantWeightTotal();
+  _updateSpamWarning();
 }
 
 function _updateVariantWeightTotal() {

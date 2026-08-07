@@ -331,6 +331,33 @@ def init_db():
         except Exception as exc:
             logger.warning("Freemail suppression repair skipped: %s", exc)
 
+        # Every step owns at least one variant, and its copy lives there.
+        #
+        # Copy used to live in two places at once: steps.subject/body_html plus
+        # an optional set of variants. A two-arm test therefore showed three
+        # editors, and the reporting showed three arms -- A, B and a phantom
+        # 'default' holding whoever was enrolled before the variants existed.
+        # Promoting the base copy to variant A makes the arms and the editors
+        # the same set of things. The base columns stay populated and in sync
+        # (see save_step_variants) so any send that cannot resolve a label
+        # still has copy to fall back on.
+        try:
+            orphans = conn.execute("""
+                SELECT s.id, s.subject, s.body_html
+                  FROM steps s
+                  LEFT JOIN step_variants v ON v.step_id = s.id
+                 WHERE v.id IS NULL
+            """).fetchall()
+            for s in orphans:
+                conn.execute("""
+                    INSERT INTO step_variants(step_id, label, subject, body_html, weight)
+                    VALUES(?, 'A', ?, ?, 100)
+                """, (s["id"], s["subject"] or "", s["body_html"] or ""))
+            if orphans:
+                logger.info("Promoted base copy to variant A for %d step(s)", len(orphans))
+        except Exception as exc:
+            logger.warning("Step variant promotion skipped: %s", exc)
+
         # Backfill phone/category/rating/review_count for rows imported before
         # these had their own columns -- they're sitting in `extra` from a CSV
         # import (the scraper's CSV writes a "reviews" column; the DB column is
@@ -674,6 +701,18 @@ def get_steps(campaign_id):
 
 
 def upsert_step(campaign_id, step_num, subject, body_html, delay_days):
+    """
+    Create or update a step, keeping its single-arm variant in step.
+
+    A step always owns at least one variant: copy lives there, so the editor
+    and the reporting describe the same set of arms. The startup migration only
+    covers steps that already existed, so creating one here has to establish
+    the same invariant -- and editing a one-arm step's copy has to update that
+    arm too, or the step and its only variant drift apart and which text goes
+    out depends on whether a label happens to resolve.
+
+    Steps with a real A/B split are left alone; save_step_variants owns those.
+    """
     with get_db() as conn:
         conn.execute("""
             INSERT INTO steps(campaign_id,step_num,subject,body_html,delay_days)
@@ -683,6 +722,27 @@ def upsert_step(campaign_id, step_num, subject, body_html, delay_days):
                 body_html=excluded.body_html,
                 delay_days=excluded.delay_days
         """, (campaign_id, step_num, subject, body_html, delay_days))
+
+        step = conn.execute(
+            "SELECT id FROM steps WHERE campaign_id=? AND step_num=?",
+            (campaign_id, step_num),
+        ).fetchone()
+        if not step:
+            return
+
+        existing = conn.execute(
+            "SELECT id FROM step_variants WHERE step_id=? ORDER BY label", (step["id"],)
+        ).fetchall()
+        if not existing:
+            conn.execute("""
+                INSERT INTO step_variants(step_id, label, subject, body_html, weight)
+                VALUES(?, 'A', ?, ?, 100)
+            """, (step["id"], subject, body_html))
+        elif len(existing) == 1:
+            conn.execute(
+                "UPDATE step_variants SET subject=?, body_html=? WHERE id=?",
+                (subject, body_html, existing[0]["id"]),
+            )
 
 
 def delete_step(campaign_id, step_num):
@@ -1302,14 +1362,132 @@ def get_step_variants(step_id: int):
 
 
 def save_step_variants(step_id: int, variants: list):
-    """Replace all variants for a step. Pass empty list to clear (disable A/B)."""
+    """
+    Replace all variants for a step.
+
+    A step always keeps at least one variant: passing an empty list leaves the
+    step's own subject/body as variant A rather than deleting the only copy the
+    step has. The first variant is also mirrored back onto steps.subject /
+    steps.body_html, so the fallback used when a label cannot be resolved is
+    real copy and not a stale earlier draft.
+    """
     with get_db() as conn:
+        if not variants:
+            row = conn.execute(
+                "SELECT subject, body_html FROM steps WHERE id=?", (step_id,)
+            ).fetchone()
+            variants = [{
+                "label":     "A",
+                "subject":   (row["subject"] if row else "") or "",
+                "body_html": (row["body_html"] if row else "") or "",
+                "weight":    100,
+            }]
+
         conn.execute("DELETE FROM step_variants WHERE step_id=?", (step_id,))
         for v in variants:
             conn.execute("""
                 INSERT INTO step_variants(step_id, label, subject, body_html, weight)
                 VALUES(?,?,?,?,?)
             """, (step_id, v["label"], v["subject"], v["body_html"], int(v.get("weight", 50))))
+
+        first = variants[0]
+        conn.execute(
+            "UPDATE steps SET subject=?, body_html=? WHERE id=?",
+            (first.get("subject", ""), first.get("body_html", ""), step_id),
+        )
+
+
+def get_campaign_variants(campaign_id: int):
+    """
+    The arms of this campaign: every label any step defines, weighted by the
+    earliest step that defines it.
+
+    Enrollment used to draw only from step 1, so a variant added to a later
+    step was inert -- no contact ever carried its label, so it could never be
+    sent and the test quietly measured nothing. Taking the union lets a later
+    step be tested on its own: those contacts just receive the default copy for
+    the steps that do not define their label.
+    """
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT v.label, v.weight, s.step_num
+              FROM step_variants v
+              JOIN steps s ON s.id = v.step_id
+             WHERE s.campaign_id = ?
+             ORDER BY s.step_num ASC, v.label ASC
+        """, (campaign_id,)).fetchall()
+
+    by_step = {}
+    for r in rows:
+        by_step.setdefault(r["step_num"], {})[r["label"]] = r["weight"]
+    if not by_step:
+        return []
+
+    # Weights come from the step that defines the most arms, because that is
+    # where the split was actually configured. Taking each label's first
+    # appearance instead let a single-arm step 1 contribute A at weight 100
+    # against a B of 50 defined on step 2 -- a 50/50 the operator set up would
+    # have run at 67/33.
+    widest = min(by_step.items(), key=lambda kv: (-len(kv[1]), kv[0]))[1]
+
+    arms, seen = [], set()
+    for label, weight in sorted(widest.items()):
+        arms.append({"label": label, "weight": weight})
+        seen.add(label)
+    # A label defined only on some other step still counts as an arm; it keeps
+    # its own weight rather than being dropped and made unreachable.
+    for step_num in sorted(by_step):
+        for label, weight in sorted(by_step[step_num].items()):
+            if label not in seen:
+                arms.append({"label": label, "weight": weight})
+                seen.add(label)
+    return arms
+
+
+def assign_missing_variants(campaign_id: int) -> int:
+    """
+    Give a variant to enrollments that never got one. Returns how many.
+
+    A variant is drawn at enrollment, so contacts enrolled before the variants
+    existed carry no label and would receive the fallback copy for the whole
+    sequence -- silently excluded from the test they appear to be part of.
+    Activation is when the campaign's copy is final, so fill the gaps there.
+
+    Two deliberate limits:
+
+    * The draw is weighted, not "everyone defaults to A". Dropping every
+      unassigned contact into one arm would load it with all the pre-existing
+      contacts and the arms would stop being comparable.
+    * Only untouched enrollments are eligible. Someone already mid-sequence
+      keeps whatever they have: switching arms between steps of one thread
+      changes the voice or offer mid-conversation, and it would file their
+      earlier sends under the wrong arm.
+    """
+    variants = get_campaign_variants(campaign_id)
+    if len(variants) < 2:
+        # One arm is not a test; leaving the label NULL keeps the fallback path
+        # and avoids writing a label that means nothing.
+        return 0
+
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT e.id FROM enrollments e
+             WHERE e.campaign_id = ?
+               AND (e.variant_label IS NULL OR e.variant_label = '')
+               AND e.status = 'queued'
+               AND NOT EXISTS (
+                     SELECT 1 FROM sends s
+                      WHERE s.campaign_id = e.campaign_id
+                        AND s.contact_id  = e.contact_id
+               )
+        """, (campaign_id,)).fetchall()
+
+        for r in rows:
+            conn.execute(
+                "UPDATE enrollments SET variant_label=? WHERE id=?",
+                (_pick_variant(variants), r["id"]),
+            )
+        return len(rows)
 
 
 def _pick_variant(variants: list):
@@ -1385,12 +1563,12 @@ def enroll_contacts_bulk(campaign_id, contact_ids):
     """
     now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Determine variant weights from step 1 (if A/B is configured)
-    with get_db() as conn:
-        step1 = conn.execute(
-            "SELECT id FROM steps WHERE campaign_id=? AND step_num=1", (campaign_id,)
-        ).fetchone()
-    variants = get_step_variants(step1["id"]) if step1 else []
+    # Every label the campaign defines, not just step 1's -- see
+    # get_campaign_variants. One arm is not a test, so leave the label NULL and
+    # let the send fall back to the step's own copy.
+    variants = get_campaign_variants(campaign_id)
+    if len(variants) < 2:
+        variants = []
 
     one_per_domain = get_settings().get("one_sequence_per_domain", "0") == "1"
 

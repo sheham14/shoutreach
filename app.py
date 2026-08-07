@@ -1160,9 +1160,24 @@ def api_activate(cid):
         return jsonify({"ok": False, "error": "Add at least one sequence step first"}), 400
     if not db.get_smtp_accounts():
         return jsonify({"ok": False, "error": "Configure SMTP settings first"}), 400
+
+    # Contacts enrolled before the variants existed carry no label, and would
+    # otherwise sit out the A/B test while appearing to be part of it. Fill
+    # them in here, where the campaign's copy is finally settled. Only
+    # untouched enrollments are eligible -- see assign_missing_variants.
+    assigned = db.assign_missing_variants(cid)
+
     db.update_campaign(cid, status="active")
     db.add_log(f"▶ Campaign {cid} activated")
-    return jsonify({"ok": True})
+    if assigned:
+        db.add_log(f"Assigned an A/B variant to {assigned} contact(s) enrolled before variants were set")
+
+    return jsonify({
+        "ok": True,
+        "variants_assigned": assigned,
+        "message": (f"Activated — {assigned} contact(s) enrolled earlier were "
+                    f"assigned a variant") if assigned else "Activated",
+    })
 
 
 @app.route("/api/campaigns/<int:cid>/pause", methods=["POST"])
