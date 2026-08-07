@@ -150,7 +150,47 @@ def main():
         check("and so does the IMAP one", acct["imap_pass"] == "OLD-stored-password")
         check("the rest of the edit applied", acct["name"] == "Renamed", acct["name"])
 
-        print("\n7. THE TEST ROUTES ARE ADMIN-ONLY")
+        print("\n7. A BLANK PASSWORD FIELD MEANS 'UNCHANGED', NOT 'CLEAR IT'")
+        # The edit form leaves the password blank rather than prefilling the
+        # mask, so an unrelated edit must not wipe the credentials.
+        client.put(f"/api/accounts/{aid}", json={
+            "name": "Renamed again", "smtp_pass": "", "imap_pass": "",
+        }, headers={"X-CSRF-Token": "test-csrf"})
+        acct = db.get_smtp_account(aid)
+        check("a blank SMTP field keeps the stored password",
+              acct["smtp_pass"] == "OLD-stored-password", acct["smtp_pass"])
+        check("a blank IMAP field keeps the stored password",
+              acct["imap_pass"] == "OLD-stored-password", acct["imap_pass"])
+        check("the edit itself still applied", acct["name"] == "Renamed again")
+
+        # ...but a real new password must still get through.
+        client.put(f"/api/accounts/{aid}", json={"smtp_pass": "ROTATED-password"},
+                   headers={"X-CSRF-Token": "test-csrf"})
+        check("a typed password does replace the old one",
+              db.get_smtp_account(aid)["smtp_pass"] == "ROTATED-password")
+
+        print("\n8. PAUSING AN ACCOUNT ACTUALLY STOPS IT SENDING")
+        cid = db.create_campaign("Paused-account campaign")
+        db.set_campaign_smtp_accounts(cid, [aid])
+        check("an active account is picked as the sender",
+              (db.get_next_account_for_campaign(cid) or {}).get("id") == aid)
+
+        r = client.put(f"/api/accounts/{aid}", json={"status": "paused"},
+                       headers={"X-CSRF-Token": "test-csrf"})
+        check("the pause is accepted", r.status_code == 200, f"got {r.status_code}")
+        check("status is stored", db.get_smtp_account(aid)["status"] == "paused")
+        check("a paused account is never handed out as a sender",
+              db.get_next_account_for_campaign(cid) is None,
+              str(db.get_next_account_for_campaign(cid)))
+        check("pausing did not disturb the credentials",
+              db.get_smtp_account(aid)["smtp_pass"] == "ROTATED-password")
+
+        client.put(f"/api/accounts/{aid}", json={"status": "active"},
+                   headers={"X-CSRF-Token": "test-csrf"})
+        check("reactivating brings it back",
+              (db.get_next_account_for_campaign(cid) or {}).get("id") == aid)
+
+        print("\n9. THE TEST ROUTES ARE ADMIN-ONLY")
         anon = app_mod.app.test_client()
         for path in ("/api/accounts/test-smtp", "/api/accounts/test-imap"):
             code = anon.post(path, json={}).status_code

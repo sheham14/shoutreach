@@ -3,20 +3,48 @@
     <button class="modal-close" onclick="closeModal('modal-account')">✕</button>
     <h2 id="account-modal-title">Add Email Account</h2>
 
+    <div class="form-group">
+      <label>Account Label</label>
+      <input id="acct-name" placeholder="Sales 1" />
+      <div class="form-hint">
+        Internal name for this account. Only you ever see it — it labels the row
+        in the list above and the picker when assigning accounts to a campaign.
+      </div>
+    </div>
+
+    <div class="card-title" style="margin:20px 0 12px;font-size:12px;text-transform:uppercase;letter-spacing:.05em">What recipients see</div>
     <div class="form-grid">
-      <div class="form-group"><label>Display Name</label><input id="acct-name" placeholder="Sales 1" /></div>
+      <div class="form-group"><label>From Name</label><input id="acct-from-name" placeholder="Your Name" /></div>
       <div class="form-group"><label>From Email</label><input id="acct-email" type="email" placeholder="you@hexiv.co" /></div>
     </div>
-    <div class="form-group"><label>From Name</label><input id="acct-from-name" placeholder="Your Name" /></div>
+    <div class="form-hint" style="margin:-8px 0 4px">
+      These become the <span class="mono">From:</span> line in the inbox —
+      <span class="mono">From Name &lt;From Email&gt;</span> — and From Email is
+      where replies go. It does not have to match the SMTP username below; set
+      them differently to send as an alias.
+    </div>
 
     <div class="card-title" style="margin:20px 0 12px;font-size:12px;text-transform:uppercase;letter-spacing:.05em">SMTP — Outbound</div>
     <div class="form-grid">
       <div class="form-group"><label>Host</label><input id="acct-smtp-host" placeholder="smtp.zoho.com" /></div>
       <div class="form-group"><label>Port</label><input id="acct-smtp-port" value="587" type="number" /></div>
     </div>
-    <div class="form-grid">
-      <div class="form-group"><label>Username</label><input id="acct-smtp-user" placeholder="you@hexiv.co" /></div>
-      <div class="form-group"><label>Password</label><input id="acct-smtp-pass" type="password" placeholder="●●●●●●●●" /></div>
+    <div class="form-group">
+      <label>Username</label>
+      <input id="acct-smtp-user" placeholder="you@hexiv.co" />
+      <div class="form-hint">The mailbox you authenticate as — usually the full address.</div>
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <div class="flex gap-2">
+        <input id="acct-smtp-pass" type="password" placeholder="app-specific password" style="flex:1" />
+        <button class="btn btn-ghost btn-sm" id="acct-smtp-pass-toggle"
+                onclick="togglePasswordField('acct-smtp-pass','acct-smtp-pass-toggle')">Show</button>
+      </div>
+      <div class="form-hint">
+        With two-factor auth on, this must be an app-specific password, not your
+        login password. They are per-mailbox — a new account needs its own.
+      </div>
     </div>
     <div style="margin-bottom:16px">
       <button class="btn btn-ghost btn-sm" onclick="testAccountSMTP()">Test SMTP</button>
@@ -24,10 +52,18 @@
     </div>
 
     <div class="card-title" style="margin:0 0 12px;font-size:12px;text-transform:uppercase;letter-spacing:.05em">IMAP — Reply Detection</div>
-    <div class="form-group"><label>IMAP Host</label><input id="acct-imap-host" placeholder="imap.zoho.com" /></div>
     <div class="form-grid">
+      <div class="form-group"><label>IMAP Host</label><input id="acct-imap-host" placeholder="imap.zoho.com" /></div>
       <div class="form-group"><label>Username</label><input id="acct-imap-user" placeholder="you@hexiv.co" /></div>
-      <div class="form-group"><label>Password</label><input id="acct-imap-pass" type="password" placeholder="●●●●●●●●" /></div>
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <div class="flex gap-2">
+        <input id="acct-imap-pass" type="password" placeholder="app-specific password" style="flex:1" />
+        <button class="btn btn-ghost btn-sm" id="acct-imap-pass-toggle"
+                onclick="togglePasswordField('acct-imap-pass','acct-imap-pass-toggle')">Show</button>
+      </div>
+      <div class="form-hint">Usually the same app password as SMTP.</div>
     </div>
     <div style="margin-bottom:20px">
       <button class="btn btn-ghost btn-sm" onclick="testAccountIMAP()">Test IMAP</button>

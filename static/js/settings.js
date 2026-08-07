@@ -240,22 +240,43 @@ async function loadAccounts() {
     return;
   }
   tbody.innerHTML = accounts
-    .map(
-      (a) => `
+    .map((a) => {
+      const paused = a.status !== "active";
+      return `
     <tr>
       <td>${esc(a.name)}</td>
       <td class="mono" style="font-size:12px">${esc(a.email)}</td>
       <td class="mono text-muted" style="font-size:11px">${esc(a.smtp_host)}</td>
-      <td>${a.status === "active" ? '<span class="badge badge-green">active</span>' : '<span class="badge badge-gray">paused</span>'}</td>
+      <td>${paused ? '<span class="badge badge-gray">paused</span>' : '<span class="badge badge-green">active</span>'}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-ghost btn-sm" onclick="testAccountSMTPById(${a.id})">Test</button>
+        <button class="btn btn-ghost btn-sm" onclick="toggleAccountStatus(${a.id}, ${paused})"
+                title="${paused ? "Resume sending from this account" : "Stop sending from this account, without deleting it"}">
+          ${paused ? "▶ Activate" : "⏸ Pause"}
+        </button>
         <button class="btn btn-ghost btn-sm" onclick="openEditAccountModal(${a.id})">✎</button>
         <button class="btn btn-danger btn-sm" onclick="deleteAccount(${a.id})">✕</button>
+        <span id="acct-row-result-${a.id}" class="mono" style="font-size:11px;margin-left:8px"></span>
       </td>
     </tr>
-  `,
-    )
+  `;
+    })
     .join("");
+}
+
+// A paused account is skipped when a campaign picks its next sender
+// (get_next_account_for_campaign filters on status), so this genuinely stops
+// sending from it -- previously the only way to do that was to delete it and
+// lose the credentials.
+async function toggleAccountStatus(id, currentlyPaused) {
+  const next = currentlyPaused ? "active" : "paused";
+  const res = await api(`/api/accounts/${id}`, "PUT", { status: next });
+  if (res && res.error) {
+    toast(res.error, "err");
+    return;
+  }
+  toast(next === "active" ? "Account activated ✓" : "Account paused — it will not send");
+  loadAccounts();
 }
 
 function openAddAccountModal() {
@@ -275,10 +296,27 @@ function openAddAccountModal() {
   ].forEach((id) => {
     document.getElementById(id).value = "";
   });
+  ["acct-smtp-pass", "acct-imap-pass"].forEach((id) => {
+    document.getElementById(id).placeholder = "app-specific password";
+  });
   document.getElementById("acct-smtp-port").value = "587";
   document.getElementById("acct-smtp-result").textContent = "";
   document.getElementById("acct-imap-result").textContent = "";
+  _resetPasswordReveal();
   openModal("modal-account");
+}
+
+// Never carry a revealed password over from the last time the modal was open.
+function _resetPasswordReveal() {
+  [
+    ["acct-smtp-pass", "acct-smtp-pass-toggle"],
+    ["acct-imap-pass", "acct-imap-pass-toggle"],
+  ].forEach(([inputId, buttonId]) => {
+    const input = document.getElementById(inputId);
+    const btn = document.getElementById(buttonId);
+    if (input) input.type = "password";
+    if (btn) btn.textContent = "Show";
+  });
 }
 
 async function openEditAccountModal(id) {
@@ -293,12 +331,19 @@ async function openEditAccountModal(id) {
   document.getElementById("acct-smtp-host").value = a.smtp_host || "";
   document.getElementById("acct-smtp-port").value = a.smtp_port || 587;
   document.getElementById("acct-smtp-user").value = a.smtp_user || "";
-  document.getElementById("acct-smtp-pass").value = a.smtp_pass || "";
   document.getElementById("acct-imap-host").value = a.imap_host || "";
   document.getElementById("acct-imap-user").value = a.imap_user || "";
-  document.getElementById("acct-imap-pass").value = a.imap_pass || "";
+  // Blank, not the mask. Prefilling ●●●●●● meant pressing Show revealed six
+  // bullet characters, which reads as though that IS the password. Blank with
+  // a placeholder says what is actually true: leave it and nothing changes.
+  ["acct-smtp-pass", "acct-imap-pass"].forEach((id) => {
+    const el = document.getElementById(id);
+    el.value = "";
+    el.placeholder = "leave blank to keep current password";
+  });
   document.getElementById("acct-smtp-result").textContent = "";
   document.getElementById("acct-imap-result").textContent = "";
+  _resetPasswordReveal();
   openModal("modal-account");
 }
 
@@ -367,16 +412,41 @@ async function testAccountSMTP() {
   el.style.color = res.ok ? "var(--green)" : "var(--red)";
 }
 
+// Tests a saved account from the list. This used to write its result into the
+// modal's result span, which is not on screen when the modal is closed, and
+// only raised a toast on failure -- so a successful test from the list looked
+// like the button did nothing at all.
 async function testAccountSMTPById(id) {
-  const el = document.getElementById("acct-smtp-result") || {
-    textContent: "",
-    style: {},
-  };
-  el.textContent = "Testing...";
+  const el = document.getElementById(`acct-row-result-${id}`);
+  if (el) {
+    el.textContent = "testing…";
+    el.style.color = "var(--muted)";
+  }
   const res = await api(`/api/accounts/${id}/test-smtp`, "POST");
-  el.textContent = res.message;
-  el.style.color = res.ok ? "var(--green)" : "var(--red)";
-  if (!res.ok) toast(res.message, "err");
+  const ok = !!(res && res.ok);
+  const msg = (res && (res.message || res.error)) || "No response";
+  if (el) {
+    el.textContent = ok ? "✓ SMTP ok" : "✕ failed";
+    el.style.color = ok ? "var(--green)" : "var(--red)";
+    // Clear the marker after a while so a stale ✓ is never mistaken for the
+    // result of a later change.
+    setTimeout(() => {
+      if (el.isConnected) el.textContent = "";
+    }, 15000);
+  }
+  toast(msg, ok ? "ok" : "err");
+}
+
+// Reveal a password field so a pasted app password can be eyeballed before
+// saving -- mistyped credentials are otherwise indistinguishable from a
+// provider-side rejection.
+function togglePasswordField(inputId, buttonId) {
+  const input = document.getElementById(inputId);
+  const btn = document.getElementById(buttonId);
+  if (!input) return;
+  const hidden = input.type === "password";
+  input.type = hidden ? "text" : "password";
+  if (btn) btn.textContent = hidden ? "Hide" : "Show";
 }
 
 async function testAccountIMAP() {

@@ -572,9 +572,13 @@ def api_update_account(aid):
     existing = db.get_smtp_account(aid)
     if not existing:
         return jsonify({"ok": False, "error": "Not found"}), 404
-    # Don't overwrite passwords if placeholder was sent back
+    # Keep the stored password unless a real new one was typed. Blank counts as
+    # "unchanged", not "clear it": the edit form leaves the field empty rather
+    # than prefilling the mask, so saving an unrelated change would otherwise
+    # wipe the credentials and break sending with no obvious cause. The mask is
+    # still accepted for older clients that echo it back.
     for key in ("smtp_pass", "imap_pass"):
-        if d.get(key) == _SECRET_PLACEHOLDER:
+        if d.get(key) in (None, "", _SECRET_PLACEHOLDER):
             d[key] = existing.get(key, "")
     db.update_smtp_account(aid, d)
     return jsonify({"ok": True})
