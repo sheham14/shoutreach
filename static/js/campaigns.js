@@ -761,8 +761,8 @@ function _setBaseFieldsVisible(visible) {
   const hint = document.getElementById('step-variants-hint');
   if (hint) {
     hint.textContent = visible
-      ? 'One version of this email goes to everyone. Add a variant to split traffic and A/B test it.'
-      : 'Each contact is assigned one variant when they are enrolled and keeps it for the whole sequence.';
+      ? 'One version goes to everyone. Add a variant to split traffic.'
+      : 'Each contact keeps one variant for the whole sequence.';
   }
 }
 

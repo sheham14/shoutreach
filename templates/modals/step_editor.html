@@ -6,7 +6,7 @@
     <div class="form-group">
       <label>Delay (days since previous step)</label>
       <input id="step-delay" type="number" value="0" min="0" />
-      <div class="form-hint">Step 1 = 0 (send immediately). Step 2+ = days to wait after previous step was sent.</div>
+      <div class="form-hint">0 sends immediately. Otherwise, days after the previous step.</div>
     </div>
 
     <div id="step-no-variant-fields">
@@ -16,26 +16,12 @@
          were the one thing invisible on screen. #}
       {% raw %}
       <div class="form-group">
-        <label>Subject — use {{first_name}}, {{company}}, {{full_name}}</label>
+        <label>Subject</label>
         <input id="step-subject" placeholder="Quick question about {{company}}" oninput="_updateSpamWarning()" />
       </div>
       <div class="form-group">
         <label>Body (HTML or plain text)</label>
         <textarea id="step-body" style="min-height:180px" placeholder="Hi {{first_name}},&#10;&#10;..." oninput="_updateSpamWarning()"></textarea>
-        <div class="form-hint">
-          Variables: {{first_name}} {{last_name}} {{full_name}} {{company}} {{email}}
-          {{phone}} {{website}} {{category}} {{rating}} {{review_count}} {{address}}
-          — plus any you add under Edit Settings → Variables, and any extra
-          field on the contact.
-          <br />
-          Add a fallback after a pipe for contacts missing that field:
-          <span class="mono">{{first_name|there}}</span> sends
-          <span class="mono">Hi there,</span> when no first name is known.
-          <br />
-          <strong>Scraped leads have no first or last name</strong> — Google Maps
-          lists businesses, not people. Personalise on {{company}} and always
-          give {{first_name}} a fallback.
-        </div>
       </div>
       {% endraw %}
 
@@ -47,6 +33,22 @@
         </div>
         <div id="var-panel" style="display:none;border:1px solid var(--border2);border-radius:8px;
                                    padding:4px 0;max-height:260px;overflow-y:auto;background:var(--bg2)"></div>
+        {# The panel lists every variable with live coverage, so the hint only
+           has to cover the one thing it cannot show: the fallback syntax. #}
+        {% raw %}
+        <details style="margin-top:6px">
+          <summary class="form-hint" style="cursor:pointer;list-style:revert">
+            Fallbacks for missing values
+          </summary>
+          <div class="form-hint" style="margin-top:4px">
+            <span class="mono">{{first_name|there}}</span> sends
+            <span class="mono">Hi there,</span> when a contact has no first
+            name. Scraped leads never have one — Maps lists businesses, not
+            people — so lean on <span class="mono">{{company}}</span>.
+            Campaign variables live under Edit Settings → Variables.
+          </div>
+        </details>
+        {% endraw %}
       </div>
 
       <div id="var-gap-warning"
@@ -66,7 +68,7 @@
       </div>
       <div id="step-variants-list" style="display:flex;flex-direction:column;gap:12px"></div>
       <p class="text-muted text-small" id="step-variants-hint" style="margin-top:8px">
-        One version of this email goes to everyone. Add a variant to split traffic and A/B test it.
+        One version goes to everyone. Add a variant to split traffic.
       </p>
     </div>
 
