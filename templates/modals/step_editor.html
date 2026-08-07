@@ -10,6 +10,11 @@
     </div>
 
     <div id="step-no-variant-fields">
+      {# raw: these are the app's own placeholders shown as help text. Without
+         it Jinja evaluates them as undefined and the label renders as
+         "Subject — use , ," -- the variable names the hint exists to teach
+         were the one thing invisible on screen. #}
+      {% raw %}
       <div class="form-group">
         <label>Subject — use {{first_name}}, {{company}}, {{full_name}}</label>
         <input id="step-subject" placeholder="Quick question about {{company}}" oninput="_updateSpamWarning()" />
@@ -17,8 +22,17 @@
       <div class="form-group">
         <label>Body (HTML or plain text)</label>
         <textarea id="step-body" style="min-height:180px" placeholder="Hi {{first_name}},&#10;&#10;..." oninput="_updateSpamWarning()"></textarea>
-        <div class="form-hint">Variables: {{first_name}} {{last_name}} {{full_name}} {{company}} {{email}}</div>
+        <div class="form-hint">
+          Variables: {{first_name}} {{last_name}} {{full_name}} {{company}} {{email}}
+          — plus any you add under Edit Settings → Variables, and any extra
+          field on the contact.
+          <br />
+          Add a fallback after a pipe for contacts missing that field:
+          <span class="mono">{{first_name|there}}</span> sends
+          <span class="mono">Hi there,</span> when no first name is known.
+        </div>
       </div>
+      {% endraw %}
     </div>
 
     <div id="spam-warning" style="display:none;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--amber)">

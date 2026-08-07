@@ -295,7 +295,36 @@ If you're ever interested in [offer], I'm happy to chat.
 [Your name]
 ```
 
-### 3a. A/B Testing a Step (optional)
+### 3a. Variables and Fallbacks
+
+Write `{{first_name}}` anywhere in a subject or body. Three sources resolve,
+highest priority first:
+
+1. **Contact fields** — `{{first_name}}` `{{last_name}}` `{{full_name}}`
+   `{{company}}` `{{email}}`
+2. **Custom fields on the contact** — any non-standard CSV column, e.g.
+   `{{job_title}}`
+3. **Campaign variables** — Campaign → ⚙ Settings → **+ Add Variable**, for
+   things that vary per campaign rather than per contact, e.g. `{{location}}`
+
+**Fallbacks.** Scraped lists usually have a company but no first name, and
+`Hi ,` is worse than no personalisation at all. Anything after a pipe is used
+when the value is missing or blank:
+
+```
+Hi {{first_name|there}},
+
+I came across {{company|your practice}} and wanted to reach out.
+```
+
+A contact with a name gets "Hi Sarah,"; one without gets "Hi there,". Works on
+every variable, from any of the three sources.
+
+A placeholder with no value and no fallback resolves to nothing rather than
+shipping raw `{{braces}}` to the prospect — so a typo leaves a gap instead of
+an obvious mistake. Preview before activating.
+
+### 3b. A/B Testing a Step (optional)
 
 Each step starts with one email that goes to everyone. Press **+ Add Variant**
 and the copy you have already written becomes **Variant A**, with an empty
@@ -456,6 +485,7 @@ python tests/test_worker_api.py       # the scrape job queue and worker protocol
 python tests/test_contacts_paging.py  # contact paging, lead lists, select-all
 python tests/test_accounts.py         # sending-account credential handling
 python tests/test_variants.py         # A/B variant assignment and backfill
+python tests/test_rendering.py        # {{variable}} substitution and fallbacks
 python tests/test_resilience.py       # worker batching and crash recovery
 python tests/test_security.py         # regression tests for closed audit findings
 

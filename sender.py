@@ -43,10 +43,24 @@ _EMAIL_RE = re.compile(
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# {{name}}, {{ name }}, or {{name|fallback text}}.
+#
+# The fallback is what makes a scraped list usable: most rows have a company
+# but no first name, and "Hi ," in the opening line is worse than no
+# personalisation at all. Anything after the pipe is used literally when the
+# value is missing or blank, so {{first_name|there}} reads "Hi there,".
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\|([^}]*))?\}\}")
+
+
 def _render(template: str, contact: dict, campaign_vars: dict = None) -> str:
     """Replace {{variable}} placeholders with contact values.
 
     Priority (highest wins): standard contact fields > contact extra JSON > campaign variables.
+
+    A placeholder with no value resolves to its fallback, or to nothing. It is
+    never left in the text: the old substitution only replaced keys it knew
+    about, so a typo like {{firstname}} was delivered to the prospect with the
+    braces still around it.
     """
     fields = {}
     # 1. Campaign variables — lowest priority
@@ -67,9 +81,18 @@ def _render(template: str, contact: dict, campaign_vars: dict = None) -> str:
         "full_name":  f"{contact.get('first_name','')} {contact.get('last_name','')}".strip(),
     })
 
-    for k, v in fields.items():
-        template = template.replace("{{" + k + "}}", str(v))
-    return template
+    def _resolve(match):
+        key      = match.group(1)
+        fallback = match.group(2)
+        value    = fields.get(key)
+        if value is None or not str(value).strip():
+            # Stripped, so the spaced-out style people are used to from other
+            # template languages -- {{ first_name | there }} -- does not render
+            # as "Hi  there ," with the padding baked into the sentence.
+            return fallback.strip() if fallback is not None else ""
+        return str(value).strip()
+
+    return _PLACEHOLDER_RE.sub(_resolve, template or "")
 
 
 def _plain_to_html(text: str) -> str:

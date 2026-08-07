@@ -1,3 +1,8 @@
+{# raw: this page documents the app's own {{placeholder}} syntax. Jinja
+   would otherwise evaluate every example as an undefined variable and
+   render the entire variable reference blank -- which is exactly what it
+   used to do. There is no real Jinja in this file. #}
+{% raw %}
 <div class="section" id="section-help">
   <div class="page-header">
     <div>
@@ -247,8 +252,15 @@ I came across {{company}} while looking at dental practices in {{location}}...</
           This means if a contact has a custom field named <code>location</code>, it overrides the campaign-level <code>location</code> for that specific contact only.
         </div>
 
-        <h4>Leaving a variable unreplaced</h4>
-        <p>If a <code>{{variable}}</code> has no matching value (typo in the name, missing from contact data, not defined in campaign), it stays as-is in the email — the literal text <code>{{variable}}</code> will appear. Always preview your emails before activating to catch this.</p>
+        <h4>Fallbacks — for contacts missing a field</h4>
+        <p>Scraped lists usually have a company but no first name, and <em>"Hi ,"</em> is worse than no personalisation at all. Put a fallback after a pipe and it is used whenever the value is missing or blank:</p>
+        <pre><code>Hi {{first_name|there}},
+
+I came across {{company|your practice}} and wanted to reach out.</code></pre>
+        <p>A contact with a first name gets <em>"Hi Sarah,"</em>; one without gets <em>"Hi there,"</em>. Fallbacks work on every variable — standard fields, custom fields and campaign variables alike.</p>
+
+        <h4>When a variable has no value and no fallback</h4>
+        <p>It resolves to nothing and disappears from the email. A typo like <code>{{firstname}}</code> (no underscore) therefore leaves a gap rather than sending the raw <code>{{firstname}}</code> text to your prospect — but it is still a silent mistake, so preview before activating.</p>
       </div>
     </div>
 
@@ -271,6 +283,7 @@ I came across {{company}} while looking at dental practices in {{location}}...</
             <tr><td><code>{{email}}</code></td><td>Contact's email address</td></tr>
             <tr><td><code>{{any_csv_column}}</code></td><td>Custom field from CSV import (e.g. <code>{{job_title}}</code>)</td></tr>
             <tr><td><code>{{your_key}}</code></td><td>Campaign variable defined in Campaign → ⚙ Settings</td></tr>
+            <tr><td><code>{{first_name|there}}</code></td><td>Any variable, with a fallback used when it is missing or blank</td></tr>
           </tbody>
         </table>
 
@@ -372,3 +385,4 @@ I came across {{company}} while looking at dental practices in {{location}}...</
 
   </div>
 </div>
+{% endraw %}
