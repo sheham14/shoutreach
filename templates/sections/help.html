@@ -252,6 +252,13 @@ I came across {{company}} while looking at dental practices in {{location}}...</
           This means if a contact has a custom field named <code>location</code>, it overrides the campaign-level <code>location</code> for that specific contact only.
         </div>
 
+        <h4>Checking coverage before you write</h4>
+        <p>Which variables are safe to use depends on the list, not on the database as a whole. The step editor's <strong>⊞ Insert variable</strong> panel counts how many of the contacts <em>enrolled in that campaign</em> actually have each field — so a campaign built from a scrape honestly reports <code>{{first_name}}</code> as 0 of 12, even if other contacts elsewhere have names. Clicking a variable inserts it at your cursor, with a fallback already filled in when there are gaps.</p>
+        <p>Saving a step that uses a variable with gaps and no fallback warns you first. That check reads the copy itself, so it catches variables typed by hand as well as inserted ones.</p>
+
+        <h4>Scraped leads have no personal name</h4>
+        <p>Google Maps lists <em>businesses</em>, not people, so every scraped contact arrives with <code>{{company}}</code>, <code>{{phone}}</code> and the rest filled in but <code>{{first_name}}</code> and <code>{{last_name}}</code> empty. The Name column in the campaign's contact table shows a dash for exactly these. Build your copy around <code>{{company}}</code>, and never use a bare <code>{{first_name}}</code> on a scraped list — it renders as nothing.</p>
+
         <h4>Fallbacks — for contacts missing a field</h4>
         <p>Scraped lists usually have a company but no first name, and <em>"Hi ,"</em> is worse than no personalisation at all. Put a fallback after a pipe and it is used whenever the value is missing or blank:</p>
         <pre><code>Hi {{first_name|there}},
@@ -276,11 +283,17 @@ I came across {{company|your practice}} and wanted to reach out.</code></pre>
         <table>
           <thead><tr><th>Variable</th><th>Replaced with</th></tr></thead>
           <tbody>
-            <tr><td><code>{{first_name}}</code></td><td>Contact's first name</td></tr>
-            <tr><td><code>{{last_name}}</code></td><td>Contact's last name</td></tr>
+            <tr><td><code>{{first_name}}</code></td><td>Contact's first name — <strong>empty on scraped leads</strong>, always give it a fallback</td></tr>
+            <tr><td><code>{{last_name}}</code></td><td>Contact's last name — empty on scraped leads</td></tr>
             <tr><td><code>{{full_name}}</code></td><td>First + last name combined</td></tr>
-            <tr><td><code>{{company}}</code></td><td>Company name</td></tr>
+            <tr><td><code>{{company}}</code></td><td>Company name — populated for scraped leads</td></tr>
             <tr><td><code>{{email}}</code></td><td>Contact's email address</td></tr>
+            <tr><td><code>{{phone}}</code></td><td>Phone number from the Maps listing</td></tr>
+            <tr><td><code>{{website}}</code></td><td>Business website</td></tr>
+            <tr><td><code>{{category}}</code></td><td>Business category from Maps, e.g. "Dentist"</td></tr>
+            <tr><td><code>{{rating}}</code></td><td>Google rating, e.g. 4.8</td></tr>
+            <tr><td><code>{{review_count}}</code></td><td>Number of Google reviews</td></tr>
+            <tr><td><code>{{address}}</code></td><td>Street address</td></tr>
             <tr><td><code>{{any_csv_column}}</code></td><td>Custom field from CSV import (e.g. <code>{{job_title}}</code>)</td></tr>
             <tr><td><code>{{your_key}}</code></td><td>Campaign variable defined in Campaign → ⚙ Settings</td></tr>
             <tr><td><code>{{first_name|there}}</code></td><td>Any variable, with a fallback used when it is missing or blank</td></tr>

@@ -301,11 +301,17 @@ Write `{{first_name}}` anywhere in a subject or body. Three sources resolve,
 highest priority first:
 
 1. **Contact fields** — `{{first_name}}` `{{last_name}}` `{{full_name}}`
-   `{{company}}` `{{email}}`
+   `{{company}}` `{{email}}` `{{phone}}` `{{website}}` `{{category}}`
+   `{{rating}}` `{{review_count}}` `{{address}}`
 2. **Custom fields on the contact** — any non-standard CSV column, e.g.
    `{{job_title}}`
 3. **Campaign variables** — Campaign → ⚙ Settings → **+ Add Variable**, for
    things that vary per campaign rather than per contact, e.g. `{{location}}`
+
+**Scraped leads have no personal name.** Google Maps lists businesses, not
+people, so a scraped contact has `{{company}}`, `{{phone}}` and the rest but
+`{{first_name}}` and `{{last_name}}` are empty — that is the dash in the Name
+column. Build the copy around `{{company}}`.
 
 **Fallbacks.** Scraped lists usually have a company but no first name, and
 `Hi ,` is worse than no personalisation at all. Anything after a pipe is used
@@ -323,6 +329,21 @@ every variable, from any of the three sources.
 A placeholder with no value and no fallback resolves to nothing rather than
 shipping raw `{{braces}}` to the prospect — so a typo leaves a gap instead of
 an obvious mistake. Preview before activating.
+
+**Which variables are worth using depends on the list.** The step editor's
+**⊞ Insert variable** panel counts how many of the contacts *enrolled in this
+campaign* actually have each field:
+
+```
+{{company}}       Company / business name     12 of 12   all have this
+{{phone}}         Phone number                 9 of 12   needs a fallback
+{{first_name}}    First name                   0 of 12   none have this
+```
+
+Clicking one inserts it at your cursor, with a fallback already filled in when
+there are gaps. If you save a step that uses a variable with gaps and no
+fallback, it says so and asks before saving — that check runs on the copy
+itself, so it catches variables typed by hand too.
 
 ### 3b. A/B Testing a Step (optional)
 

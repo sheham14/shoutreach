@@ -90,7 +90,35 @@ def main():
           sender._render("{{company}}", anon, {"company": "Wrong Co"})
           == "Paradise Dental")
 
-    print("\n5. THE UI ACTUALLY SHOWS THE VARIABLE NAMES")
+    print("\n5. THE SCRAPED QUALIFYING FIELDS ARE USABLE AS VARIABLES")
+    # These were reachable as {{phone}} while the scraper packed them into the
+    # `extra` blob. Promoting them to real columns emptied that blob, so unless
+    # they are selected and named explicitly they stop resolving -- a working
+    # variable retired by a change that looked unrelated.
+    scraped = {"first_name": "", "company": "Paradise Dental", "email": "i@pd.ca",
+               "phone": "709-555-0111", "category": "Dentist",
+               "rating": 4.8, "review_count": 127,
+               "website": "https://pd.ca", "address": "12 Main St", "extra": "{}"}
+    check("phone resolves", sender._render("{{phone}}", scraped) == "709-555-0111")
+    check("category resolves", sender._render("{{category}}", scraped) == "Dentist")
+    check("rating resolves", sender._render("{{rating}}", scraped) == "4.8")
+    check("review_count resolves", sender._render("{{review_count}}", scraped) == "127")
+    check("website resolves", sender._render("{{website}}", scraped) == "https://pd.ca")
+    check("a missing one still takes its fallback",
+          sender._render("{{phone|our website}}", {"first_name": "", "extra": "{}"})
+          == "our website")
+
+    print("\n6. THE SEND QUERY ACTUALLY SUPPLIES THEM")
+    # Rendering can only use what get_due_enrollments selects, so assert the
+    # column list rather than trusting the two to stay in step.
+    import inspect
+    import db as db_mod
+    src = inspect.getsource(db_mod.get_due_enrollments)
+    for col in ("c.first_name", "c.last_name", "c.company", "c.extra",
+                "c.phone", "c.category", "c.rating", "c.review_count"):
+        check(f"the due-send query selects {col}", col in src)
+
+    print("\n7. THE UI ACTUALLY SHOWS THE VARIABLE NAMES")
     import app as app_mod
     expected = {
         "modals/step_editor.html": ["{{first_name}}", "{{company}}", "{{first_name|there}}"],
@@ -104,6 +132,111 @@ def main():
                 check(f"{tpl} shows {needle}", needle in html)
             check(f"{tpl} is not left with an empty variable list",
                   "use , ," not in html)
+
+    print("\n8. VARIABLE COVERAGE IS COUNTED OVER THE RIGHT POPULATION")
+    import importlib
+    import shutil
+    import tempfile as _tempfile
+
+    work = _tempfile.mkdtemp(prefix="coverage-")
+    os.environ["DB_PATH"] = os.path.join(work, "cov.db")
+    import db as db2
+    importlib.reload(db2)
+    db2.init_db()
+    try:
+        # A scraped list: company and phone for everyone, never a first name.
+        db2.upsert_contacts([
+            {"email": f"s{i}@scraped{i}.ca", "company": f"Scraped {i}",
+             "website": f"https://scraped{i}.ca", "phone": f"555-000{i}"}
+            for i in range(8)
+        ])
+        # Hand-added contacts that do have names -- these are what make the
+        # global number look healthier than any single campaign really is.
+        db2.upsert_contacts([
+            {"email": "a@named.ca", "first_name": "Ada", "last_name": "L",
+             "company": "Named Co", "website": "https://named.ca"},
+            {"email": "b@named2.ca", "first_name": "Bo", "last_name": "K",
+             "company": "Named Two", "website": "https://named2.ca"},
+        ])
+
+        every = db2.get_variable_coverage(None)
+        by_key = {v["key"]: v for v in every["variables"]}
+        check("global scope counts every contact", every["total"] == 10,
+              str(every["total"]))
+        check("first_name coverage is the 2 hand-added ones",
+              by_key["first_name"]["filled"] == 2, str(by_key["first_name"]))
+        check("company is complete", by_key["company"]["filled"] == 10)
+        check("phone is only the scraped ones", by_key["phone"]["filled"] == 8,
+              str(by_key["phone"]))
+        check("full_name counts as present when either half is",
+              by_key["full_name"]["filled"] == 2)
+
+        # A campaign built purely from the scrape is 0% first name, even though
+        # the database as a whole is 20%. That difference is the whole point.
+        cid = db2.create_campaign("Scraped only")
+        db2.upsert_step(cid, 1, "s", "b", 0)
+        with db2.get_db() as conn:
+            scraped_ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM contacts WHERE email LIKE 's%@scraped%'").fetchall()]
+        db2.enroll_contacts_bulk(cid, scraped_ids)
+
+        camp = db2.get_variable_coverage(cid)
+        ck = {v["key"]: v for v in camp["variables"]}
+        check("campaign scope is reported", camp["scope"] == "campaign", camp["scope"])
+        check("it counts only enrolled contacts", camp["total"] == 8, str(camp["total"]))
+        check("first_name is 0 for this campaign, not 2",
+              ck["first_name"]["filled"] == 0, str(ck["first_name"]))
+        check("company is still complete", ck["company"]["filled"] == 8)
+
+        empty_cid = db2.create_campaign("Nobody enrolled")
+        fallback = db2.get_variable_coverage(empty_cid)
+        check("a campaign with nobody enrolled falls back to all contacts",
+              fallback["scope"] == "all" and fallback["total"] == 10,
+              f"{fallback['scope']}/{fallback['total']}")
+
+        # Advertising a variable the send query never fetches would put a name
+        # in the panel that always renders as nothing.
+        import re as _re2
+        send_src  = inspect.getsource(db2.get_due_enrollments)
+        selected  = set(_re2.findall(r"\bc\.([a-z_]+)", send_src)) | {"full_name"}
+        advertised = {k for k, _ in db2.TEMPLATE_VARIABLES}
+        missing   = advertised - selected
+        check("every advertised variable is one the send query supplies",
+              not missing, f"not fetched: {sorted(missing)}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    print("\n9. THE UI'S PLACEHOLDER PARSER MATCHES THE RENDERER")
+    # The gap warning reads the copy with its own regex in JavaScript. Pull the
+    # literal out of the shipped file rather than restating it, so the two
+    # cannot quietly diverge and start disagreeing about what has a fallback.
+    import re as _re
+    js = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "static", "js", "campaigns.js"), encoding="utf-8").read()
+    m = _re.search(r"const re = /(.+?)/g;", js)
+    check("the parser regex is found in campaigns.js", m is not None)
+    if m:
+        pattern = _re.compile(m.group(1))
+        cases = [
+            ("Hi {{first_name}},",            "first_name", False),
+            ("Hi {{first_name|there}},",      "first_name", True),
+            ("Hi {{ first_name | there }},",  "first_name", True),
+            ("{{company}}",                   "company",    False),
+            ("{{first_name|}}",               "first_name", False),  # empty = no real fallback
+        ]
+        for text, key, expect_fallback in cases:
+            hit = pattern.search(text)
+            got_key = hit.group(1) if hit else None
+            got_fb  = bool(hit and hit.group(2) is not None and (hit.group(3) or "").strip())
+            check(f"{text!r} -> {key}, fallback={expect_fallback}",
+                  got_key == key and got_fb == expect_fallback,
+                  f"got {got_key}, fallback={got_fb}")
+        check("both sides agree a bare variable has no fallback",
+              sender._render("Hi {{first_name}},", {"first_name": "", "extra": "{}"})
+              == "Hi ,")
+
+    check("saving a step runs the gap check before posting",
+          "_variableGaps()" in js.split("async function saveStep")[1].split("await api")[0])
 
     print("\n" + ("ALL PASS" if not _failures else f"FAILURES: {_failures}"))
     return 1 if _failures else 0

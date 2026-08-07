@@ -24,15 +24,34 @@
         <textarea id="step-body" style="min-height:180px" placeholder="Hi {{first_name}},&#10;&#10;..." oninput="_updateSpamWarning()"></textarea>
         <div class="form-hint">
           Variables: {{first_name}} {{last_name}} {{full_name}} {{company}} {{email}}
+          {{phone}} {{website}} {{category}} {{rating}} {{review_count}} {{address}}
           — plus any you add under Edit Settings → Variables, and any extra
           field on the contact.
           <br />
           Add a fallback after a pipe for contacts missing that field:
           <span class="mono">{{first_name|there}}</span> sends
           <span class="mono">Hi there,</span> when no first name is known.
+          <br />
+          <strong>Scraped leads have no first or last name</strong> — Google Maps
+          lists businesses, not people. Personalise on {{company}} and always
+          give {{first_name}} a fallback.
         </div>
       </div>
       {% endraw %}
+
+      <div class="form-group">
+        <div class="flex items-center gap-2" style="margin-bottom:6px">
+          <button type="button" class="btn btn-ghost btn-sm" onclick="toggleVariablePanel()"
+                  id="var-panel-toggle">⊞ Insert variable</button>
+          <span class="text-muted text-small" id="var-panel-scope"></span>
+        </div>
+        <div id="var-panel" style="display:none;border:1px solid var(--border2);border-radius:8px;
+                                   padding:4px 0;max-height:260px;overflow-y:auto;background:var(--bg2)"></div>
+      </div>
+
+      <div id="var-gap-warning"
+           style="display:none;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);
+                  border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--amber)"></div>
     </div>
 
     <div id="spam-warning" style="display:none;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--amber)">

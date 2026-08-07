@@ -379,6 +379,11 @@ function _clearStepModal() {
   document.getElementById('step-variants-list').innerHTML = '';
   _setBaseFieldsVisible(true);
   _updateVariantWeightTotal();
+  _lastFocusedCopyField = null;
+  const vp = document.getElementById('var-panel');
+  if (vp) vp.style.display = 'none';
+  const vg = document.getElementById('var-gap-warning');
+  if (vg) { vg.style.display = 'none'; vg.innerHTML = ''; }
   const sw = document.getElementById('spam-warning');
   if (sw) sw.style.display = 'none';
   const panel = document.getElementById('ai-review-panel');
@@ -393,6 +398,7 @@ function addStepUI() {
   document.getElementById('step-delay').value = nextNum === 1 ? 0 : 3;
   _clearStepModal();
   openModal('modal-step');
+  loadVariableCoverage();
 }
 
 async function editStep(stepNum) {
@@ -423,6 +429,7 @@ async function editStep(stepNum) {
   _updateVariantWeightTotal();
   _updateSpamWarning();
   openModal('modal-step');
+  loadVariableCoverage().then(_updateVariableGapWarning);
 }
 
 async function saveStep() {
@@ -460,6 +467,24 @@ async function saveStep() {
     if (!subject || !body) { toast('Subject and body are required', 'err'); return; }
   }
 
+  // Last line of defence. The panel makes gaps visible, but a variable typed
+  // by hand never goes through it -- and a blank where a name should be is the
+  // kind of thing you only notice in the sent folder.
+  const gaps = _variableGaps();
+  if (gaps.length) {
+    const lines = gaps.map(g => g.filled === 0
+      ? `  {{${g.key}}} — empty for ALL ${g.total} contacts`
+      : `  {{${g.key}}} — empty for ${g.missing} of ${g.total} contacts`);
+    const suggestion = `{{${gaps[0].key}|${_FALLBACK_SUGGESTIONS[gaps[0].key] || 'there'}}}`;
+    const ok = confirm(
+      `These variables have no fallback and are missing for some contacts:\n\n`
+      + lines.join('\n')
+      + `\n\nThose emails will send a blank where the value should be.\n`
+      + `Add a fallback like ${suggestion} to fix it.\n\nSave anyway?`
+    );
+    if (!ok) return;
+  }
+
   await api(`/api/campaigns/${currentCampaignId}/steps`, 'POST', {
     step_num: stepNum, subject, body_html: body, delay_days: delay, variants,
   });
@@ -473,6 +498,170 @@ async function deleteStep(stepNum) {
   await api(`/api/campaigns/${currentCampaignId}/steps/${stepNum}`, 'DELETE');
   toast('Step deleted');
   openCampaign(currentCampaignId);
+}
+
+// ── Variables: coverage, insertion, and the gap warning ──────────────────────
+//
+// Which variables are worth using depends entirely on the list. A scraped
+// campaign has a company for every contact and a first name for none, so
+// "Hi {{first_name}}," sends "Hi ," to all of them -- and nothing said so until
+// the mail had gone. Coverage is counted over the contacts enrolled in THIS
+// campaign, because the database as a whole is not the population being mailed.
+
+let _varCoverage = null;         // { scope, total, variables: [...] }
+let _lastFocusedCopyField = null;
+
+// Suggested fallbacks. Only used to prefill the insert; the operator can edit
+// or delete them, and the text is what ends up in the template either way.
+const _FALLBACK_SUGGESTIONS = {
+  first_name:   'there',
+  last_name:    '',
+  full_name:    'there',
+  company:      'your business',
+  phone:        '',
+  website:      'your site',
+  category:     'local',
+  rating:       '',
+  review_count: '',
+  address:      '',
+};
+
+async function loadVariableCoverage() {
+  const url = currentCampaignId
+    ? `/api/campaigns/${currentCampaignId}/variable-coverage`
+    : '/api/variable-coverage';
+  const data = await api(url);
+  _varCoverage = (data && data.variables) ? data : null;
+  _renderVariableScope();
+  return _varCoverage;
+}
+
+function _renderVariableScope() {
+  const el = document.getElementById('var-panel-scope');
+  if (!el || !_varCoverage) return;
+  el.textContent = _varCoverage.total === 0
+    ? 'no contacts to measure against yet'
+    : (_varCoverage.scope === 'campaign'
+        ? `coverage across ${_varCoverage.total} enrolled contact${_varCoverage.total === 1 ? '' : 's'}`
+        : `coverage across all ${_varCoverage.total} contacts — none enrolled yet`);
+}
+
+async function toggleVariablePanel() {
+  const panel = document.getElementById('var-panel');
+  if (!panel) return;
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  if (!_varCoverage) await loadVariableCoverage();
+  _renderVariablePanel();
+  panel.style.display = 'block';
+}
+
+function _renderVariablePanel() {
+  const panel = document.getElementById('var-panel');
+  if (!panel || !_varCoverage) return;
+
+  panel.innerHTML = _varCoverage.variables.map(v => {
+    const none  = v.total > 0 && v.filled === 0;
+    const gap   = v.total > 0 && v.filled > 0 && v.filled < v.total;
+    const color = none ? 'var(--red)' : (gap ? 'var(--amber)' : 'var(--green)');
+    const count = v.total === 0 ? '—' : `${v.filled} of ${v.total}`;
+    const note  = none ? 'none have this' : (gap ? 'needs a fallback' : 'all have this');
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:6px 14px;border-bottom:1px solid var(--border)">
+        <span class="mono" style="font-size:12px;min-width:150px">{{${esc(v.key)}}}</span>
+        <span class="text-muted" style="font-size:11px;flex:1">${esc(v.label)}</span>
+        <span class="mono" style="font-size:11px;color:${color};min-width:74px;text-align:right">${count}</span>
+        <span style="font-size:10px;color:${color};min-width:96px">${note}</span>
+        <button type="button" class="btn btn-ghost btn-sm"
+                onclick="insertVariable('${esc(v.key)}', ${none || gap})">Insert</button>
+      </div>`;
+  }).join('');
+}
+
+// Remembering the last focused editor is what lets Insert land in the field the
+// operator was actually typing in, rather than always the base body.
+function _rememberCopyField(el) { _lastFocusedCopyField = el; }
+
+document.addEventListener('focusin', e => {
+  const t = e.target;
+  if (!t) return;
+  if (t.id === 'step-subject' || t.id === 'step-body'
+      || t.classList?.contains('v-subject') || t.classList?.contains('v-body')) {
+    _rememberCopyField(t);
+  }
+});
+
+function insertVariable(key, withFallback) {
+  const el = _lastFocusedCopyField
+          || document.getElementById('step-body')
+          || document.getElementById('step-subject');
+  if (!el) return;
+
+  const suggestion = _FALLBACK_SUGGESTIONS[key] || '';
+  const token = (withFallback && suggestion)
+    ? `{{${key}|${suggestion}}}`
+    : `{{${key}}}`;
+
+  const start = el.selectionStart ?? el.value.length;
+  const end   = el.selectionEnd ?? el.value.length;
+  el.value = el.value.slice(0, start) + token + el.value.slice(end);
+  const caret = start + token.length;
+  el.focus();
+  el.setSelectionRange(caret, caret);
+
+  _updateSpamWarning();
+  _updateVariableGapWarning();
+}
+
+// Every {{name}} or {{name|fallback}} used anywhere in this step.
+function _usedPlaceholders() {
+  const text = [
+    document.getElementById('step-subject')?.value || '',
+    document.getElementById('step-body')?.value || '',
+    ...[...document.querySelectorAll('.v-subject')].map(el => el.value),
+    ...[...document.querySelectorAll('.v-body')].map(el => el.value),
+  ].join('\n');
+
+  const out = new Map();   // key -> hasFallback (true if every use has one)
+  const re = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*(\|([^}]*))?\}\}/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const key = m[1];
+    const hasFallback = m[2] !== undefined && (m[3] || '').trim() !== '';
+    out.set(key, out.has(key) ? (out.get(key) && hasFallback) : hasFallback);
+  }
+  return out;
+}
+
+// The check that actually prevents "Hi ," going out: a variable can be typed by
+// hand without ever opening the panel, so the gap has to be caught here too.
+function _variableGaps() {
+  if (!_varCoverage || !_varCoverage.total) return [];
+  const byKey = Object.fromEntries(_varCoverage.variables.map(v => [v.key, v]));
+  const gaps  = [];
+  for (const [key, hasFallback] of _usedPlaceholders()) {
+    const v = byKey[key];
+    if (!v || hasFallback) continue;
+    if (v.filled < v.total) {
+      gaps.push({ key, missing: v.total - v.filled, total: v.total, filled: v.filled });
+    }
+  }
+  return gaps;
+}
+
+function _updateVariableGapWarning() {
+  const el = document.getElementById('var-gap-warning');
+  if (!el) return;
+  const gaps = _variableGaps();
+  if (!gaps.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+
+  el.style.display = 'block';
+  el.innerHTML = '⚠ ' + gaps.map(g =>
+    g.filled === 0
+      ? `<span class="mono">{{${esc(g.key)}}}</span> is empty for <strong>all ${g.total}</strong> of these contacts`
+      : `<span class="mono">{{${esc(g.key)}}}</span> is empty for <strong>${g.missing} of ${g.total}</strong>`
+  ).join('; ') + ' — add a fallback like <span class="mono">{{'
+    + esc(gaps[0].key) + '|' + esc(_FALLBACK_SUGGESTIONS[gaps[0].key] || 'there')
+    + '}}</span> or those emails send a blank.';
 }
 
 // ── Spam checker ─────────────────────────────────────────────────────────────
@@ -497,6 +686,10 @@ function _updateSpamWarning() {
     ...[...document.querySelectorAll('.v-subject')].map(el => el.value),
     ...[...document.querySelectorAll('.v-body')].map(el => el.value),
   ].join(' ').toLowerCase();
+
+  // Variable gaps are re-checked on the same keystrokes as the spam words, so
+  // the warning tracks the copy instead of only appearing at save time.
+  _updateVariableGapWarning();
 
   const found = _SPAM_WORDS.filter(w => text.includes(w));
   const el    = document.getElementById('spam-warning');

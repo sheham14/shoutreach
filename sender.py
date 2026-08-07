@@ -72,14 +72,21 @@ def _render(template: str, contact: dict, campaign_vars: dict = None) -> str:
         fields.update(extra)
     except Exception:
         pass
-    # 3. Standard contact fields — highest priority
-    fields.update({
-        "first_name": contact.get("first_name", ""),
-        "last_name":  contact.get("last_name", ""),
-        "company":    contact.get("company", ""),
-        "email":      contact.get("email", ""),
-        "full_name":  f"{contact.get('first_name','')} {contact.get('last_name','')}".strip(),
-    })
+    # 3. Standard contact fields — highest priority.
+    #
+    # phone/category/rating/review_count are scraped off the Maps listing. They
+    # were reachable as {{phone}} back when the scraper packed them into the
+    # `extra` blob; they are their own columns now, so they have to be named
+    # here or promoting them would have quietly removed working variables.
+    for key in ("first_name", "last_name", "company", "email",
+                "phone", "category", "rating", "review_count",
+                "website", "address"):
+        if key in contact:
+            value = contact.get(key)
+            fields[key] = "" if value is None else value
+    fields["full_name"] = (
+        f"{contact.get('first_name','') or ''} {contact.get('last_name','') or ''}".strip()
+    )
 
     def _resolve(match):
         key      = match.group(1)

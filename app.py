@@ -1152,6 +1152,24 @@ def api_update_campaign(cid):
     return jsonify({"ok": True})
 
 
+@app.route("/api/campaigns/<int:cid>/variable-coverage", methods=["GET"])
+@admin_required
+def api_variable_coverage(cid):
+    """
+    Which variables are actually populated for the contacts this campaign will
+    reach. Writing "Hi {{first_name}}," against a scraped list produces "Hi ,"
+    for every recipient, and nothing said so until the mail had gone out.
+    """
+    return jsonify(db.get_variable_coverage(cid))
+
+
+@app.route("/api/variable-coverage", methods=["GET"])
+@admin_required
+def api_variable_coverage_global():
+    """Coverage across every contact — for a step being drafted outside a campaign."""
+    return jsonify(db.get_variable_coverage(None))
+
+
 @app.route("/api/campaigns/<int:cid>/activate", methods=["POST"])
 @admin_required
 def api_activate(cid):

@@ -1504,6 +1504,92 @@ def _pick_variant(variants: list):
     return variants[-1]["label"]
 
 
+# Contact columns usable as {{variables}}, in the order they are most likely to
+# be wanted. Must stay in step with what get_due_enrollments selects and what
+# sender._render exposes -- a name here that the send query does not fetch would
+# advertise a variable that renders as nothing.
+TEMPLATE_VARIABLES = [
+    ("first_name",   "First name"),
+    ("last_name",    "Last name"),
+    ("full_name",    "First + last"),
+    ("company",      "Company / business name"),
+    ("email",        "Email address"),
+    ("phone",        "Phone number"),
+    ("website",      "Website"),
+    ("category",     "Business category"),
+    ("rating",       "Google rating"),
+    ("review_count", "Number of reviews"),
+    ("address",      "Street address"),
+]
+
+
+def get_variable_coverage(campaign_id: int = None):
+    """
+    How many contacts actually have a value for each template variable.
+
+    Scoped to a campaign's enrolled contacts when given one, because that is
+    the population the copy will reach: a database that is 21% first-name on
+    the strength of a few hand-added rows is still 0% for a campaign built
+    entirely from a scrape. Falls back to every active contact when the
+    campaign has nobody enrolled yet, so the panel is useful while drafting.
+
+    Returns rows of {key, label, filled, total, scope}.
+    """
+    scope = "campaign"
+    where = """
+        WHERE c.id IN (SELECT contact_id FROM enrollments WHERE campaign_id = ?)
+    """
+    params = [campaign_id]
+
+    with get_db() as conn:
+        if campaign_id is not None:
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM contacts c {where}", params
+            ).fetchone()[0]
+        else:
+            total = 0
+
+        if not total:
+            scope  = "all"
+            where  = "WHERE c.status NOT IN ('deleted','unsubscribed','bounced')"
+            params = []
+            total  = conn.execute(
+                f"SELECT COUNT(*) FROM contacts c {where}", params
+            ).fetchone()[0]
+
+        if not total:
+            return {"scope": scope, "total": 0, "variables": [
+                {"key": k, "label": lbl, "filled": 0, "total": 0}
+                for k, lbl in TEMPLATE_VARIABLES
+            ]}
+
+        # full_name is derived rather than stored, so it counts as present when
+        # either half is.
+        pieces = []
+        for key, _ in TEMPLATE_VARIABLES:
+            if key == "full_name":
+                expr = ("(COALESCE(NULLIF(TRIM(c.first_name),''),"
+                        " NULLIF(TRIM(c.last_name),'')) IS NOT NULL)")
+            elif key in ("rating", "review_count"):
+                expr = f"(c.{key} IS NOT NULL)"
+            else:
+                expr = f"(NULLIF(TRIM(COALESCE(c.{key},'')),'') IS NOT NULL)"
+            pieces.append(f"SUM(CASE WHEN {expr} THEN 1 ELSE 0 END) AS {key}")
+
+        row = conn.execute(
+            f"SELECT {', '.join(pieces)} FROM contacts c {where}", params
+        ).fetchone()
+
+    return {
+        "scope": scope,
+        "total": total,
+        "variables": [
+            {"key": key, "label": label, "filled": row[key] or 0, "total": total}
+            for key, label in TEMPLATE_VARIABLES
+        ],
+    }
+
+
 def get_variant_stats(campaign_id: int):
     """Per-variant breakdown: enrolled, sent, replied, bounced."""
     with get_db() as conn:
@@ -1655,7 +1741,13 @@ def get_due_enrollments(campaign_id, limit=20):
         return [dict(r) for r in conn.execute("""
             SELECT e.id as enroll_id, e.campaign_id, e.contact_id,
                    e.current_step, e.next_send_at, e.variant_label,
-                   c.email, c.first_name, c.last_name, c.company, c.extra
+                   c.email, c.first_name, c.last_name, c.company, c.extra,
+                   -- Available as {{phone}}, {{category}} and so on. These
+                   -- used to ride along inside `extra`; promoting them to real
+                   -- columns emptied that blob, so leaving them out here would
+                   -- silently retire template variables that already worked.
+                   c.phone, c.category, c.rating, c.review_count,
+                   c.website, c.address
             FROM enrollments e
             JOIN contacts c ON c.id=e.contact_id
             WHERE e.campaign_id=?
