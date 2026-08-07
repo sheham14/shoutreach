@@ -1,15 +1,32 @@
+// Wakes the background scheduler instead of waiting out its 60s tick: one
+// queue pass plus a reply/bounce scan. It does not bypass any gate -- the
+// send window, the daily caps and the bounce breaker all still apply, so
+// outside sending hours this checks for replies and sends nothing.
+const RUN_NOW_LABEL = '⟳ Check for replies & send';
+
 async function runSchedulerNow() {
   const btn = document.getElementById('run-now-btn');
-  btn.textContent = '⟳ Running…';
+  btn.textContent = '⟳ Checking…';
   btn.disabled = true;
   try {
-    await api('/api/scheduler/run', { method: 'POST' });
-    showToast('Scheduler ran — replies and queue refreshed', 'success');
-    refreshDashboard();
+    // api() takes (path, method, body) -- passing { method: 'POST' } made the
+    // method an object, which fetch stringifies to "[object Object]" and
+    // rejects as an invalid HTTP method. Combined with showToast not existing
+    // (the helper is toast), both the success and failure paths threw and the
+    // button did nothing at all.
+    const res = await api('/api/scheduler/run', 'POST');
+    if (res && res.error) {
+      toast(res.error, 'err');
+      return;
+    }
+    // request_run_now only sets a flag; the thread picks it up on its next
+    // pass, so say "started" rather than claiming the work is already done.
+    toast('Checking for replies and sending anything due…');
+    setTimeout(refreshDashboard, 1500);
   } catch (e) {
-    showToast('Scheduler run failed', 'error');
+    toast('Could not start the check', 'err');
   } finally {
-    btn.textContent = '⟳ Run Now';
+    btn.textContent = RUN_NOW_LABEL;
     btn.disabled = false;
   }
 }

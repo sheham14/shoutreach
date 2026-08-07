@@ -13,7 +13,13 @@
     <a href="#" data-section="database"><span class="icon">◧</span> Database</a>
     <a href="#" data-section="help"><span class="icon">?</span> Help &amp; Guide</a>
   </nav>
-  <button onclick="runSchedulerNow()" id="run-now-btn" style="margin:8px 12px;width:calc(100% - 24px);padding:7px 12px;background:transparent;border:1px solid var(--border2);border-radius:8px;color:var(--text2);font-size:12px;font-family:var(--font);cursor:pointer;text-align:left;transition:border-color .15s,color .15s" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--text)'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--text2)'">⟳ Run Now</button>
+  <!-- Named for what it produces, not the machinery behind it. "Run Now" gave
+       no hint what would run, and "Run the scheduler" only trades one piece of
+       jargon for another. Sending and reply-detection already happen on their
+       own; this just does them straight away instead of on the next cycle. -->
+  <button onclick="runSchedulerNow()" id="run-now-btn"
+          title="Sends anything due and checks for replies right now, instead of waiting for the next automatic cycle. Your send window and daily limits still apply."
+          style="margin:8px 12px;width:calc(100% - 24px);padding:7px 12px;background:transparent;border:1px solid var(--border2);border-radius:8px;color:var(--text2);font-size:12px;line-height:1.35;font-family:var(--font);cursor:pointer;text-align:left;transition:border-color .15s,color .15s" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--text)'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--text2)'">⟳ Check for replies &amp; send</button>
   <div style="padding:12px 16px;border-top:1px solid var(--border);margin-top:auto">
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px" id="sidebar-username"></div>
     <a href="/logout" style="font-size:12px;color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--muted)'">⎋ Sign out</a>
