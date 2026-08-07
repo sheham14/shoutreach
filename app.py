@@ -1210,7 +1210,19 @@ def api_pause(cid):
 
 @app.route("/api/campaigns/<int:cid>/steps", methods=["GET"])
 def api_get_steps(cid):
-    return jsonify(db.get_steps(cid))
+    """
+    Steps with their variants attached.
+
+    This is what the step editor loads when you reopen a step, and it used to
+    return bare step rows -- the campaign detail route attached variants, this
+    one never did. So a second variant was saved correctly and then simply not
+    shown on reopen, and saving again wrote back the single arm the editor
+    could see, deleting the variant that was still in the database.
+    """
+    steps = db.get_steps(cid)
+    for s in steps:
+        s["variants"] = db.get_step_variants(s["id"])
+    return jsonify(steps)
 
 
 @app.route("/api/campaigns/<int:cid>/steps", methods=["POST"])

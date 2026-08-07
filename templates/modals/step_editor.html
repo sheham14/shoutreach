@@ -72,10 +72,17 @@
       </p>
     </div>
 
-    <div class="flex gap-2" style="flex-wrap:wrap">
+    <div class="flex gap-2 items-center" style="flex-wrap:wrap">
       <button class="btn btn-primary" onclick="saveStep()">Save Step</button>
       <button class="btn btn-ghost" onclick="openStepPreview()">Preview</button>
       <button class="btn btn-ghost" id="btn-ai-review" onclick="openAIReview()" title="Requires AI features enabled in Settings">AI Review</button>
+      <!-- Which arm Preview and AI Review act on. Hidden while the step has a
+           single arm, since there is nothing to choose between. -->
+      <select id="copy-target" onchange="dismissAIRewrite()"
+              title="Which variant Preview and AI Review use"
+              style="display:none;background:var(--bg3);border:1px solid var(--border2);
+                     border-radius:6px;padding:6px 10px;color:var(--text);font-size:12px;
+                     font-family:var(--font);cursor:pointer"></select>
       <button class="btn btn-ghost" onclick="closeModal('modal-step')">Cancel</button>
     </div>
 

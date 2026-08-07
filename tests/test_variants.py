@@ -258,6 +258,54 @@ def main():
         check("and their copy is unchanged",
               [v["subject"] for v in after] == [v["subject"] for v in before])
 
+        print("\n12. VARIANTS SURVIVE A SAVE / REOPEN / SAVE ROUND TRIP")
+        # The bug: the step editor loads /steps, which returned bare step rows
+        # with no variants attached -- only the campaign detail route attached
+        # them. So variant B saved fine and then simply was not shown on
+        # reopen, and saving again wrote back the single arm the editor could
+        # see, deleting B from the database.
+        import importlib as _il
+        import app as app_mod
+        _il.reload(app_mod)
+        app_mod.app.config["TESTING"] = True
+        client = app_mod.app.test_client()
+        with client.session_transaction() as sess:
+            sess["user_id"] = 1
+            sess["is_admin"] = True
+            sess["csrf_token"] = "t"
+        hdr = {"X-CSRF-Token": "t"}
+
+        cid9 = db.create_campaign("Round trip")
+        client.post(f"/api/campaigns/{cid9}/steps", json={
+            "step_num": 1, "subject": "A subj", "body_html": "A body", "delay_days": 0,
+            "variants": [
+                {"label": "A", "subject": "A subj", "body_html": "A body", "weight": 50},
+                {"label": "B", "subject": "B subj", "body_html": "B body", "weight": 50},
+            ],
+        }, headers=hdr)
+
+        loaded = client.get(f"/api/campaigns/{cid9}/steps").get_json()
+        check("the steps route returns the variants", "variants" in (loaded[0] or {}),
+              str(list((loaded[0] or {}).keys())))
+        got = {v["label"]: v for v in loaded[0].get("variants", [])}
+        check("both arms come back", set(got) == {"A", "B"}, str(sorted(got)))
+        check("variant B keeps its own copy",
+              got.get("B", {}).get("subject") == "B subj", str(got.get("B")))
+
+        # Re-save exactly what a correctly-populated editor would send back.
+        client.post(f"/api/campaigns/{cid9}/steps", json={
+            "step_num": 1, "subject": "A subj", "body_html": "A body", "delay_days": 0,
+            "variants": [
+                {"label": v["label"], "subject": v["subject"],
+                 "body_html": v["body_html"], "weight": v["weight"]}
+                for v in loaded[0]["variants"]
+            ],
+        }, headers=hdr)
+        again = client.get(f"/api/campaigns/{cid9}/steps").get_json()
+        check("both arms survive the second save",
+              {v["label"] for v in again[0]["variants"]} == {"A", "B"},
+              str(again[0]["variants"]))
+
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

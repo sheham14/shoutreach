@@ -380,6 +380,9 @@ function _clearStepModal() {
   _setBaseFieldsVisible(true);
   _updateVariantWeightTotal();
   _lastFocusedCopyField = null;
+  _aiRewriteTarget = null;
+  const ct = document.getElementById('copy-target');
+  if (ct) { ct.innerHTML = ''; ct.style.display = 'none'; }
   const vp = document.getElementById('var-panel');
   if (vp) vp.style.display = 'none';
   const vg = document.getElementById('var-gap-warning');
@@ -714,8 +717,11 @@ function openStepPreview() {
 async function refreshPreview() {
   clearTimeout(_previewDebounce);
   _previewDebounce = setTimeout(async () => {
-    const subject  = document.getElementById('step-subject')?.value || '';
-    const body     = document.getElementById('step-body')?.value || '';
+    // Same arm the picker selects, so previewing a two-arm step shows the
+    // variant being worked on rather than the hidden base copy.
+    const target   = _activeCopyTarget();
+    const subject  = target.subject?.value || '';
+    const body     = target.body?.value || '';
     const contact  = {
       first_name: document.getElementById('preview-first-name').value,
       last_name:  document.getElementById('preview-last-name').value,
@@ -728,7 +734,8 @@ async function refreshPreview() {
     const res = await api('/api/preview', 'POST', { subject, body_html: body, contact });
     document.getElementById('preview-loading').style.display = 'none';
 
-    document.getElementById('preview-subject').textContent = res.subject || '(no subject)';
+    document.getElementById('preview-subject').textContent =
+      (target.label ? `[Variant ${target.label}] ` : '') + (res.subject || '(no subject)');
     const iframe = document.getElementById('preview-iframe');
     iframe.srcdoc = res.body_html || '';
     // Auto-size iframe to content
@@ -846,6 +853,10 @@ function removeVariantBlock(btn) {
 }
 
 function _updateVariantWeightTotal() {
+  // Called on every add, remove, reload and weight edit, so it is the single
+  // place that keeps the Preview / AI Review arm picker in step with reality.
+  _refreshCopyTargetPicker();
+
   const blocks = document.querySelectorAll('#step-variants-list .variant-block');
   const el = document.getElementById('variant-weight-total');
   if (!blocks.length) { el.textContent = ''; return; }
@@ -854,22 +865,86 @@ function _updateVariantWeightTotal() {
   el.style.color = Math.abs(total - 100) <= 1 ? 'var(--green)' : 'var(--amber)';
 }
 
+// ── Which arm Preview and AI Review act on ───────────────────────────────────
+//
+// Both used to read the hidden base fields unconditionally. Once a step has
+// variants those fields hold the last saved mirror of variant A, so reviewing
+// a two-arm step graded stale copy and never offered any way to see variant B
+// at all -- and Apply Rewrite wrote back into a hidden field that the next save
+// overwrote from variant A, so it silently did nothing.
+
+function _copyTargets() {
+  const blocks = _variantBlocks();
+  if (!blocks.length) {
+    return [{
+      label:   '',
+      subject: document.getElementById('step-subject'),
+      body:    document.getElementById('step-body'),
+    }];
+  }
+  return blocks.map(b => ({
+    label:   b.dataset.label,
+    subject: b.querySelector('.v-subject'),
+    body:    b.querySelector('.v-body'),
+  }));
+}
+
+function _refreshCopyTargetPicker() {
+  const sel = document.getElementById('copy-target');
+  if (!sel) return;
+  const targets = _copyTargets();
+  if (targets.length < 2) {
+    sel.style.display = 'none';
+    sel.innerHTML = '';
+    return;
+  }
+  const previous = sel.value;
+  sel.innerHTML = targets
+    .map((t, i) => `<option value="${i}">Variant ${esc(t.label)}</option>`)
+    .join('');
+  sel.value = (previous && previous < targets.length) ? previous : '0';
+  sel.style.display = '';
+}
+
+function _activeCopyTarget() {
+  const targets = _copyTargets();
+  const sel = document.getElementById('copy-target');
+  const idx = sel && sel.style.display !== 'none' ? parseInt(sel.value) || 0 : 0;
+  return targets[Math.min(idx, targets.length - 1)];
+}
+
 // ── AI Copy Review ────────────────────────────────────────────────────────────
 
-let _aiRewrite = null; // holds { subject, body } from last review
+let _aiRewrite = null;        // holds { subject, body } from last review
+let _aiRewriteTarget = null;  // the arm it was produced for
 
 async function openAIReview() {
   const panel   = document.getElementById('ai-review-panel');
   const loading = document.getElementById('ai-review-loading');
   const result  = document.getElementById('ai-review-result');
 
-  const subject = document.getElementById('step-subject').value.trim();
-  const body    = document.getElementById('step-body').value.trim();
+  const target  = _activeCopyTarget();
+  const subject = target.subject.value.trim();
+  const body    = target.body.value.trim();
 
+  if (!subject && !body) {
+    panel.style.display = 'block';
+    loading.style.display = 'none';
+    result.innerHTML =
+      `<span style="color:var(--amber)">Nothing to review${
+        target.label ? ` in Variant ${esc(target.label)}` : ''} — write a subject and body first.</span>`;
+    return;
+  }
+
+  // Remembered so Apply Rewrite writes back into the arm that was reviewed,
+  // even if the picker is changed while the request is in flight.
   _aiRewrite = null;
+  _aiRewriteTarget = target;
   panel.style.display   = 'block';
   loading.style.display = 'block';
-  result.innerHTML      = '';
+  result.innerHTML      = target.label
+    ? `<div class="text-muted" style="font-size:11px;margin-bottom:6px">Reviewing Variant ${esc(target.label)}</div>`
+    : '';
 
   let data;
   try {
@@ -935,15 +1010,22 @@ async function openAIReview() {
 
 function applyAIRewrite() {
   if (!_aiRewrite) return;
-  if (_aiRewrite.subject) document.getElementById('step-subject').value = _aiRewrite.subject;
-  if (_aiRewrite.body)    document.getElementById('step-body').value    = _aiRewrite.body;
+  // Back into the arm that was reviewed. Writing to the base fields meant a
+  // rewrite of a variant landed somewhere hidden and was overwritten on save.
+  const target = _aiRewriteTarget || _activeCopyTarget();
+  if (_aiRewrite.subject) target.subject.value = _aiRewrite.subject;
+  if (_aiRewrite.body)    target.body.value    = _aiRewrite.body;
   _updateSpamWarning();
+  _updateVariableGapWarning();
   dismissAIRewrite();
-  toast('Rewrite applied — review and save when ready');
+  toast(target.label
+    ? `Rewrite applied to Variant ${target.label} — review and save when ready`
+    : 'Rewrite applied — review and save when ready');
 }
 
 function dismissAIRewrite() {
   _aiRewrite = null;
+  _aiRewriteTarget = null;
   const panel = document.getElementById('ai-review-panel');
   if (panel) panel.style.display = 'none';
 }
