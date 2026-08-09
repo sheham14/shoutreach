@@ -247,7 +247,19 @@ Click **Campaigns → New Campaign**
 
 Settings to configure:
 - **Daily Limit** — how many emails to send per day (follow warmup schedule above)
-- **Send Window** — hours (UTC) during which emails go out (e.g., 9–17 = 9am–5pm UTC)
+- **Send Window** — hours during which emails go out (e.g. 9–17), interpreted
+  in the campaign's timezone
+- **Sending Days** — which weekdays this campaign may send on. Defaults to
+  Mon–Fri, with one-click presets for **Sun–Thu** (the working week across much
+  of the Middle East) and **Every day**. Set it to the working week of the
+  people you are mailing, not your own — a campaign aimed at Dubai from Toronto
+  still wants Sun–Thu.
+
+  A follow-up that falls due on a non-sending day is not dropped, it waits for
+  the next one. The campaign page says which state it is in — *"Outside the
+  send window. Sends on Sun, Mon, Tue, Wed, Thu, 09:00–17:00 Asia/Dubai — next
+  opens Sun 09 Aug, 09:00."* — so a "next send" timestamp sitting in the past
+  reads as the weekend rather than as a broken scheduler.
 - **Min/Max Delay** — random seconds between sends (45–120 recommended)
 
 ### 3. Add Sequence Steps
@@ -507,6 +519,7 @@ python tests/test_contacts_paging.py  # contact paging, lead lists, select-all
 python tests/test_accounts.py         # sending-account credential handling
 python tests/test_variants.py         # A/B variant assignment and backfill
 python tests/test_rendering.py        # {{variable}} substitution and fallbacks
+python tests/test_send_window.py      # sending days, send window, why-not-sending
 python tests/test_resilience.py       # worker batching and crash recovery
 python tests/test_security.py         # regression tests for closed audit findings
 

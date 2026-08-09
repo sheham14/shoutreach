@@ -1045,6 +1045,69 @@ def api_create_campaign():
     return jsonify({"ok": True, "id": cid})
 
 
+def _campaign_send_status(c: dict) -> dict:
+    """
+    Whether this campaign is sending right now, and if not, why and when next.
+
+    Every gate that can hold a campaign back is invisible in the UI: a
+    follow-up that came due on a non-sending day just sits there with a "next
+    send" timestamp in the past, which reads like the scheduler has died. This
+    turns each gate into something the campaign page can actually say out loud.
+    """
+    status  = (c.get("status") or "").lower()
+    days    = sorted(email_sender.parse_send_days(c.get("send_days")))
+    # Read the week the way the campaign runs it. Numeric order puts Sunday
+    # last, so a Sun-Thu week rendered as "Mon, Tue, Wed, Thu, Sun" -- correct
+    # but not how anyone working that week would say it.
+    order   = ([6] + [d for d in days if d != 6]) if (6 in days and 5 not in days) else days
+    day_str = ", ".join(email_sender.DAY_NAMES[d][:3] for d in order) or "none"
+    hours   = f"{int(c.get('send_start_hour', 9)):02d}:00–{int(c.get('send_end_hour', 17)):02d}:00"
+    tz_name = (c.get("timezone") or "").strip() or "UTC"
+
+    out = {
+        "sending": False, "reason": "", "next_open": None,
+        "days": days, "days_label": day_str, "hours_label": hours, "timezone": tz_name,
+    }
+
+    # Explicit "no days selected" is a configuration mistake worth naming, and
+    # parse_send_days deliberately hides it by falling back to Mon-Fri.
+    raw_days = str(c.get("send_days") or "").strip()
+    if raw_days and not [x for x in raw_days.split(",") if x.strip().isdigit()]:
+        out["reason"] = "No sending days are selected, so this campaign will never send."
+        return out
+
+    if status != "active":
+        out["reason"] = f"Campaign is {status or 'not active'} — activate it to resume sending."
+        return out
+
+    if int(c.get("send_start_hour", 9)) >= int(c.get("send_end_hour", 17)):
+        out["reason"] = "The send window start is not before its end, so no hour qualifies."
+        return out
+
+    sent_today = db.get_campaign_today_count(c["id"])
+    if sent_today >= int(c.get("daily_limit", 30)):
+        nxt = email_sender.next_send_window(c)
+        out["reason"] = (f"Daily limit reached — {sent_today} of {c.get('daily_limit')} sent today.")
+        out["next_open"] = nxt.isoformat(timespec="minutes") if nxt else None
+        return out
+
+    if email_sender.is_business_hours(c):
+        out["sending"] = True
+        out["reason"]  = f"Sending now — window is {hours} {tz_name} on {day_str}."
+        return out
+
+    nxt = email_sender.next_send_window(c)
+    out["next_open"] = nxt.isoformat(timespec="minutes") if nxt else None
+    if nxt:
+        out["reason"] = (
+            f"Outside the send window. Sends on {day_str}, {hours} {tz_name} — "
+            f"next opens {nxt.strftime('%a %d %b, %H:%M')}."
+        )
+    else:
+        out["reason"] = "The current schedule never opens a send window."
+    return out
+
+
 @app.route("/api/campaigns/<int:cid>", methods=["GET"])
 def api_get_campaign(cid):
     c = db.get_campaign(cid)
@@ -1059,6 +1122,7 @@ def api_get_campaign(cid):
     for s in steps:
         s["variants"] = db.get_step_variants(s["id"])
     c["steps"]          = steps
+    c["send_status"]    = _campaign_send_status(c)
     c["stats"]          = db.get_stats(cid)
     c["variant_stats"]  = db.get_variant_stats(cid)
     c["contacts"]       = db.get_campaign_contacts(cid)

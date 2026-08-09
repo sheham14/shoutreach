@@ -191,6 +191,14 @@ def init_db():
             "ALTER TABLE contacts ADD COLUMN mx_valid INTEGER DEFAULT NULL",
             "ALTER TABLE campaigns ADD COLUMN timezone TEXT DEFAULT NULL",
             "ALTER TABLE campaigns ADD COLUMN variables TEXT DEFAULT '{}'",
+            # Which weekdays this campaign may send on, as Python weekday
+            # numbers (Monday=0 ... Sunday=6). The gate used to hardcode
+            # "weekday() >= 5", which is only the Western weekend -- a campaign
+            # aimed at the Gulf or the Levant, where the working week is
+            # Sunday to Thursday, would sit idle on its two busiest days and
+            # send on the two nobody is working. Defaults to Mon-Fri so
+            # existing campaigns keep behaving exactly as before.
+            "ALTER TABLE campaigns ADD COLUMN send_days TEXT NOT NULL DEFAULT '0,1,2,3,4'",
             # Canonical host for a contact's website. Deduping on the raw
             # website string failed constantly because Maps hands out
             # http://x.ca, https://www.x.ca/ and http://x.ca/?utm_source=gmb
@@ -668,19 +676,22 @@ def get_campaign(cid):
 
 
 def create_campaign(name, daily_limit=30, start_hour=9, end_hour=17,
-                    min_delay=45, max_delay=120, timezone=None, variables='{}'):
+                    min_delay=45, max_delay=120, timezone=None, variables='{}',
+                    send_days='0,1,2,3,4'):
     with get_db() as conn:
         cur = conn.execute(
             "INSERT INTO campaigns(name,daily_limit,send_start_hour,send_end_hour,"
-            "min_delay_secs,max_delay_secs,timezone,variables) VALUES(?,?,?,?,?,?,?,?)",
-            (name, daily_limit, start_hour, end_hour, min_delay, max_delay, timezone, variables)
+            "min_delay_secs,max_delay_secs,timezone,variables,send_days) VALUES(?,?,?,?,?,?,?,?,?)",
+            (name, daily_limit, start_hour, end_hour, min_delay, max_delay,
+             timezone, variables, send_days)
         )
         return cur.lastrowid
 
 
 def update_campaign(cid, **fields):
     allowed = {"name", "daily_limit", "send_start_hour", "send_end_hour",
-               "min_delay_secs", "max_delay_secs", "bounce_pause_pct", "status", "timezone", "variables"}
+               "min_delay_secs", "max_delay_secs", "bounce_pause_pct", "status",
+               "timezone", "variables", "send_days"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return
@@ -1931,6 +1942,24 @@ def get_today_count():
             "SELECT count FROM daily_counts WHERE date=?", (today,)
         ).fetchone()
         return row["count"] if row else 0
+
+
+def get_campaign_today_count(campaign_id):
+    """
+    Emails this campaign has sent today, counted from the sends table.
+
+    Lifted out of scheduler._get_campaign_today_count so the campaign page can
+    report "daily limit reached" using the same number the scheduler enforces
+    -- two implementations of the same count would eventually disagree about
+    why nothing is going out.
+    """
+    today = datetime.date.today().isoformat()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM sends WHERE campaign_id=? AND DATE(sent_at)=?",
+            (campaign_id, today),
+        ).fetchone()
+        return row[0] if row else 0
 
 
 def get_bounce_rate(campaign_id):

@@ -21,6 +21,13 @@
     <div class="page-title" id="cd-name"></div>
   </div>
 
+  <!-- Says out loud whether the campaign is sending right now and, if not, why
+       and when it resumes. Every gate that holds a campaign back was otherwise
+       invisible: a follow-up due on a non-sending day just waits, leaving a
+       "next send" timestamp in the past that reads like a broken scheduler. -->
+  <div id="cd-send-status" style="display:none;margin-bottom:16px;padding:10px 14px;
+       border-radius:8px;font-size:12px;border:1px solid var(--border2)"></div>
+
   <div class="stat-grid" id="cd-stats" style="grid-template-columns:repeat(5,1fr)"></div>
   <div id="cd-variant-stats"></div>
 

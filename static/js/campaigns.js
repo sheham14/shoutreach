@@ -132,6 +132,7 @@ async function openCampaign(id) {
   const c = await api(`/api/campaigns/${id}`);
 
   document.getElementById('cd-name').textContent = c.name;
+  _renderSendStatus(c.send_status);
 
   const s = c.stats;
   document.getElementById('cd-stats').innerHTML = [
@@ -199,6 +200,68 @@ async function openCampaign(id) {
 
 // ── Campaign variable key-value editor ────────────────────────────────────────
 
+function _renderSendStatus(st) {
+  const el = document.getElementById('cd-send-status');
+  if (!el) return;
+  if (!st || !st.reason) { el.style.display = 'none'; return; }
+
+  // Green when mail is actually moving, amber when something is holding it
+  // back. Amber rather than red because waiting for Monday is normal, not a
+  // fault -- the point is to say so rather than leave it to be guessed.
+  const ok = !!st.sending;
+  el.style.display      = 'block';
+  el.style.background   = ok ? 'rgba(34,197,94,.08)' : 'rgba(245,166,35,.08)';
+  el.style.borderColor  = ok ? 'rgba(34,197,94,.3)'  : 'rgba(245,166,35,.3)';
+  el.style.color        = ok ? 'var(--green)' : 'var(--amber)';
+  el.innerHTML = `${ok ? '▶' : '⏸'} ${esc(st.reason)}`;
+}
+
+// ── Sending days ─────────────────────────────────────────────────────────────
+//
+// The gate used to hardcode a Saturday/Sunday weekend, which is wrong for much
+// of the Middle East, where the working week runs Sunday to Thursday. Stored
+// as Python weekday numbers so the server can compare against weekday()
+// directly: Monday=0 ... Sunday=6.
+
+const _DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+function renderSendDays(csv) {
+  const chosen = new Set(String(csv || '0,1,2,3,4')
+    .split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)));
+  const wrap = document.getElementById('ec-send-days');
+  if (!wrap) return;
+  // State lives in data-on, not in the inline styles: style.borderColor gives
+  // back whatever was authored (here a CSS variable), so reading colour to
+  // work out which days are selected would be guesswork.
+  wrap.innerHTML = _DAY_LABELS.map((label, i) => {
+    const on = chosen.has(i);
+    return `<button type="button" data-day="${i}" data-on="${on ? 1 : 0}"
+      onclick="toggleSendDay(${i})"
+      style="padding:5px 10px;border-radius:6px;font-size:12px;cursor:pointer;
+             font-family:var(--font);
+             border:1px solid ${on ? 'var(--green)' : 'var(--border2)'};
+             background:${on ? 'rgba(34,197,94,.12)' : 'transparent'};
+             color:${on ? 'var(--green)' : 'var(--muted)'}">${label}</button>`;
+  }).join('');
+}
+
+function toggleSendDay(day) {
+  const current = _getSendDays();
+  const next = current.includes(day)
+    ? current.filter(d => d !== day)
+    : current.concat(day).sort((a, b) => a - b);
+  renderSendDays(next.join(','));
+}
+
+function setSendDaysPreset(csv) { renderSendDays(csv); }
+
+function _getSendDays() {
+  return [...document.querySelectorAll('#ec-send-days [data-day]')]
+    .filter(b => b.dataset.on === '1')
+    .map(b => parseInt(b.dataset.day))
+    .sort((a, b) => a - b);
+}
+
 function addCampaignVar(key = '', value = '') {
   const row = document.createElement('div');
   row.className = 'ec-var-row';
@@ -234,6 +297,7 @@ async function openEditCampaignModal() {
   document.getElementById('ec-end').value      = c.send_end_hour;
   document.getElementById('ec-bounce').value   = c.bounce_pause_pct;
   _populateTimezoneSelect('ec-timezone', c.timezone || '');
+  renderSendDays(c.send_days || '0,1,2,3,4');
   // Render existing campaign variables
   const varsList = document.getElementById('ec-vars-list');
   varsList.innerHTML = '';
@@ -253,8 +317,14 @@ async function saveCampaignSettings() {
     bounce_pause_pct: +document.getElementById('ec-bounce').value,
     timezone:         document.getElementById('ec-timezone').value || null,
     variables:        _getCampaignVars(),
+    send_days:        _getSendDays().join(','),
   };
   if (!payload.name) { toast('Campaign name is required', 'err'); return; }
+  // Saving zero days would mean the campaign silently never sends again.
+  if (!payload.send_days) {
+    toast('Pick at least one sending day', 'err');
+    return;
+  }
   await api(`/api/campaigns/${currentCampaignId}`, 'PATCH', payload);
   closeModal('modal-edit-campaign');
   toast('Settings saved ✓');

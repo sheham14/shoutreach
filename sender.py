@@ -181,20 +181,97 @@ def _unsubscribe_footer_html(contact_email: str, settings: dict) -> str:
 
 # ── Business hours check ──────────────────────────────────────────────────────
 
-def is_business_hours(campaign: dict) -> bool:
-    """Returns True only if current hour is within campaign send window (Mon–Fri).
-    Uses campaign timezone if set, otherwise UTC."""
+DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday",
+             "Friday", "Saturday", "Sunday"]
+
+# Mon-Fri. Used when a campaign has no stored value, so behaviour is unchanged
+# for anything created before sending days were configurable.
+DEFAULT_SEND_DAYS = frozenset({0, 1, 2, 3, 4})
+
+
+def parse_send_days(raw) -> frozenset:
+    """
+    Read the stored '0,1,2,3,4' into weekday numbers (Monday=0 ... Sunday=6).
+
+    An unreadable or empty value falls back to Mon-Fri rather than to "no days"
+    -- a parsing slip should not silently stop a campaign sending forever.
+    Deliberately choosing zero days is handled by the caller, which can tell
+    the difference because it looks at the raw column.
+    """
+    if isinstance(raw, (set, frozenset, list, tuple)):
+        values = raw
+    else:
+        values = str(raw or "").split(",")
+    days = set()
+    for v in values:
+        try:
+            n = int(str(v).strip())
+        except (TypeError, ValueError):
+            continue
+        if 0 <= n <= 6:
+            days.add(n)
+    return frozenset(days) if days else DEFAULT_SEND_DAYS
+
+
+def campaign_timezone(campaign: dict):
     tz_name = (campaign.get("timezone") or "").strip()
     try:
         from zoneinfo import ZoneInfo
-        tz = ZoneInfo(tz_name) if tz_name else datetime.timezone.utc
+        return ZoneInfo(tz_name) if tz_name else datetime.timezone.utc
     except Exception:
-        tz = datetime.timezone.utc
-    now = datetime.datetime.now(tz)
-    if now.weekday() >= 5:   # Saturday=5, Sunday=6
+        return datetime.timezone.utc
+
+
+def is_business_hours(campaign: dict) -> bool:
+    """
+    True only when the campaign may send right now.
+
+    The day check reads the campaign's configured sending days instead of
+    assuming a Saturday/Sunday weekend, which is wrong for most of the Middle
+    East -- the working week there runs Sunday to Thursday. Hours and days are
+    both evaluated in the campaign's timezone, so the window describes the
+    market being mailed rather than wherever the server happens to run.
+    """
+    now = datetime.datetime.now(campaign_timezone(campaign))
+    if now.weekday() not in parse_send_days(campaign.get("send_days")):
         return False
-    h = now.hour
-    return campaign["send_start_hour"] <= h < campaign["send_end_hour"]
+    return campaign["send_start_hour"] <= now.hour < campaign["send_end_hour"]
+
+
+def next_send_window(campaign: dict):
+    """
+    When this campaign's send window next opens, in its own timezone.
+
+    Returns None if it is open now, or if the configuration means it will never
+    open (no sending days selected, or an empty hour range). Callers pair this
+    with the campaign's status to explain why nothing is going out -- a
+    follow-up that came due on a non-sending day just waits, and without this
+    the only visible evidence is a "next send" timestamp sitting in the past,
+    which reads like the scheduler has died.
+    """
+    days = parse_send_days(campaign.get("send_days"))
+    start = int(campaign.get("send_start_hour", 9))
+    end   = int(campaign.get("send_end_hour", 17))
+    if not days or start >= end:
+        return None
+
+    now = datetime.datetime.now(campaign_timezone(campaign))
+    if now.weekday() in days and start <= now.hour < end:
+        return None                      # open right now
+
+    # Later today, if today is a sending day and the window has not started.
+    if now.weekday() in days and now.hour < start:
+        return now.replace(hour=start, minute=0, second=0, microsecond=0)
+
+    # Otherwise the start of the next sending day. Seven hops is enough to
+    # reach any weekday that is enabled at all.
+    candidate = now
+    for _ in range(7):
+        candidate = (candidate + datetime.timedelta(days=1)).replace(
+            hour=start, minute=0, second=0, microsecond=0)
+        if candidate.weekday() in days:
+            return candidate
+    return None
 
 
 # ── Connection helpers ─────────────────────────────────────────────────────────

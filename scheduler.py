@@ -189,14 +189,9 @@ def process_queue():
 
 
 def _get_campaign_today_count(campaign_id):
-    today = datetime.date.today().isoformat()
-    with db.get_db() as conn:
-        row = conn.execute("""
-            SELECT COUNT(*) FROM sends
-            WHERE campaign_id=?
-              AND DATE(sent_at) = ?
-        """, (campaign_id, today)).fetchone()
-        return row[0] if row else 0
+    # Kept as a thin alias: the campaign page reports the same number, and two
+    # copies of this query would eventually drift apart.
+    return db.get_campaign_today_count(campaign_id)
 
 
 # ── Reply checker ─────────────────────────────────────────────────────────────
