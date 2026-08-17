@@ -224,6 +224,12 @@ def init_db():
             # degrade to an "unknown source" label, not block the delete or
             # orphan the contact. NULL means manually added or CSV-imported.
             "ALTER TABLE contacts ADD COLUMN source_job_id INTEGER DEFAULT NULL",
+            # Comparable form of `phone`. Maps hands the same number back as
+            # "+1 709-555-0123", "(709) 555-0123" and "709.555.0123", so the
+            # raw column can never answer "have I already dialled this
+            # business". Kept beside the original rather than replacing it --
+            # the display value is what you want on screen.
+            "ALTER TABLE contacts ADD COLUMN phone_normalized TEXT NOT NULL DEFAULT ''",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -264,7 +270,8 @@ def init_db():
                     category          TEXT NOT NULL DEFAULT '',
                     rating            REAL DEFAULT NULL,
                     review_count      INTEGER DEFAULT NULL,
-                    source_job_id     INTEGER DEFAULT NULL
+                    source_job_id     INTEGER DEFAULT NULL,
+                    phone_normalized  TEXT NOT NULL DEFAULT ''
                 );
                 INSERT INTO contacts_new
                     SELECT id, email, first_name, last_name, company, extra, status,
@@ -272,7 +279,8 @@ def init_db():
                            COALESCE(soft_bounce_count, 0), mx_valid,
                            COALESCE(domain,''), duplicate_of,
                            COALESCE(phone,''), COALESCE(category,''),
-                           rating, review_count, source_job_id
+                           rating, review_count, source_job_id,
+                           COALESCE(phone_normalized,'')
                     FROM contacts;
                 DROP TABLE contacts;
                 ALTER TABLE contacts_new RENAME TO contacts;
@@ -296,6 +304,9 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS logs_created_at_idx     ON logs(created_at)",
             "CREATE INDEX IF NOT EXISTS contacts_source_job_idx ON contacts(source_job_id) WHERE source_job_id IS NOT NULL",
             "CREATE INDEX IF NOT EXISTS contacts_created_at_idx ON contacts(created_at)",
+            # Backs has_sent_step, which runs once per email before sending.
+            "CREATE INDEX IF NOT EXISTS sends_dedupe_idx ON sends(campaign_id, contact_id, step_num)",
+            "CREATE INDEX IF NOT EXISTS contacts_phone_idx ON contacts(phone_normalized) WHERE phone_normalized != ''",
         ):
             try:
                 conn.execute(idx_sql)
@@ -338,6 +349,24 @@ def init_db():
                 )
         except Exception as exc:
             logger.warning("Freemail suppression repair skipped: %s", exc)
+
+        # Comparable phone for rows scraped before the column existed, so
+        # "have I already dialled this business" works on the list you already
+        # have rather than only on the next scrape.
+        try:
+            todo = conn.execute(
+                "SELECT id, phone FROM contacts WHERE phone_normalized = '' AND phone != ''"
+            ).fetchall()
+            for row in todo:
+                key = normalize_phone(row["phone"])
+                if key:
+                    conn.execute(
+                        "UPDATE contacts SET phone_normalized=? WHERE id=?", (key, row["id"])
+                    )
+            if todo:
+                logger.info("Normalized phone for %d contact(s)", len(todo))
+        except Exception as exc:
+            logger.warning("Phone normalization backfill skipped: %s", exc)
 
         # Every step owns at least one variant, and its copy lives there.
         #
@@ -815,6 +844,64 @@ def is_freemail(domain: str) -> bool:
     return (domain or "").strip().lower() in FREEMAIL_DOMAINS
 
 
+# Legal suffixes and punctuation carry no identity: "Paradise Dental Care Inc."
+# and "Paradise Dental Care" are one business, and a scrape will produce both.
+_COMPANY_NOISE = {
+    "inc", "inc.", "incorporated", "ltd", "ltd.", "limited", "llc", "llp",
+    "corp", "corp.", "corporation", "co", "co.", "company", "plc", "pc",
+    "professional", "the", "and", "&",
+}
+
+
+def normalize_phone(raw: str) -> str:
+    """
+    Reduce a phone number to something comparable.
+
+    Google Maps returns the same number as "+1 709-555-0123", "(709) 555-0123"
+    and "709.555.0123" depending on the listing, so the raw string can never
+    answer "have I already dialled this business". Digits only, and for North
+    American numbers the trailing ten -- which drops a leading 1 country code
+    so the two forms of the same number match.
+
+    Deliberately not a full E.164 parser: that needs a phone-number library and
+    a country to resolve against, and this is aimed at NANP lists. Numbers
+    shorter than seven digits are treated as unusable rather than guessed at.
+    """
+    digits = re.sub(r"\D", "", raw or "")
+    if len(digits) < 7:
+        return ""
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+def normalize_company(raw: str) -> str:
+    """
+    Comparable form of a business name, for leads with no domain to match on.
+
+    Weaker than a phone or a domain and never used alone -- see
+    find_existing_business, which pairs it with locality. On its own it would
+    merge every "Main Street Dental" in the country.
+    """
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", (raw or "").lower())
+    words = [w for w in cleaned.split() if w and w not in _COMPANY_NOISE]
+    return " ".join(words)
+
+
+def _locality_key(address: str) -> str:
+    """
+    A rough locality from a scraped address, for disambiguating company names.
+
+    Maps addresses are unstructured, so this takes the longest alphabetic
+    fragment after the street line -- usually the city. Crude, but it only has
+    to separate St John's from Toronto, not parse an address properly.
+    """
+    parts = [p.strip() for p in (address or "").split(",") if p.strip()]
+    if len(parts) < 2:
+        return ""
+    candidates = [re.sub(r"[^a-z\s]", "", p.lower()).strip() for p in parts[1:]]
+    candidates = [c for c in candidates if len(c) > 2]
+    return max(candidates, key=len) if candidates else ""
+
+
 # Addresses that reach a mailbox nobody reads, or the wrong department. The
 # README's own advice is not to cold-email role accounts, so when a business
 # exposes several the personal one should win.
@@ -931,8 +1018,8 @@ def upsert_contacts(rows):
                         touched_domains.add(domain)
                 mx_valid = r.get("mx_valid")  # None = unchecked, 1 = valid, 0 = invalid
                 conn.execute("""
-                    INSERT INTO contacts(email,first_name,last_name,company,website,address,extra,status,mx_valid,domain,phone,category,rating,review_count,source_job_id)
-                    VALUES(:email,:first_name,:last_name,:company,:website,:address,:extra,:status,:mx_valid,:domain,:phone,:category,:rating,:review_count,:source_job_id)
+                    INSERT INTO contacts(email,first_name,last_name,company,website,address,extra,status,mx_valid,domain,phone,phone_normalized,category,rating,review_count,source_job_id)
+                    VALUES(:email,:first_name,:last_name,:company,:website,:address,:extra,:status,:mx_valid,:domain,:phone,:phone_normalized,:category,:rating,:review_count,:source_job_id)
                     ON CONFLICT(email) WHERE email IS NOT NULL AND email != '' DO UPDATE SET
                         first_name=COALESCE(NULLIF(excluded.first_name,''), contacts.first_name),
                         last_name=COALESCE(NULLIF(excluded.last_name,''),   contacts.last_name),
@@ -947,6 +1034,7 @@ def upsert_contacts(rows):
                         domain=COALESCE(NULLIF(contacts.domain,''),         excluded.domain),
                         mx_valid=COALESCE(excluded.mx_valid,                contacts.mx_valid),
                         phone=COALESCE(NULLIF(contacts.phone,''),           excluded.phone),
+                        phone_normalized=COALESCE(NULLIF(contacts.phone_normalized,''), excluded.phone_normalized),
                         category=COALESCE(NULLIF(contacts.category,''),     excluded.category),
                         rating=COALESCE(excluded.rating,                    contacts.rating),
                         review_count=COALESCE(excluded.review_count,        contacts.review_count),
@@ -966,6 +1054,7 @@ def upsert_contacts(rows):
                     "mx_valid":      mx_valid,
                     "domain":        domain,
                     "phone":         r.get("phone", ""),
+                    "phone_normalized": normalize_phone(r.get("phone", "")),
                     "category":      r.get("category", ""),
                     "rating":        r.get("rating") or None,
                     "review_count":  r.get("review_count") or None,
@@ -1000,13 +1089,14 @@ def upsert_contacts(rows):
 
                 if not exists:
                     conn.execute("""
-                        INSERT INTO contacts(company,website,address,status,extra,domain,phone,category,rating,review_count,source_job_id)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                        INSERT INTO contacts(company,website,address,status,extra,domain,phone,phone_normalized,category,rating,review_count,source_job_id)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                     """, (
                         r.get("company", ""), website,
                         r.get("address", ""), status,
                         json.dumps(r.get("extra", {})), domain,
-                        r.get("phone", ""), r.get("category", ""),
+                        r.get("phone", ""), normalize_phone(r.get("phone", "")),
+                        r.get("category", ""),
                         r.get("rating") or None, r.get("review_count") or None,
                         r.get("source_job_id") or None,
                     ))
@@ -1944,6 +2034,88 @@ def get_today_count():
         return row["count"] if row else 0
 
 
+def find_existing_business(conn, phone="", website="", company="", address="",
+                           exclude_id=None):
+    """
+    Find a contact already representing this business. Returns a row or None.
+
+    Three keys, strongest first, because no single field covers the list:
+
+      1. Normalized phone -- the right key for calling. Two rows that dial the
+         same number are one conversation, whoever they claim to be.
+      2. Canonical domain -- the right key for email, and already how contacts
+         with a website are deduped.
+      3. Normalized company AND locality -- last resort, for the no-website
+         leads that have neither of the above. Never company alone: that would
+         merge "Main Street Dental" in St John's with the one in Toronto.
+    """
+    phone_key = normalize_phone(phone)
+    if phone_key:
+        row = conn.execute(
+            "SELECT * FROM contacts WHERE phone_normalized=? AND phone_normalized!='' "
+            "AND status != 'deleted' AND (? IS NULL OR id != ?) LIMIT 1",
+            (phone_key, exclude_id, exclude_id or -1),
+        ).fetchone()
+        if row:
+            return row
+
+    domain = canonical_domain(website)
+    if domain and not is_freemail(domain):
+        row = conn.execute(
+            "SELECT * FROM contacts WHERE domain=? AND domain!='' "
+            "AND status != 'deleted' AND (? IS NULL OR id != ?) LIMIT 1",
+            (domain, exclude_id, exclude_id or -1),
+        ).fetchone()
+        if row:
+            return row
+
+    name_key = normalize_company(company)
+    place    = _locality_key(address)
+    if name_key and place:
+        for row in conn.execute(
+            "SELECT * FROM contacts WHERE company!='' AND status != 'deleted' "
+            "AND (? IS NULL OR id != ?)",
+            (exclude_id, exclude_id or -1),
+        ).fetchall():
+            if (normalize_company(row["company"]) == name_key
+                    and _locality_key(row["address"]) == place):
+                return row
+    return None
+
+
+def get_touch_history(contact_id: int) -> dict:
+    """
+    How this business has already been contacted, across every channel.
+
+    Distinct from duplicate detection: "is this the same row" and "have I
+    already worked this lead" are different questions, and only the second one
+    decides whether to dial. A previously-emailed lead with no reply is still
+    worth a call; one that already said no is not -- so this reports rather
+    than hides.
+    """
+    with get_db() as conn:
+        emails = conn.execute(
+            "SELECT COUNT(*) AS n, MAX(sent_at) AS last FROM sends WHERE contact_id=?",
+            (contact_id,),
+        ).fetchone()
+        enrolled = conn.execute("""
+            SELECT c.name AS campaign, e.status
+              FROM enrollments e JOIN campaigns c ON c.id = e.campaign_id
+             WHERE e.contact_id = ?
+             ORDER BY e.enrolled_at DESC
+        """, (contact_id,)).fetchall()
+
+    return {
+        "emails_sent":   emails["n"] or 0,
+        "last_email_at": emails["last"],
+        "campaigns":     [dict(r) for r in enrolled],
+        # Terminal states mean the prospect has already answered -- surfaced so
+        # the call list can warn rather than silently re-work them.
+        "closed":        any(r["status"] in ("replied", "unsubscribed", "bounced")
+                             for r in enrolled),
+    }
+
+
 def get_campaign_today_count(campaign_id):
     """
     Emails this campaign has sent today, counted from the sends table.
@@ -1962,6 +2134,32 @@ def get_campaign_today_count(campaign_id):
         return row[0] if row else 0
 
 
+def has_sent_step(campaign_id, contact_id, step_num) -> bool:
+    """
+    Has this exact step already gone to this contact?
+
+    Sending is three separate writes -- deliver over SMTP, log the send,
+    advance the enrollment -- and a restart between the first and the last
+    leaves the enrollment still queued on a step the contact has already
+    received. Without this check the scheduler simply sends it again. That
+    window is small, but a deploy lands in it eventually, and the cost is a
+    duplicate cold email to a prospect.
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM sends WHERE campaign_id=? AND contact_id=? AND step_num=? LIMIT 1",
+            (campaign_id, contact_id, step_num),
+        ).fetchone()
+        return row is not None
+
+
+# Below this many sends a bounce rate is noise, not signal: one bad address in
+# a list of twelve reads as 8% and trips a 5% threshold, pausing the whole
+# campaign on its first typo'd scrape. The operator experiences that as the
+# campaign stopping for no visible reason.
+BOUNCE_RATE_MIN_SENDS = 20
+
+
 def get_bounce_rate(campaign_id):
     with get_db() as conn:
         total = conn.execute(
@@ -1972,6 +2170,29 @@ def get_bounce_rate(campaign_id):
             (campaign_id,)
         ).fetchone()[0]
         return (bounced / total * 100) if total > 0 else 0.0
+
+
+def bounce_breaker_should_pause(campaign_id, threshold_pct) -> tuple:
+    """
+    Whether the bounce circuit-breaker should fire. Returns (should_pause, rate, sends).
+
+    Gated on volume as well as rate. The rate alone is meaningless early on --
+    a single bounce out of the first handful of sends exceeds any sane
+    threshold -- so the breaker waits until there is enough traffic for the
+    percentage to mean something.
+    """
+    rate  = get_bounce_rate(campaign_id)
+    sends = get_campaign_send_total(campaign_id)
+    return (sends >= BOUNCE_RATE_MIN_SENDS and rate >= threshold_pct), rate, sends
+
+
+def get_campaign_send_total(campaign_id) -> int:
+    """Every email this campaign has ever sent, across all days."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM sends WHERE campaign_id=?", (campaign_id,)
+        ).fetchone()
+        return row[0] if row else 0
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

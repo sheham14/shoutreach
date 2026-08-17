@@ -116,11 +116,36 @@ function enrollBadge(s) {
   return `<span class="badge ${map[s]||'badge-gray'}">${s}</span>`;
 }
 
+// no_website was missing from this map, so the strongest lead signal the
+// scraper produces rendered as a grey "no_website" string — the one status
+// worth spotting looked like the least important thing in the row.
+const CONTACT_STATUS_META = {
+  active:       { cls: 'badge-green', label: 'Active' },
+  bounced:      { cls: 'badge-red',   label: 'Bounced' },
+  unsubscribed: { cls: 'badge-gray',  label: 'Unsubscribed' },
+  deleted:      { cls: 'badge-gray',  label: 'Deleted' },
+  form_only:    { cls: 'badge-amber', label: 'Form only' },
+  no_email:     { cls: 'badge-blue',  label: 'No email' },
+  no_website:   { cls: 'badge-red',   label: 'No website' },
+};
+
 function contactStatusBadge(s) {
-  const map = {
-    active: 'badge-green', bounced: 'badge-red',
-    unsubscribed: 'badge-gray', deleted: 'badge-gray',
-    form_only: 'badge-amber', no_email: 'badge-blue',
-  };
-  return `<span class="badge ${map[s]||'badge-gray'}">${s}</span>`;
+  const meta = CONTACT_STATUS_META[s] || { cls: 'badge-gray', label: s };
+  return `<span class="badge ${meta.cls}">${esc(meta.label)}</span>`;
+}
+
+// The pill that rides next to the company name, rather than in the status
+// column you have to scroll for. Only the states that change what you do:
+// no website is the strongest pitch for a web-design offer, and a business
+// with a site but no findable address is a call rather than an email.
+function contactSignalPill(c) {
+  if (c.status === 'no_website') {
+    return `<span class="badge badge-red" style="margin-left:6px;font-size:10px"
+                  title="Google Maps lists this business with no website at all">No website</span>`;
+  }
+  if (c.status === 'form_only' || c.status === 'no_email') {
+    return `<span class="badge badge-amber" style="margin-left:6px;font-size:10px"
+                  title="Has a website but no email address was found — reachable by phone">No email</span>`;
+  }
+  return '';
 }

@@ -26,6 +26,22 @@
                        max-width:260px;font-family:var(--font);cursor:pointer">
           <option value="">All lists</option>
         </select>
+        <!-- The call sheet: "no website" is the strongest pitch for a
+             web-design offer, and it was previously only findable by reading
+             the status column row by row. -->
+        <select id="contacts-status-filter" onchange="contactFilterChanged()"
+                title="Filter by what the scraper found for each business"
+                style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+                       padding:6px 10px;color:var(--text);font-size:13px;outline:none;
+                       font-family:var(--font);cursor:pointer">
+          <option value="">Any status</option>
+          <option value="no_website">No website</option>
+          <option value="no_email">No email</option>
+          <option value="form_only">Form only</option>
+          <option value="active">Emailable</option>
+          <option value="bounced">Bounced</option>
+          <option value="unsubscribed">Unsubscribed</option>
+        </select>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
           <input type="checkbox" id="contacts-show-deleted" onchange="contactFilterChanged()" style="cursor:pointer" />
           Show deleted

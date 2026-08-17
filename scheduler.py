@@ -76,13 +76,18 @@ def process_queue():
                 continue
 
             # ── Bounce rate circuit-breaker ──────────────────────────────────
-            bounce_rate = db.get_bounce_rate(cid)
-            if bounce_rate >= campaign["bounce_pause_pct"]:
+            # Volume-gated: see db.bounce_breaker_should_pause. A rate over a
+            # handful of sends is noise, and pausing on it looks like the
+            # campaign stopping for no reason.
+            should_pause, bounce_rate, sends_so_far = db.bounce_breaker_should_pause(
+                cid, campaign["bounce_pause_pct"]
+            )
+            if should_pause:
                 db.update_campaign(cid, status="paused")
                 db.add_log(
                     f"⛔ Campaign '{campaign['name']}' AUTO-PAUSED — "
                     f"bounce rate {bounce_rate:.1f}% exceeded threshold "
-                    f"{campaign['bounce_pause_pct']}%",
+                    f"{campaign['bounce_pause_pct']}% over {sends_so_far} sends",
                     "ERROR"
                 )
                 continue
@@ -110,6 +115,20 @@ def process_queue():
                 step = steps.get(step_num)
                 if not step:
                     db.complete_enrollment(enrollment["enroll_id"])
+                    continue
+
+                # ── Already delivered? ───────────────────────────────────────
+                # A restart between the SMTP handoff and advance_enrollment
+                # leaves the enrollment queued on a step the contact already
+                # received. Recover by advancing rather than sending again --
+                # the send is recorded, so the sequence just resumes.
+                if db.has_sent_step(cid, enrollment["contact_id"], step_num):
+                    db.add_log(
+                        f"↷ Step {step_num} was already sent to {enrollment['email']} — "
+                        f"advancing without re-sending",
+                        "WARN",
+                    )
+                    _advance_after_step(db, campaign, steps, enrollment, step_num)
                     continue
 
                 # ── Send the email ───────────────────────────────────────────
@@ -148,29 +167,7 @@ def process_queue():
                 )
 
                 if success:
-                    # Advance to next step or mark complete
-                    next_step = step_num + 1
-                    if next_step in steps:
-                        delay_days = steps[next_step]["delay_days"]
-                        # Schedule in campaign timezone so send_start_hour is local time
-                        tz_name = (campaign.get("timezone") or "").strip()
-                        try:
-                            from zoneinfo import ZoneInfo
-                            tz = ZoneInfo(tz_name) if tz_name else datetime.timezone.utc
-                        except Exception:
-                            tz = datetime.timezone.utc
-                        now_local = datetime.datetime.now(tz)
-                        next_local = (now_local + datetime.timedelta(days=delay_days)).replace(
-                            hour=campaign["send_start_hour"],
-                            minute=random.randint(0, 30),
-                            second=0,
-                            microsecond=0,
-                        )
-                        # Store as UTC string for consistent DB comparison
-                        next_dt = next_local.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                        db.advance_enrollment(enrollment["enroll_id"], next_step, next_dt)
-                    else:
-                        db.complete_enrollment(enrollment["enroll_id"])
+                    _advance_after_step(db, campaign, steps, enrollment, step_num)
 
                 elif err == "bounce":
                     pass  # already handled in sender.send_email
@@ -186,6 +183,40 @@ def process_queue():
     except Exception as e:
         db.add_log(f"Scheduler error: {e}", "ERROR")
         logger.exception("process_queue error")
+
+
+def _advance_after_step(db, campaign, steps, enrollment, step_num):
+    """
+    Move an enrollment past the step just delivered.
+
+    Shared by the normal send path and the already-sent recovery path, which
+    must schedule the follow-up identically -- a second copy of this timezone
+    arithmetic would drift, and the recovery path is the one nobody watches.
+    """
+    next_step = step_num + 1
+    if next_step not in steps:
+        db.complete_enrollment(enrollment["enroll_id"])
+        return
+
+    delay_days = steps[next_step]["delay_days"]
+    # Schedule in campaign timezone so send_start_hour is local time.
+    tz_name = (campaign.get("timezone") or "").strip()
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name) if tz_name else datetime.timezone.utc
+    except Exception:
+        tz = datetime.timezone.utc
+
+    now_local  = datetime.datetime.now(tz)
+    next_local = (now_local + datetime.timedelta(days=delay_days)).replace(
+        hour=campaign["send_start_hour"],
+        minute=random.randint(0, 30),
+        second=0,
+        microsecond=0,
+    )
+    # Store as UTC string for consistent DB comparison.
+    next_dt = next_local.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    db.advance_enrollment(enrollment["enroll_id"], next_step, next_dt)
 
 
 def _get_campaign_today_count(campaign_id):

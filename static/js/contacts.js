@@ -61,6 +61,8 @@ function _contactQueryString(extra = {}) {
   const q = (document.getElementById('contacts-search')?.value || '').trim();
   if (q) p.set('q', q);
   if (contactSourceId) p.set('source_job_id', contactSourceId);
+  const status = document.getElementById('contacts-status-filter')?.value || '';
+  if (status) p.set('status', status);
   if (document.getElementById('contacts-show-deleted')?.checked) p.set('include_deleted', '1');
   Object.entries(extra).forEach(([k, v]) => p.set(k, v));
   return p.toString();
@@ -233,6 +235,9 @@ function renderContactsTable() {
       if (col.key === 'created_at') {
         const d = (c.created_at || '').split('T')[0] || (c.created_at || '').split(' ')[0];
         return `<td class="mono text-muted" style="font-size:11px">${esc(d)}</td>`;
+      }
+      if (col.key === 'company') {
+        return `<td>${esc(c.company)}${contactSignalPill(c)}</td>`;
       }
       if (col.key === 'email') return `<td class="mono" style="font-size:12px">${esc(c.email)}</td>`;
       if (col.key === 'phone') return `<td class="mono" style="font-size:12px">${esc(c.phone)}</td>`;
