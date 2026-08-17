@@ -1,6 +1,14 @@
-# 📬 Outreach System — Local Cold Email Engine
+# 📬 ShoutReach — Outreach Engine
 
-A fully local cold email outreach system. No SaaS fees. Runs on your machine.
+Find local businesses, email them, and call them — from one place. Scrapes
+Google Maps for leads, runs cold email sequences with A/B variants and reply
+detection, and gives you a call queue with a script and dispositions for the
+ones worth phoning.
+
+The two channels share one contact list and one answer: a lead who says no on
+the phone stops receiving emails, and an unsubscribe stops the calls.
+
+Self-hosted. No per-seat SaaS fees. Runs on a small VM, or on your own machine.
 
 ---
 
@@ -15,7 +23,7 @@ A fully local cold email outreach system. No SaaS fees. Runs on your machine.
 
 ```bash
 # 1. Install dependencies
-pip install flask
+pip install -r requirements.txt
 
 # 2. Start the system
 python app.py
@@ -474,11 +482,11 @@ already where you'll be looking.
 ## File Structure
 
 ```
-outreach/
+shoutreach/
 ├── app.py                     # Flask web app & API routes
 ├── db.py                      # SQLite database layer
 ├── sender.py                  # Email sending engine (SMTP + IMAP)
-├── scheduler.py               # Background job runner
+├── scheduler.py               # Background job runner — sends, replies, bounces
 ├── email_validator.py         # MX record validation
 │
 ├── gmaps_email_scraper.py     # Scraping logic (runs on YOUR machine)
@@ -487,12 +495,15 @@ outreach/
 ├── scraper_output/            # Scraped CSVs (git-ignored)
 ├── cookies/                   # Saved Maps browser sessions (git-ignored)
 │
-├── templates/, static/        # Dashboard UI
-├── tests/                     # python tests/<name>.py
+├── templates/, static/        # Dashboard UI — sections/calling.html + js/calling.js
+│                              # are the cold-calling screen
+├── tests/                     # python tests/<name>.py — 13 files, no framework
 ├── docs/audits/               # Audit findings and their resolution state
+├── .github/workflows/         # Deploy on push to master, over SSH
 ├── requirements.txt           # Server
 ├── requirements-worker.txt    # Local worker
-└── outreach.db                # Created automatically on first run
+└── outreach.db                # Created automatically on first run; migrations
+                               # run at startup and are additive and idempotent
 ```
 
 ---
