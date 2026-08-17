@@ -24,7 +24,7 @@ import sys
 import threading
 import time as _time
 from collections import defaultdict, deque
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import wraps
 from urllib.parse import urlparse
 from flask import (
@@ -1594,6 +1594,154 @@ def api_set_enrollment_status(enroll_id):
 @app.route("/api/logs")
 def api_logs():
     return jsonify(db.get_logs(100))
+
+
+# ── API: Cold calling ─────────────────────────────────────────────────────────
+
+@app.route("/api/calls/queue", methods=["GET"])
+@admin_required
+def api_call_queue():
+    """The leads to work now, plus what is waiting in the other buckets."""
+    bucket = request.args.get("bucket", "today")
+    if bucket not in ("today", "new", "upcoming", "all"):
+        bucket = "today"
+    source_job_id  = request.args.get("source_job_id") or None
+    only_no_site   = request.args.get("no_website") == "1"
+
+    leads = db.get_call_queue(bucket, source_job_id=source_job_id,
+                              only_no_website=only_no_site)
+    # Prior contact is reported, not hidden: an emailed lead with no reply is
+    # still worth dialling, one that already answered is not, and only the
+    # operator can tell those apart.
+    for lead in leads:
+        lead["touch"] = db.get_touch_history(lead["id"])
+
+    return jsonify({
+        "bucket":   bucket,
+        "leads":    leads,
+        "counts":   db.get_call_queue_counts(source_job_id=source_job_id,
+                                             only_no_website=only_no_site),
+        "outcomes": [
+            {"key": k, "label": v[0], "terminal": v[1],
+             "stops_email": v[2], "wants_next_call": v[3]}
+            for k, v in db.CALL_OUTCOMES.items()
+        ],
+        "attempt_limit": db.CALL_ATTEMPT_LIMIT,
+    })
+
+
+@app.route("/api/calls/log", methods=["POST"])
+@admin_required
+def api_log_call():
+    d = request.json or {}
+    try:
+        contact_id = int(d.get("contact_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "A contact is required"}), 400
+
+    outcome = (d.get("outcome") or "").strip()
+    if outcome not in db.CALL_OUTCOMES:
+        return jsonify({"ok": False, "error": f"Unknown outcome '{outcome}'"}), 400
+
+    next_call_at = (d.get("next_call_at") or "").strip() or None
+    if db.CALL_OUTCOMES[outcome][3] and not next_call_at:
+        return jsonify({
+            "ok": False,
+            "error": f"'{db.CALL_OUTCOMES[outcome][0]}' needs a date and time",
+        }), 400
+    if next_call_at:
+        # Stored as the same 'YYYY-MM-DD HH:MM:SS' shape everything else uses,
+        # so the queue's datetime() comparison works.
+        next_call_at = next_call_at.replace("T", " ")
+        if len(next_call_at) == 16:
+            next_call_at += ":00"
+
+    result = db.log_call(contact_id, outcome, d.get("notes", ""), next_call_at)
+    contact = db.get_contact(contact_id)
+    label = db.CALL_OUTCOMES[outcome][0]
+    db.add_log(f"☎ {label} — {(contact or {}).get('company') or contact_id}")
+    if result["stopped_email"]:
+        db.add_log(f"  ↳ email sequence stopped for {(contact or {}).get('company') or contact_id}")
+    return jsonify({"ok": True, **result})
+
+
+@app.route("/api/calls/contact/<int:cid>", methods=["GET"])
+@admin_required
+def api_call_contact(cid):
+    contact = db.get_contact(cid)
+    if not contact:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({
+        "contact": contact,
+        "history": db.get_call_history(cid),
+        "touch":   db.get_touch_history(cid),
+    })
+
+
+@app.route("/api/call-script", methods=["GET"])
+@admin_required
+def api_get_call_script():
+    return jsonify(db.get_active_call_script())
+
+
+@app.route("/api/call-script", methods=["PUT"])
+@admin_required
+def api_save_call_script():
+    d = request.json or {}
+    script = db.get_active_call_script()
+    sections = d.get("sections")
+    if not isinstance(sections, list):
+        return jsonify({"ok": False, "error": "sections must be a list"}), 400
+    clean = [
+        {"title": str(s.get("title", ""))[:120], "body": str(s.get("body", ""))}
+        for s in sections if isinstance(s, dict)
+    ]
+    db.save_call_script(script["id"], d.get("name") or script["name"], clean)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/calls/<int:cid>/ics", methods=["GET"])
+@admin_required
+def api_call_ics(cid):
+    """
+    A calendar invite for a booked meeting.
+
+    An .ics download rather than a Google Calendar integration: it works with
+    every calendar, needs no OAuth consent screen and no refresh tokens to keep
+    alive, and the in-app queue already covers callbacks. Real sync is only
+    worth building if two-way updates start to matter.
+    """
+    contact = db.get_contact(cid)
+    if not contact or not contact.get("next_call_at"):
+        return jsonify({"error": "No scheduled time for this contact"}), 404
+
+    try:
+        start = datetime.strptime(contact["next_call_at"][:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return jsonify({"error": "Unreadable scheduled time"}), 400
+    end = start + timedelta(minutes=30)
+
+    def _esc(text):
+        return (str(text or "").replace("\\", "\\\\").replace(",", "\\,")
+                .replace(";", "\\;").replace("\n", "\\n"))
+
+    company = contact.get("company") or contact.get("email") or f"Contact {cid}"
+    lines = [
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//ShoutReach//Calls//EN",
+        "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "BEGIN:VEVENT",
+        f"UID:shoutreach-call-{cid}-{int(start.timestamp())}@shoutreach",
+        f"DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}",
+        f"DTSTART:{start.strftime('%Y%m%dT%H%M%S')}",
+        f"DTEND:{end.strftime('%Y%m%dT%H%M%S')}",
+        f"SUMMARY:Call — {_esc(company)}",
+        f"DESCRIPTION:{_esc('Phone: ' + (contact.get('phone') or 'n/a'))}"
+        f"\\n{_esc('Website: ' + (contact.get('website') or 'none'))}",
+        "END:VEVENT", "END:VCALENDAR",
+    ]
+    resp = make_response("\r\n".join(lines) + "\r\n")
+    resp.headers["Content-Type"] = "text/calendar; charset=utf-8"
+    resp.headers["Content-Disposition"] = f'attachment; filename="call-{cid}.ics"'
+    return resp
 
 
 # ── API: Database viewer ───────────────────────────────────────────────────────

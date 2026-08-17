@@ -1,0 +1,96 @@
+<div class="section" id="section-calling">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Cold Calling</div>
+      <div class="page-sub">Work the list — your notebook while you dial</div>
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-ghost" onclick="toggleScriptEditor()">✎ Edit script</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadCallQueue()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <!-- Buckets. "Today" first because it is the work: callbacks you promised,
+       oldest first. New leads are the pile you dip into once that's clear. -->
+  <div class="flex gap-2" style="margin-bottom:16px;flex-wrap:wrap">
+    <button class="btn btn-primary" id="cq-tab-today"    onclick="setCallBucket('today')">Due now <span class="badge badge-gray" id="cq-count-today">0</span></button>
+    <button class="btn btn-ghost"   id="cq-tab-new"      onclick="setCallBucket('new')">Never called <span class="badge badge-gray" id="cq-count-new">0</span></button>
+    <button class="btn btn-ghost"   id="cq-tab-upcoming" onclick="setCallBucket('upcoming')">Scheduled <span class="badge badge-gray" id="cq-count-upcoming">0</span></button>
+    <button class="btn btn-ghost"   id="cq-tab-all"      onclick="setCallBucket('all')">All callable</button>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;margin-left:8px;white-space:nowrap">
+      <input type="checkbox" id="cq-no-website" onchange="loadCallQueue()" style="cursor:pointer" />
+      No website only
+    </label>
+    <select id="cq-source-filter" onchange="loadCallQueue()"
+            style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+                   padding:6px 10px;color:var(--text);font-size:13px;outline:none;
+                   max-width:240px;font-family:var(--font);cursor:pointer">
+      <option value="">All lists</option>
+    </select>
+  </div>
+
+  <div id="cq-script-editor" style="display:none;margin-bottom:20px"></div>
+
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,420px);gap:20px;align-items:start">
+
+    <!-- Left: the queue, then the lead you're on -->
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+          <div class="card-title" id="cq-list-title">Queue</div>
+          <span class="text-muted text-small mono" id="cq-list-count"></span>
+        </div>
+        <div class="table-wrap" style="max-height:300px;overflow-y:auto">
+          <table>
+            <thead><tr><th>Business</th><th>Phone</th><th>Attempts</th><th>Due</th><th></th></tr></thead>
+            <tbody id="cq-table"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="cq-lead-card" style="display:none;padding:20px">
+        <div class="flex items-center" style="margin-bottom:4px;gap:8px;flex-wrap:wrap">
+          <div class="card-title" id="cq-lead-name" style="font-size:18px"></div>
+          <span id="cq-lead-pills"></span>
+        </div>
+        <div id="cq-lead-meta" class="text-muted text-small" style="margin-bottom:12px"></div>
+        <div id="cq-lead-warning" style="display:none;margin-bottom:12px;padding:8px 12px;border-radius:6px;
+             background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);font-size:12px;color:var(--amber)"></div>
+
+        <div class="form-group">
+          <label>Notes</label>
+          <textarea id="cq-notes" style="min-height:110px"
+                    placeholder="What they said, who you spoke to, anything worth remembering next time…"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label>Outcome</label>
+          <div id="cq-outcomes" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        </div>
+
+        <div class="form-group" id="cq-next-wrap" style="display:none">
+          <label id="cq-next-label">Next call</label>
+          <input type="datetime-local" id="cq-next-at" />
+          <div class="form-hint" id="cq-next-hint">Puts this lead back in "Due now" at that time.</div>
+        </div>
+
+        <div class="flex gap-2" style="flex-wrap:wrap;margin-top:4px">
+          <button class="btn btn-primary" onclick="saveCallOutcome()">Save &amp; next lead</button>
+          <button class="btn btn-ghost" onclick="skipCallLead()">Skip for now</button>
+          <a class="btn btn-ghost" id="cq-ics-link" style="display:none" href="#">⤓ Add to calendar</a>
+        </div>
+
+        <div id="cq-history" style="margin-top:18px"></div>
+      </div>
+    </div>
+
+    <!-- Right: the script, rendered for whoever is on screen -->
+    <div class="card" style="padding:18px;position:sticky;top:16px;max-height:calc(100vh - 40px);overflow-y:auto">
+      <div class="card-title" style="margin-bottom:4px">Script</div>
+      <div class="text-muted text-small" id="cq-script-for" style="margin-bottom:12px">
+        Pick a lead to fill in their details.
+      </div>
+      <div id="cq-script-body"></div>
+    </div>
+  </div>
+</div>

@@ -7,6 +7,7 @@ function showSection(name) {
   if (name === 'dashboard')  refreshDashboard();
   if (name === 'campaigns')  loadCampaigns();
   if (name === 'contacts')   loadContacts();
+  if (name === 'calling')    loadCalling();
   if (name === 'logs')       loadLogs();
   if (name === 'settings')   { loadSettings(); loadAccounts(); loadUsers(); }
   if (name === 'scraper')    loadScraper();

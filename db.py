@@ -172,6 +172,32 @@ def init_db():
                 finished_at  TEXT
             );
 
+            -- Every call attempt, append-only. The contact's current state is
+            -- denormalized onto contacts (call_status, next_call_at,
+            -- call_attempts) so the queue query stays a single indexed scan,
+            -- but the history is what makes "no answer Tue, voicemail Thu,
+            -- booked Mon" visible -- and that sequence is the thing you want
+            -- in front of you before dialling someone a fourth time.
+            CREATE TABLE IF NOT EXISTS call_log (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                contact_id   INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                outcome      TEXT    NOT NULL,
+                notes        TEXT    NOT NULL DEFAULT '',
+                next_call_at TEXT,
+                called_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- Sections are JSON [{title, body}] rather than columns: the parts
+            -- of a call script are the operator's to name and reorder, and a
+            -- fixed schema would decide that for them.
+            CREATE TABLE IF NOT EXISTS call_scripts (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT    NOT NULL DEFAULT 'Default script',
+                sections   TEXT    NOT NULL DEFAULT '[]',
+                is_active  INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS users (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 username      TEXT    NOT NULL UNIQUE,
@@ -230,6 +256,12 @@ def init_db():
             # business". Kept beside the original rather than replacing it --
             # the display value is what you want on screen.
             "ALTER TABLE contacts ADD COLUMN phone_normalized TEXT NOT NULL DEFAULT ''",
+            # Current calling state, denormalized from call_log so the queue is
+            # one indexed scan rather than a correlated subquery per contact.
+            # '' means never called, which is what puts a lead in the new pile.
+            "ALTER TABLE contacts ADD COLUMN call_status TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE contacts ADD COLUMN next_call_at TEXT DEFAULT NULL",
+            "ALTER TABLE contacts ADD COLUMN call_attempts INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -271,7 +303,10 @@ def init_db():
                     rating            REAL DEFAULT NULL,
                     review_count      INTEGER DEFAULT NULL,
                     source_job_id     INTEGER DEFAULT NULL,
-                    phone_normalized  TEXT NOT NULL DEFAULT ''
+                    phone_normalized  TEXT NOT NULL DEFAULT '',
+                    call_status       TEXT NOT NULL DEFAULT '',
+                    next_call_at      TEXT DEFAULT NULL,
+                    call_attempts     INTEGER NOT NULL DEFAULT 0
                 );
                 INSERT INTO contacts_new
                     SELECT id, email, first_name, last_name, company, extra, status,
@@ -280,7 +315,8 @@ def init_db():
                            COALESCE(domain,''), duplicate_of,
                            COALESCE(phone,''), COALESCE(category,''),
                            rating, review_count, source_job_id,
-                           COALESCE(phone_normalized,'')
+                           COALESCE(phone_normalized,''), COALESCE(call_status,''),
+                           next_call_at, COALESCE(call_attempts, 0)
                     FROM contacts;
                 DROP TABLE contacts;
                 ALTER TABLE contacts_new RENAME TO contacts;
@@ -307,6 +343,9 @@ def init_db():
             # Backs has_sent_step, which runs once per email before sending.
             "CREATE INDEX IF NOT EXISTS sends_dedupe_idx ON sends(campaign_id, contact_id, step_num)",
             "CREATE INDEX IF NOT EXISTS contacts_phone_idx ON contacts(phone_normalized) WHERE phone_normalized != ''",
+            "CREATE INDEX IF NOT EXISTS contacts_next_call_idx ON contacts(next_call_at) WHERE next_call_at IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS contacts_call_status_idx ON contacts(call_status)",
+            "CREATE INDEX IF NOT EXISTS call_log_contact_idx ON call_log(contact_id, called_at)",
         ):
             try:
                 conn.execute(idx_sql)
@@ -1308,6 +1347,12 @@ def get_contact_sources():
     return out
 
 
+def get_contact(contact_id: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM contacts WHERE id=?", (contact_id,)).fetchone()
+        return dict(row) if row else None
+
+
 def get_contact_by_email(email_addr: str):
     with get_db() as conn:
         row = conn.execute(
@@ -2193,6 +2238,202 @@ def get_campaign_send_total(campaign_id) -> int:
             "SELECT COUNT(*) FROM sends WHERE campaign_id=?", (campaign_id,)
         ).fetchone()
         return row[0] if row else 0
+
+
+# ── Cold calling ──────────────────────────────────────────────────────────────
+#
+# Calling is kept separate from enrollments on purpose. An email sequence is a
+# schedule the machine runs; a call list is a pile you work through in a
+# sitting, and its states ("no answer, try again", "booked") do not map onto
+# the enrollment lifecycle. Overloading one status field with both would go
+# wrong the first time a contact was mid-sequence and also mid-callback.
+
+# outcome -> (label, is_terminal, stops_email, wants_next_call)
+CALL_OUTCOMES = {
+    "no_answer":      ("No answer",        False, False, False),
+    "voicemail":      ("Left voicemail",   False, False, False),
+    "callback":       ("Callback booked",  False, False, True),
+    "interested":     ("Interested",       False, False, True),
+    "proposal_sent":  ("Proposal sent",    False, False, True),
+    "booked":         ("Meeting booked",   True,  True,  True),
+    "not_interested": ("Not interested",   True,  True,  False),
+    "wrong_number":   ("Wrong number",     True,  True,  False),
+    "do_not_call":    ("Do not call",      True,  True,  False),
+}
+
+# Attempts past this without reaching anyone: the lead is spending your time.
+CALL_ATTEMPT_LIMIT = 6
+
+_DEFAULT_SCRIPT_SECTIONS = [
+    {"title": "Opening",            "body": ""},
+    {"title": "Qualifying questions", "body": ""},
+    {"title": "Common objections",  "body": ""},
+    {"title": "Discovery call",     "body": ""},
+    {"title": "Close",              "body": ""},
+    {"title": "Voicemail",          "body": ""},
+]
+
+
+def log_call(contact_id: int, outcome: str, notes: str = "", next_call_at: str = None) -> dict:
+    """
+    Record a call attempt and move the contact's calling state forward.
+
+    Terminal outcomes also stop any live email sequence. Telling someone "not
+    interested" on the phone and then having the scheduler send them a cheerful
+    follow-up two days later is the specific embarrassment this prevents --
+    the two channels have to share the same answer.
+    """
+    if outcome not in CALL_OUTCOMES:
+        raise ValueError(f"Unknown call outcome: {outcome}")
+
+    _label, is_terminal, stops_email, wants_next = CALL_OUTCOMES[outcome]
+
+    # "Booked" is both terminal and dated: the lead leaves the queue, but the
+    # meeting time is the most valuable thing on the record and the calendar
+    # invite is generated from it. Clearing the date for every terminal outcome
+    # threw that away. A date is dropped only when the outcome has no use for
+    # one -- otherwise a dead lead would carry a stale callback forever.
+    keeps_date = wants_next or not is_terminal
+
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO call_log(contact_id, outcome, notes, next_call_at)
+            VALUES(?,?,?,?)
+        """, (contact_id, outcome, notes or "", next_call_at or None))
+
+        # Retirement from the queue comes from call_status being terminal, not
+        # from clearing the date, so keeping a booked meeting's time cannot put
+        # the lead back in tomorrow's list.
+        conn.execute("""
+            UPDATE contacts
+               SET call_status   = ?,
+                   next_call_at  = ?,
+                   call_attempts = call_attempts + 1
+             WHERE id = ?
+        """, (outcome, (next_call_at or None) if keeps_date else None, contact_id))
+
+        if stops_email:
+            conn.execute("""
+                UPDATE enrollments SET status='completed'
+                 WHERE contact_id = ?
+                   AND status NOT IN ('completed','replied','unsubscribed','bounced')
+            """, (contact_id,))
+
+        # "Do not call" is a request about contact, not about the phone. It has
+        # to suppress email too, or honouring it is only half true.
+        if outcome == "do_not_call":
+            conn.execute(
+                "UPDATE contacts SET status='unsubscribed' WHERE id=? AND status != 'deleted'",
+                (contact_id,),
+            )
+
+    return {"outcome": outcome, "terminal": is_terminal, "stopped_email": stops_email}
+
+
+def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_website=False):
+    """
+    The leads to work right now.
+
+      today    -- callbacks due (including overdue), soonest first
+      new      -- never called, freshest leads first
+      upcoming -- callbacks scheduled beyond today
+      all      -- everything still callable
+
+    Terminal outcomes and unsubscribed contacts are excluded everywhere: a
+    finished lead should never reappear in a queue, whichever bucket is open.
+    """
+    terminal = [k for k, v in CALL_OUTCOMES.items() if v[1]]
+    placeholders = ",".join("?" * len(terminal))
+
+    where = [
+        f"(c.call_status = '' OR c.call_status NOT IN ({placeholders}))",
+        "c.status NOT IN ('deleted','unsubscribed')",
+        "COALESCE(c.phone,'') != ''",
+    ]
+    params = list(terminal)
+
+    if bucket == "today":
+        where.append("c.next_call_at IS NOT NULL AND datetime(c.next_call_at) <= datetime('now')")
+        order = "c.next_call_at ASC"
+    elif bucket == "new":
+        where.append("c.call_status = ''")
+        order = "c.created_at DESC"
+    elif bucket == "upcoming":
+        where.append("c.next_call_at IS NOT NULL AND datetime(c.next_call_at) > datetime('now')")
+        order = "c.next_call_at ASC"
+    else:
+        order = "c.next_call_at IS NULL, c.next_call_at ASC, c.created_at DESC"
+
+    if source_job_id:
+        where.append("c.source_job_id = ?")
+        params.append(int(source_job_id))
+    if only_no_website:
+        where.append("c.status = 'no_website'")
+
+    params.append(int(limit))
+    with get_db() as conn:
+        rows = conn.execute(f"""
+            SELECT c.* FROM contacts c
+             WHERE {' AND '.join(where)}
+             ORDER BY {order}
+             LIMIT ?
+        """, params).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_call_queue_counts(source_job_id=None, only_no_website=False):
+    """Bucket sizes, so the tabs can show what is waiting without loading it."""
+    return {
+        b: len(get_call_queue(b, limit=100000, source_job_id=source_job_id,
+                              only_no_website=only_no_website))
+        for b in ("today", "new", "upcoming")
+    }
+
+
+def get_call_history(contact_id: int):
+    with get_db() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM call_log WHERE contact_id=? ORDER BY called_at DESC, id DESC",
+            (contact_id,),
+        ).fetchall()]
+
+
+def get_active_call_script() -> dict:
+    """
+    The script shown beside the dialler, creating an empty one on first use.
+
+    Seeded with section headings and no content: the words are the operator's,
+    and inventing a script for them would put language in their mouth that
+    they have to notice and delete mid-call.
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM call_scripts WHERE is_active=1 ORDER BY id LIMIT 1"
+        ).fetchone()
+        if not row:
+            cur = conn.execute(
+                "INSERT INTO call_scripts(name, sections, is_active) VALUES(?,?,1)",
+                ("Default script", json.dumps(_DEFAULT_SCRIPT_SECTIONS)),
+            )
+            row = conn.execute(
+                "SELECT * FROM call_scripts WHERE id=?", (cur.lastrowid,)
+            ).fetchone()
+
+    out = dict(row)
+    try:
+        out["sections"] = json.loads(out["sections"] or "[]")
+    except Exception:
+        out["sections"] = list(_DEFAULT_SCRIPT_SECTIONS)
+    return out
+
+
+def save_call_script(script_id: int, name: str, sections: list):
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE call_scripts
+               SET name=?, sections=?, updated_at=datetime('now')
+             WHERE id=?
+        """, (name or "Default script", json.dumps(sections or []), script_id))
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

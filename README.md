@@ -391,6 +391,52 @@ Click **▶ Activate**. The scheduler takes over.
 
 ---
 
+## Cold Calling
+
+A working queue, not a CRM screen. You dial on your own phone; this is the
+notebook beside it.
+
+**The buckets.** *Due now* is callbacks you promised, oldest first. *Never
+called* is the fresh pile. *Scheduled* is everything booked for later. Leads
+without a phone number never appear, and a finished lead never reappears.
+
+**The loop.** Opening the section drops you straight into the first lead. Write
+notes, pick an outcome, press **Save & next lead** — you stay in the queue
+rather than returning to a table between calls.
+
+**Outcomes** are a state machine, not free text:
+
+| Outcome | Effect |
+|---|---|
+| No answer / Left voicemail | Stays in the queue, attempt count goes up |
+| Callback booked / Interested / Proposal sent | Requires a date, returns to *Due now* then |
+| Meeting booked | Leaves the queue, keeps the meeting time, offers a calendar file |
+| Not interested / Wrong number / Do not call | Terminal — **and stops any email sequence** |
+
+That last row is the point of keeping both channels in one tool. Saying "not
+interested" on the phone has to stop the emails, or the scheduler sends a
+cheerful follow-up two days later. **Do not call** goes further and
+unsubscribes the contact outright, because the request is about being
+contacted, not about the telephone.
+
+**The script** lives on the right, in sections you name yourself — the app
+ships them empty on purpose. Write `{{company}}` or `{{first_name|there}}` and
+they are filled in for whoever is on screen, using the same variable engine as
+the emails, so it reads *"Hi, is this Paradise Dental?"* rather than leaving
+you to substitute mid-sentence. Sections collapse individually so you can reach
+the right objection in a second.
+
+**Prior contact is shown, never used to hide a lead.** A lead you emailed with
+no reply is still worth ringing; one that already replied or opted out is not.
+The app tells you which and lets you decide.
+
+Booked meetings offer an `.ics` download rather than a calendar integration —
+it works with Google, Outlook and Apple alike, with no OAuth consent screen or
+refresh tokens to keep alive. Callbacks don't need one: the *Due now* queue is
+already where you'll be looking.
+
+---
+
 ## Anti-Spam Mechanisms (Built-in)
 
 | Protection                  | What it does                                                          |
@@ -520,6 +566,8 @@ python tests/test_accounts.py         # sending-account credential handling
 python tests/test_variants.py         # A/B variant assignment and backfill
 python tests/test_rendering.py        # {{variable}} substitution and fallbacks
 python tests/test_send_window.py      # sending days, send window, why-not-sending
+python tests/test_dedupe_and_guards.py # duplicate sends, bounce breaker, business identity
+python tests/test_calling.py          # call queue, outcomes, email crossover
 python tests/test_resilience.py       # worker batching and crash recovery
 python tests/test_security.py         # regression tests for closed audit findings
 
