@@ -201,6 +201,26 @@ def init_db():
             -- A named batch of leads to work: "10 dental clinics, St John's".
             -- Distinct from the scrape that found them, which groups by when
             -- you happened to scrape rather than by any decision you made.
+            -- What a call can result in. A table rather than a constant
+            -- because the useful vocabulary is the operator's, not the app's:
+            -- "callback booked" and "follow up sometime" are different things,
+            -- and forcing the second into the first puts a date in the system
+            -- that was never actually agreed with anyone.
+            --
+            -- requires_date is separate from "has a date": any outcome may
+            -- carry one, this only marks the ones that make no sense without.
+            CREATE TABLE IF NOT EXISTS call_outcome_types (
+                key           TEXT PRIMARY KEY,
+                label         TEXT    NOT NULL,
+                is_terminal   INTEGER NOT NULL DEFAULT 0,
+                stops_email   INTEGER NOT NULL DEFAULT 0,
+                requires_date INTEGER NOT NULL DEFAULT 0,
+                tone          TEXT    NOT NULL DEFAULT 'neutral',
+                sort_order    INTEGER NOT NULL DEFAULT 100,
+                is_builtin    INTEGER NOT NULL DEFAULT 0,
+                archived      INTEGER NOT NULL DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS call_campaigns (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 name       TEXT    NOT NULL,
@@ -413,6 +433,11 @@ def init_db():
                 )
         except Exception as exc:
             logger.warning("Freemail suppression repair skipped: %s", exc)
+
+        try:
+            _seed_call_outcomes(conn)
+        except Exception as exc:
+            logger.warning("Call outcome seeding skipped: %s", exc)
 
         # Comparable phone for rows scraped before the column existed, so
         # "have I already dialled this business" works on the list you already
@@ -2288,18 +2313,138 @@ def get_campaign_send_total(campaign_id) -> int:
 # the enrollment lifecycle. Overloading one status field with both would go
 # wrong the first time a contact was mid-sequence and also mid-callback.
 
-# outcome -> (label, is_terminal, stops_email, wants_next_call)
-CALL_OUTCOMES = {
-    "no_answer":      ("No answer",        False, False, False),
-    "voicemail":      ("Left voicemail",   False, False, False),
-    "callback":       ("Callback booked",  False, False, True),
-    "interested":     ("Interested",       False, False, True),
-    "proposal_sent":  ("Proposal sent",    False, False, True),
-    "booked":         ("Meeting booked",   True,  True,  True),
-    "not_interested": ("Not interested",   True,  True,  False),
-    "wrong_number":   ("Wrong number",     True,  True,  False),
-    "do_not_call":    ("Do not call",      True,  True,  False),
+# The outcomes every install starts with. Seeded into call_outcome_types on
+# first run; the operator adds their own alongside them.
+#
+# key: (label, is_terminal, stops_email, requires_date, tone, sort_order)
+_BUILTIN_CALL_OUTCOMES = {
+    "no_answer":      ("No answer",        False, False, False, "neutral", 10),
+    "voicemail":      ("Left voicemail",   False, False, False, "neutral", 20),
+    "callback":       ("Callback booked",  False, False, True,  "info",    30),
+    "interested":     ("Interested",       False, False, False, "good",    40),
+    "proposal_sent":  ("Proposal sent",    False, False, False, "good",    50),
+    "booked":         ("Meeting booked",   True,  True,  True,  "good",    60),
+    "not_interested": ("Not interested",   True,  True,  False, "bad",     70),
+    "wrong_number":   ("Wrong number",     True,  True,  False, "bad",     80),
+    "do_not_call":    ("Do not call",      True,  True,  False, "bad",     90),
 }
+
+
+def _seed_call_outcomes(conn):
+    """Insert the builtins once. Never updates them -- an operator who renamed
+    'Interested' to something that suits their pitch should keep that."""
+    for key, (label, term, stops, needs_date, tone, order) in _BUILTIN_CALL_OUTCOMES.items():
+        conn.execute("""
+            INSERT OR IGNORE INTO call_outcome_types
+                (key, label, is_terminal, stops_email, requires_date, tone,
+                 sort_order, is_builtin)
+            VALUES(?,?,?,?,?,?,?,1)
+        """, (key, label, int(term), int(stops), int(needs_date), tone, order))
+
+
+def get_call_outcomes(include_archived=False):
+    """Every outcome the operator can pick, keyed for lookup."""
+    where = "" if include_archived else "WHERE archived = 0"
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM call_outcome_types {where} ORDER BY sort_order, label"
+        ).fetchall()
+    return {r["key"]: dict(r) for r in rows}
+
+
+def get_call_outcome(key: str):
+    """One outcome, archived ones included -- historical rows still name them."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM call_outcome_types WHERE key=?", (key,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def terminal_outcome_keys():
+    with get_db() as conn:
+        return [r["key"] for r in conn.execute(
+            "SELECT key FROM call_outcome_types WHERE is_terminal = 1"
+        ).fetchall()]
+
+
+def _slugify_outcome(label: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "_", (label or "").lower()).strip("_")
+    return base[:40] or "outcome"
+
+
+def create_call_outcome(label, is_terminal=False, stops_email=False,
+                        requires_date=False, tone="neutral") -> str:
+    """
+    Add an outcome. Returns its key.
+
+    The key is derived from the label and then kept for good, because call_log
+    rows point at it -- renaming the label later changes what you see
+    everywhere, including on old calls, while the key underneath stays put.
+    """
+    with get_db() as conn:
+        base = _slugify_outcome(label)
+        key, n = base, 2
+        while conn.execute("SELECT 1 FROM call_outcome_types WHERE key=?", (key,)).fetchone():
+            key, n = f"{base}_{n}", n + 1
+        nxt = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) + 10 FROM call_outcome_types"
+        ).fetchone()[0]
+        conn.execute("""
+            INSERT INTO call_outcome_types
+                (key, label, is_terminal, stops_email, requires_date, tone,
+                 sort_order, is_builtin)
+            VALUES(?,?,?,?,?,?,?,0)
+        """, (key, (label or "").strip()[:60] or key, int(bool(is_terminal)),
+              int(bool(stops_email)), int(bool(requires_date)),
+              tone if tone in ("neutral", "good", "bad", "info") else "neutral", nxt))
+        return key
+
+
+def update_call_outcome(key: str, **fields):
+    """
+    Edit an outcome. The key is never editable.
+
+    Builtins can be relabelled and recoloured but keep their behaviour: the
+    code special-cases 'do_not_call' for unsubscribing and 'booked' for the
+    calendar file, so letting those flags be flipped would quietly break both.
+    """
+    row = get_call_outcome(key)
+    if not row:
+        return False
+    allowed = {"label", "tone", "sort_order"}
+    if not row["is_builtin"]:
+        allowed |= {"is_terminal", "stops_email", "requires_date", "archived"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    sets = ", ".join(f"{k}=?" for k in updates)
+    with get_db() as conn:
+        conn.execute(f"UPDATE call_outcome_types SET {sets} WHERE key=?",
+                     (*updates.values(), key))
+    return True
+
+
+def delete_call_outcome(key: str):
+    """
+    Remove a custom outcome, or archive it if calls already used it.
+
+    Returns ('deleted'|'archived'|'refused'). Archiving rather than deleting a
+    used outcome keeps old call records readable -- a history row saying
+    'outcome: follow_up_later' is useless once nothing can resolve that name.
+    """
+    row = get_call_outcome(key)
+    if not row or row["is_builtin"]:
+        return "refused"
+    with get_db() as conn:
+        used = conn.execute(
+            "SELECT 1 FROM call_log WHERE outcome=? LIMIT 1", (key,)
+        ).fetchone()
+        if used:
+            conn.execute("UPDATE call_outcome_types SET archived=1 WHERE key=?", (key,))
+            return "archived"
+        conn.execute("DELETE FROM call_outcome_types WHERE key=?", (key,))
+        return "deleted"
 
 # Attempts past this without reaching anyone: the lead is spending your time.
 CALL_ATTEMPT_LIMIT = 6
@@ -2372,7 +2517,7 @@ def get_call_campaigns():
     scale and keeps the counting rules in one readable place rather than a
     lattice of correlated subqueries.
     """
-    terminal = [k for k, v in CALL_OUTCOMES.items() if v[1]]
+    terminal = terminal_outcome_keys() or ["__none__"]
     placeholders = ",".join("?" * len(terminal))
 
     with get_db() as conn:
@@ -2414,10 +2559,16 @@ def log_call(contact_id: int, outcome: str, notes: str = "", next_call_at: str =
     follow-up two days later is the specific embarrassment this prevents --
     the two channels have to share the same answer.
     """
-    if outcome not in CALL_OUTCOMES:
+    spec = get_call_outcome(outcome)
+    if not spec:
         raise ValueError(f"Unknown call outcome: {outcome}")
 
-    _label, is_terminal, stops_email, wants_next = CALL_OUTCOMES[outcome]
+    is_terminal = bool(spec["is_terminal"])
+    stops_email = bool(spec["stops_email"])
+    # Any outcome may carry a date; requires_date only marks the ones that make
+    # no sense without one. That distinction is what lets "follow up later"
+    # exist without inventing a commitment nobody made.
+    wants_next  = bool(spec["requires_date"])
 
     # "Booked" is both terminal and dated: the lead leaves the queue, but the
     # meeting time is the most valuable thing on the record and the calendar
@@ -2475,7 +2626,7 @@ def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_websit
     Terminal outcomes and unsubscribed contacts are excluded everywhere: a
     finished lead should never reappear in a queue, whichever bucket is open.
     """
-    terminal = [k for k, v in CALL_OUTCOMES.items() if v[1]]
+    terminal = terminal_outcome_keys() or ["__none__"]
     placeholders = ",".join("?" * len(terminal))
 
     where = [
@@ -2570,6 +2721,60 @@ def reopen_call_lead(contact_id: int) -> bool:
             (contact_id,),
         )
         return cur.rowcount > 0
+
+
+def get_call_summary(call_campaign_id=None) -> dict:
+    """
+    Totals across calling, scoped to a campaign when one is selected so the
+    numbers agree with the list underneath rather than describing some wider
+    population the operator is not looking at.
+    """
+    terminal = terminal_outcome_keys() or ["__none__"]
+    tph = ",".join("?" * len(terminal))
+
+    scope, scope_params = "", []
+    if call_campaign_id:
+        scope = ("AND c.id IN (SELECT contact_id FROM call_campaign_members "
+                 "WHERE call_campaign_id = ?)")
+        scope_params = [int(call_campaign_id)]
+
+    with get_db() as conn:
+        row = conn.execute(f"""
+            SELECT
+              COUNT(*)                                                        AS leads,
+              SUM(CASE WHEN c.call_status = 'booked' THEN 1 ELSE 0 END)       AS booked,
+              SUM(CASE WHEN c.call_status = 'not_interested' THEN 1 ELSE 0 END) AS not_interested,
+              SUM(CASE WHEN c.next_call_at IS NOT NULL
+                        AND datetime(c.next_call_at) <= datetime('now')
+                        AND c.call_status NOT IN ({tph}) THEN 1 ELSE 0 END)   AS due
+              FROM contacts c
+             WHERE c.status != 'deleted' {scope}
+        """, (*terminal, *scope_params)).fetchone()
+
+        # Calls, not leads: one contact rung four times is four calls, and that
+        # is the number that reflects a day's work.
+        call_scope, call_params = "", []
+        if call_campaign_id:
+            call_scope = "WHERE call_campaign_id = ?"
+            call_params = [int(call_campaign_id)]
+        made = conn.execute(
+            f"SELECT COUNT(*) FROM call_log {call_scope}", call_params
+        ).fetchone()[0]
+        today_where = "WHERE DATE(called_at) = DATE('now')"
+        if call_campaign_id:
+            today_where += " AND call_campaign_id = ?"
+        today = conn.execute(
+            f"SELECT COUNT(*) FROM call_log {today_where}", call_params
+        ).fetchone()[0]
+
+    return {
+        "leads":          row["leads"] or 0,
+        "booked":         row["booked"] or 0,
+        "not_interested": row["not_interested"] or 0,
+        "due":            row["due"] or 0,
+        "calls_made":     made or 0,
+        "calls_today":    today or 0,
+    }
 
 
 def get_call_history(contact_id: int):

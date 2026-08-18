@@ -35,8 +35,15 @@ async function loadCallCampaigns() {
     sel.value = _callCampaignId;
   }
   _renderCampaignCards();
+  _toggleCampaignButtons();
+}
+
+function _toggleCampaignButtons() {
+  const on = _callCampaignId ? 'inline-flex' : 'none';
   const del = document.getElementById('cq-campaign-delete');
-  if (del) del.style.display = _callCampaignId ? 'inline-flex' : 'none';
+  const add = document.getElementById('cq-campaign-add');
+  if (del) del.style.display = on;
+  if (add) add.style.display = on;
 }
 
 function _renderCampaignCards() {
@@ -69,8 +76,7 @@ function setCallCampaign(id) {
   _callCampaignId = id ? String(id) : '';
   const sel = document.getElementById('cq-campaign');
   if (sel) sel.value = _callCampaignId;
-  const del = document.getElementById('cq-campaign-delete');
-  if (del) del.style.display = _callCampaignId ? 'inline-flex' : 'none';
+  _toggleCampaignButtons();
   _renderCampaignCards();
   loadCallQueue();
 }
@@ -99,6 +105,168 @@ async function deleteCallCampaign() {
   _callCampaignId = '';
   await loadCallCampaigns();
   loadCallQueue();
+}
+
+// ── Adding leads to a campaign ───────────────────────────────────────────────
+//
+// This lives on the calling page as well as in Contacts because that is where
+// you go looking after creating a campaign. Three routes in, mirroring how
+// contacts reach an email campaign: pick from the database, type a few, or
+// bring a CSV.
+
+let _aclTab = 'existing';
+let _aclSelected = new Set();
+let _aclRows = [];
+let _aclTimer = null;
+
+function openAddLeadsModal() {
+  if (!_callCampaignId) { toast('Pick a campaign first', 'err'); return; }
+  const c = _callCampaigns.find(x => String(x.id) === _callCampaignId);
+  document.getElementById('acl-campaign-name').textContent = c ? c.name : 'this campaign';
+  _aclSelected.clear();
+  document.getElementById('acl-search').value = '';
+  document.getElementById('acl-manual').value = '';
+  setAddLeadsTab('existing');
+  openModal('modal-add-call-leads');
+  aclSearch();
+}
+
+function setAddLeadsTab(tab) {
+  _aclTab = tab;
+  ['existing', 'manual', 'csv'].forEach(t => {
+    const btn = document.getElementById(`acl-tab-${t}`);
+    if (btn) {
+      btn.classList.toggle('btn-primary', t === tab);
+      btn.classList.toggle('btn-ghost', t !== tab);
+    }
+    const pane = document.getElementById(`acl-pane-${t}`);
+    if (pane) pane.style.display = t === tab ? 'block' : 'none';
+  });
+}
+
+function aclSearch() {
+  clearTimeout(_aclTimer);
+  _aclTimer = setTimeout(_aclFetch, 250);
+}
+
+async function _aclFetch() {
+  const p = new URLSearchParams({ per_page: 100 });
+  const q = document.getElementById('acl-search').value.trim();
+  if (q) p.set('q', q);
+  const status = document.getElementById('acl-status').value;
+  if (status) p.set('status', status);
+  if (document.getElementById('acl-uncalled').checked) p.set('call_status', 'none');
+
+  const data = await api('/api/contacts?' + p.toString());
+  _aclRows = (data && data.rows) || [];
+  _aclRenderTable(data ? data.total : 0);
+}
+
+function _aclRenderTable(total) {
+  const tbody = document.getElementById('acl-table');
+  document.getElementById('acl-count').textContent =
+    `${_aclSelected.size} selected · showing ${_aclRows.length} of ${total}`;
+  if (!_aclRows.length) {
+    tbody.innerHTML = '<tr><td colspan="4"><div class="empty-state"><p>No contacts match</p></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = _aclRows.map(c => `
+    <tr style="cursor:pointer" onclick="aclToggle(${c.id})">
+      <td><input type="checkbox" ${_aclSelected.has(c.id) ? 'checked' : ''}
+                 onclick="event.stopPropagation();aclToggle(${c.id})" style="cursor:pointer" /></td>
+      <td>${esc(c.company || c.email || '—')}${contactSignalPill(c)}</td>
+      <td class="mono" style="font-size:12px">${esc(c.phone || '—')}</td>
+      <td>${callStatusBadge(c.call_status)}</td>
+    </tr>`).join('');
+}
+
+function aclToggle(id) {
+  if (_aclSelected.has(id)) _aclSelected.delete(id); else _aclSelected.add(id);
+  _aclRenderTable(_aclRows.length);
+}
+
+function aclSelectAllShown() {
+  _aclRows.forEach(c => _aclSelected.add(c.id));
+  _aclRenderTable(_aclRows.length);
+}
+
+function aclClearSelection() {
+  _aclSelected.clear();
+  _aclRenderTable(_aclRows.length);
+}
+
+async function submitAddLeads() {
+  if (!_callCampaignId) return;
+
+  if (_aclTab === 'existing') {
+    if (!_aclSelected.size) { toast('Select at least one contact', 'err'); return; }
+    const res = await api(`/api/call-campaigns/${_callCampaignId}/members`, 'POST',
+                          { contact_ids: [..._aclSelected] });
+    if (!res || res.error) { toast((res && res.error) || 'Could not add them', 'err'); return; }
+    const dupes = res.already_present ? ` (${res.already_present} already in it)` : '';
+    toast(`Added ${res.added} lead${res.added === 1 ? '' : 's'}${dupes}`);
+
+  } else if (_aclTab === 'manual') {
+    // "Name, phone, website" per line. Deliberately forgiving about the tail:
+    // the name is the only part you always have when typing from a list.
+    const rows = document.getElementById('acl-manual').value
+      .split('\n').map(l => l.trim()).filter(Boolean)
+      .map(line => {
+        const [company, phone, website] = line.split(',').map(x => (x || '').trim());
+        return { company, phone: phone || '', website: website || '',
+                 status: website ? 'no_email' : 'no_website' };
+      })
+      .filter(r => r.company);
+    if (!rows.length) { toast('Nothing to add — one business per line', 'err'); return; }
+
+    const imported = await api('/api/contacts/import', 'POST', { rows });
+    if (!imported || imported.error) {
+      toast((imported && imported.error) || 'Could not add those', 'err');
+      return;
+    }
+    const ids = await _aclResolveIds(rows);
+    const res = await api(`/api/call-campaigns/${_callCampaignId}/members`, 'POST',
+                          { contact_ids: ids });
+    toast(`Added ${(res && res.added) || 0} lead${((res && res.added) || 0) === 1 ? '' : 's'}`);
+
+  } else {
+    const file = document.getElementById('acl-csv').files[0];
+    if (!file) { toast('Choose a CSV first', 'err'); return; }
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch('/api/contacts/import', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'X-CSRF-Token': await _getCsrfToken() }, body: fd,
+    });
+    const imported = await r.json().catch(() => ({}));
+    if (!r.ok || imported.error) {
+      toast(imported.error || 'CSV import failed', 'err');
+      return;
+    }
+    // The importer does not report which rows it created, so pull the newest
+    // contacts and add those — imperfect if you import twice in a minute, but
+    // the alternative is a second endpoint for a rare case.
+    const recent = await api(`/api/contacts?per_page=${Math.max(imported.inserted || 0, 1)}`);
+    const ids = ((recent && recent.rows) || []).map(c => c.id);
+    const res = await api(`/api/call-campaigns/${_callCampaignId}/members`, 'POST',
+                          { contact_ids: ids });
+    toast(`Imported ${imported.inserted || 0}, added ${(res && res.added) || 0} to the campaign`);
+  }
+
+  closeModal('modal-add-call-leads');
+  await loadCallCampaigns();
+  loadCallQueue();
+}
+
+// Match freshly-added rows back to their ids so they can join the campaign.
+async function _aclResolveIds(rows) {
+  const ids = [];
+  for (const r of rows) {
+    const found = await api('/api/contacts?per_page=5&q=' + encodeURIComponent(r.company));
+    const hit = ((found && found.rows) || []).find(c => c.company === r.company);
+    if (hit) ids.push(hit.id);
+  }
+  return ids;
 }
 
 async function loadCallSources() {
@@ -140,6 +308,7 @@ async function loadCallQueue() {
     if (el) el.textContent = (data.counts || {})[b] ?? 0;
   });
 
+  _renderSummary(data.summary);
   _renderCallTable();
 
   // Drop straight into the first lead so the common case is zero clicks --
@@ -151,6 +320,26 @@ async function loadCallQueue() {
     document.getElementById('cq-lead-card').style.display = 'none';
     _renderScriptFor(null);
   }
+}
+
+// Mirrors the main dashboard's shape so both read the same way. Scoped to the
+// selected campaign when there is one, so the numbers match the list below.
+function _renderSummary(s) {
+  const el = document.getElementById('cq-summary');
+  if (!el || !s) return;
+  const tiles = [
+    ['Leads',          s.leads,          ''],
+    ['Calls made',     s.calls_made,     ''],
+    ['Today',          s.calls_today,    'blue'],
+    ['Due now',        s.due,            s.due > 0 ? 'amber' : ''],
+    ['Booked',         s.booked,         'green'],
+    ['Not interested', s.not_interested, s.not_interested > 0 ? 'red' : ''],
+  ];
+  el.innerHTML = tiles.map(([label, value, tone]) => `
+    <div class="stat-card" style="padding:12px">
+      <div class="stat-label">${label}</div>
+      <div class="stat-value ${tone}" style="font-size:22px">${value ?? 0}</div>
+    </div>`).join('');
 }
 
 function _renderCallTable() {
@@ -241,8 +430,11 @@ function _renderOutcomeButtons(selected) {
   const wrap = document.getElementById('cq-outcomes');
   wrap.innerHTML = _callOutcomes.map(o => {
     const on = o.key === selected;
-    const danger = o.terminal && o.key !== 'booked';
-    const colour = o.key === 'booked' ? 'var(--green)' : (danger ? 'var(--red)' : 'var(--blue)');
+    // Colour comes from the outcome's own tone so custom ones look deliberate
+    // rather than defaulting to the same blue as everything else.
+    const colour = { good: 'var(--green)', bad: 'var(--red)',
+                     info: 'var(--blue)', neutral: 'var(--muted)' }[o.tone]
+                || (o.terminal ? 'var(--red)' : 'var(--blue)');
     return `<button type="button" onclick="chooseOutcome('${esc(o.key)}')"
       title="${o.stops_email ? 'Also stops any email sequence for this contact' : ''}"
       style="padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;font-family:var(--font);
@@ -259,21 +451,32 @@ function chooseOutcome(key) {
   const wrap  = document.getElementById('cq-next-wrap');
   const label = document.getElementById('cq-next-label');
   const hint  = document.getElementById('cq-next-hint');
-  if (o && o.wants_next_call) {
-    wrap.style.display = 'block';
-    label.textContent = o.key === 'booked' ? 'Meeting date & time' : 'Next call';
-    hint.textContent  = o.key === 'booked'
-      ? 'You can add this to your calendar after saving.'
-      : 'Puts this lead back in "Due now" at that time.';
-    if (!document.getElementById('cq-next-at').value) {
-      // Default to tomorrow, same time — the common case for a callback.
-      const d = new Date(Date.now() + 864e5);
-      d.setSeconds(0, 0);
-      document.getElementById('cq-next-at').value =
-        new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
-    }
-  } else {
-    wrap.style.display = 'none';
+
+  // The date is offered on every outcome that isn't final, and only *required*
+  // where it would be meaningless without one. That split is what lets
+  // "follow up later" exist without recording a commitment nobody made.
+  const terminal = o && o.terminal && o.key !== 'booked';
+  if (terminal) { wrap.style.display = 'none'; return; }
+
+  wrap.style.display = 'block';
+  const required = !!(o && o.wants_next_call);
+  label.textContent = o && o.key === 'booked'
+    ? 'Meeting date & time'
+    : (required ? 'Next call' : 'Next call (optional)');
+  hint.textContent = o && o.key === 'booked'
+    ? 'You can add this to your calendar after saving.'
+    : (required
+        ? 'Puts this lead back in "Due now" at that time.'
+        : 'Leave blank to keep the lead in the queue with no date attached.');
+
+  if (required && !document.getElementById('cq-next-at').value) {
+    // Default to tomorrow, same time — the common case for a callback. Only
+    // prefilled when a date is required, so an optional field stays empty
+    // unless you actually mean to set one.
+    const d = new Date(Date.now() + 864e5);
+    d.setSeconds(0, 0);
+    document.getElementById('cq-next-at').value =
+      new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
   }
 }
 
@@ -344,6 +547,126 @@ function _renderCallHistory(history) {
         &nbsp;<span class="badge badge-gray">${esc(labels[h.outcome] || h.outcome)}</span>
         ${h.notes ? `<div class="text-muted" style="margin-top:3px;white-space:pre-wrap">${esc(h.notes)}</div>` : ''}
       </div>`).join('');
+}
+
+// ── Outcomes ─────────────────────────────────────────────────────────────────
+//
+// The useful vocabulary is the operator's. "Callback booked" and "follow up
+// sometime" are different things, and forcing the second into the first puts a
+// commitment in the system that was never made on the call.
+
+const OUTCOME_TONES = [
+  ['neutral', 'Neutral'], ['info', 'In progress'], ['good', 'Good'], ['bad', 'Dead'],
+];
+
+async function toggleOutcomeEditor() {
+  const el = document.getElementById('cq-outcome-editor');
+  if (el.style.display !== 'none') { el.style.display = 'none'; return; }
+  await _renderOutcomeEditor();
+  el.style.display = 'block';
+}
+
+async function _renderOutcomeEditor() {
+  const all = await api('/api/call-outcomes') || [];
+  const el = document.getElementById('cq-outcome-editor');
+  el.innerHTML = `
+    <div class="card" style="padding:20px">
+      <div class="card-title" style="margin-bottom:4px">Call outcomes</div>
+      <div class="form-hint" style="margin-bottom:14px">
+        Add your own alongside the built-in ones. <strong>Needs a date</strong> makes the
+        date field required — leave it off for something like "follow up later",
+        where you can still set a date but nothing was actually agreed.
+        <strong>Ends the lead</strong> takes it out of every call queue;
+        <strong>stops email</strong> also cancels any email sequence they're in.
+      </div>
+      <div class="table-wrap" style="margin-bottom:14px">
+        <table>
+          <thead><tr><th>Name</th><th>Tone</th><th>Needs date</th><th>Ends lead</th><th>Stops email</th><th></th></tr></thead>
+          <tbody>${all.map(o => _outcomeRow(o)).join('')}</tbody>
+        </table>
+      </div>
+      <div class="flex gap-2" style="flex-wrap:wrap;align-items:center">
+        <input id="oc-new-label" placeholder="New outcome, e.g. Follow up later"
+               style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border2);
+                      border-radius:6px;padding:7px 12px;color:var(--text);font-size:13px;
+                      font-family:var(--font)" />
+        <select id="oc-new-tone" style="background:var(--bg3);border:1px solid var(--border2);
+                border-radius:6px;padding:7px 10px;color:var(--text);font-size:13px;
+                font-family:var(--font);cursor:pointer">
+          ${OUTCOME_TONES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}
+        </select>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)">
+          <input type="checkbox" id="oc-new-date" /> Needs date</label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)">
+          <input type="checkbox" id="oc-new-terminal" /> Ends lead</label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)">
+          <input type="checkbox" id="oc-new-stops" /> Stops email</label>
+        <button class="btn btn-primary btn-sm" onclick="createOutcome()">Add</button>
+        <button class="btn btn-ghost btn-sm" onclick="toggleOutcomeEditor()">Close</button>
+      </div>
+    </div>`;
+}
+
+function _outcomeRow(o) {
+  const yes = v => v ? '✓' : '—';
+  return `<tr${o.archived ? ' style="opacity:.5"' : ''}>
+    <td>
+      <input value="${esc(o.label)}" onchange="renameOutcome('${esc(o.key)}', this.value)"
+             style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+                    padding:5px 8px;color:var(--text);font-size:12px;font-family:var(--font);width:100%" />
+      ${o.is_builtin ? '<span class="text-muted" style="font-size:10px">built-in</span>' : ''}
+      ${o.archived ? '<span class="badge badge-gray" style="font-size:10px">archived</span>' : ''}
+    </td>
+    <td><select onchange="setOutcomeTone('${esc(o.key)}', this.value)"
+          style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+                 padding:4px 6px;color:var(--text);font-size:12px;font-family:var(--font)">
+      ${OUTCOME_TONES.map(([v, l]) =>
+        `<option value="${v}" ${o.tone === v ? 'selected' : ''}>${l}</option>`).join('')}
+    </select></td>
+    <td class="mono" style="font-size:12px">${yes(o.requires_date)}</td>
+    <td class="mono" style="font-size:12px">${yes(o.is_terminal)}</td>
+    <td class="mono" style="font-size:12px">${yes(o.stops_email)}</td>
+    <td>${o.is_builtin
+        ? '<span class="text-muted" style="font-size:11px">—</span>'
+        : `<button class="btn btn-danger btn-sm" onclick="deleteOutcome('${esc(o.key)}')">✕</button>`}</td>
+  </tr>`;
+}
+
+async function createOutcome() {
+  const label = document.getElementById('oc-new-label').value.trim();
+  if (!label) { toast('Give it a name', 'err'); return; }
+  const res = await api('/api/call-outcomes', 'POST', {
+    label,
+    tone:          document.getElementById('oc-new-tone').value,
+    requires_date: document.getElementById('oc-new-date').checked,
+    is_terminal:   document.getElementById('oc-new-terminal').checked,
+    stops_email:   document.getElementById('oc-new-stops').checked,
+  });
+  if (!res || res.error) { toast((res && res.error) || 'Could not add it', 'err'); return; }
+  toast('Outcome added');
+  await _renderOutcomeEditor();
+  loadCallQueue();
+}
+
+async function renameOutcome(key, label) {
+  // Only the label changes; the key stays, so old calls keep resolving.
+  await api(`/api/call-outcomes/${key}`, 'PATCH', { label: label.trim() });
+  loadCallQueue();
+}
+
+async function setOutcomeTone(key, tone) {
+  await api(`/api/call-outcomes/${key}`, 'PATCH', { tone });
+  loadCallQueue();
+}
+
+async function deleteOutcome(key) {
+  if (!confirm('Remove this outcome?\n\nIf calls already used it, it is archived '
+             + 'instead of deleted so their history stays readable.')) return;
+  const res = await api(`/api/call-outcomes/${key}`, 'DELETE');
+  if (!res || res.error) { toast((res && res.error) || 'Could not remove it', 'err'); return; }
+  toast(res.result === 'archived' ? 'Archived — past calls keep their label' : 'Removed');
+  await _renderOutcomeEditor();
+  loadCallQueue();
 }
 
 // ── The script ───────────────────────────────────────────────────────────────

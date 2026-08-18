@@ -1,0 +1,84 @@
+<!-- Adding leads to a call campaign. Three routes in, matching how contacts get
+     into an email campaign: pick from what you already have, paste a few by
+     hand, or bring a CSV. The first is the common case by a distance, so it
+     opens on that. -->
+<div class="modal-overlay" id="modal-add-call-leads">
+  <div class="modal" style="max-width:720px">
+    <button class="modal-close" onclick="closeModal('modal-add-call-leads')">✕</button>
+    <h2>Add leads to <span id="acl-campaign-name"></span></h2>
+
+    <div class="flex gap-2" style="margin:12px 0 16px;flex-wrap:wrap">
+      <button class="btn btn-primary btn-sm" id="acl-tab-existing" onclick="setAddLeadsTab('existing')">From contacts</button>
+      <button class="btn btn-ghost btn-sm"   id="acl-tab-manual"   onclick="setAddLeadsTab('manual')">Type them in</button>
+      <button class="btn btn-ghost btn-sm"   id="acl-tab-csv"      onclick="setAddLeadsTab('csv')">Import CSV</button>
+    </div>
+
+    <!-- 1. Pick from the database -->
+    <div id="acl-pane-existing">
+      <div class="flex gap-2 items-center" style="margin-bottom:10px;flex-wrap:wrap">
+        <input id="acl-search" placeholder="Search name, company, phone…" oninput="aclSearch()"
+               style="flex:1;min-width:180px;background:var(--bg3);border:1px solid var(--border2);
+                      border-radius:6px;padding:7px 12px;color:var(--text);font-size:13px;
+                      font-family:var(--font)" />
+        <select id="acl-status" onchange="aclSearch()"
+                style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+                       padding:7px 10px;color:var(--text);font-size:13px;font-family:var(--font);cursor:pointer">
+          <option value="">Any status</option>
+          <option value="no_website">No website</option>
+          <option value="no_email">No email</option>
+          <option value="form_only">Form only</option>
+          <option value="active">Emailable</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
+          <input type="checkbox" id="acl-uncalled" checked onchange="aclSearch()" style="cursor:pointer" />
+          Never called only
+        </label>
+      </div>
+      <div class="flex gap-2 items-center" style="margin-bottom:8px">
+        <button class="btn btn-ghost btn-sm" onclick="aclSelectAllShown()">Select all shown</button>
+        <button class="btn btn-ghost btn-sm" onclick="aclClearSelection()">Clear</button>
+        <span class="text-muted text-small mono" id="acl-count"></span>
+      </div>
+      <div class="table-wrap" style="max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
+        <table>
+          <thead><tr><th style="width:36px"></th><th>Business</th><th>Phone</th><th>Status</th></tr></thead>
+          <tbody id="acl-table"></tbody>
+        </table>
+      </div>
+      <div class="form-hint" style="margin-top:8px">
+        Leads with no phone number can still be added, but won't appear in the call queue.
+      </div>
+    </div>
+
+    <!-- 2. Type a few in -->
+    <div id="acl-pane-manual" style="display:none">
+      <div class="form-group">
+        <label>One business per line</label>
+        <textarea id="acl-manual" style="min-height:180px"
+                  placeholder="Paradise Dental, 709-555-0123&#10;Kenmount Physio, 709-555-0456, kenmountphysio.ca"></textarea>
+        <div class="form-hint">
+          Comma-separated: <span class="mono">business name, phone, website</span> — the
+          phone and website are optional, but without a phone it won't reach the call queue.
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. CSV -->
+    <div id="acl-pane-csv" style="display:none">
+      <div class="form-group">
+        <label>CSV file</label>
+        <input type="file" id="acl-csv" accept=".csv" />
+        <div class="form-hint">
+          Uses the same importer as Contacts, so the usual columns work —
+          <span class="mono">company, phone, website, email, address</span>. Anything
+          imported is added to this campaign as well as to Contacts.
+        </div>
+      </div>
+    </div>
+
+    <div class="flex gap-2" style="margin-top:18px">
+      <button class="btn btn-primary" onclick="submitAddLeads()">Add to campaign</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-add-call-leads')">Cancel</button>
+    </div>
+  </div>
+</div>

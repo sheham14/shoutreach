@@ -1625,13 +1625,58 @@ def api_call_queue():
         "counts":   db.get_call_queue_counts(source_job_id=source_job_id,
                                              only_no_website=only_no_site,
                                              call_campaign_id=campaign_id),
+        "summary":  db.get_call_summary(call_campaign_id=campaign_id),
         "outcomes": [
-            {"key": k, "label": v[0], "terminal": v[1],
-             "stops_email": v[2], "wants_next_call": v[3]}
-            for k, v in db.CALL_OUTCOMES.items()
+            {"key": o["key"], "label": o["label"],
+             "terminal": bool(o["is_terminal"]), "stops_email": bool(o["stops_email"]),
+             "wants_next_call": bool(o["requires_date"]),
+             "tone": o["tone"], "builtin": bool(o["is_builtin"])}
+            for o in db.get_call_outcomes().values()
         ],
         "attempt_limit": db.CALL_ATTEMPT_LIMIT,
     })
+
+
+@app.route("/api/call-outcomes", methods=["GET"])
+@admin_required
+def api_list_call_outcomes():
+    return jsonify(list(db.get_call_outcomes(include_archived=True).values()))
+
+
+@app.route("/api/call-outcomes", methods=["POST"])
+@admin_required
+def api_create_call_outcome():
+    d = request.json or {}
+    label = (d.get("label") or "").strip()
+    if not label:
+        return jsonify({"ok": False, "error": "A name is required"}), 400
+    key = db.create_call_outcome(
+        label,
+        is_terminal=d.get("is_terminal"),
+        stops_email=d.get("stops_email"),
+        requires_date=d.get("requires_date"),
+        tone=d.get("tone", "neutral"),
+    )
+    return jsonify({"ok": True, "key": key})
+
+
+@app.route("/api/call-outcomes/<key>", methods=["PATCH"])
+@admin_required
+def api_update_call_outcome(key):
+    if not db.update_call_outcome(key, **(request.json or {})):
+        return jsonify({"ok": False, "error": "Nothing to update, or unknown outcome"}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/call-outcomes/<key>", methods=["DELETE"])
+@admin_required
+def api_delete_call_outcome(key):
+    result = db.delete_call_outcome(key)
+    if result == "refused":
+        return jsonify({"ok": False, "error": "Built-in outcomes cannot be removed"}), 400
+    # Archived rather than deleted when calls already used it, so old history
+    # still resolves to a readable label.
+    return jsonify({"ok": True, "result": result})
 
 
 @app.route("/api/call-campaigns", methods=["GET"])
@@ -1711,14 +1756,15 @@ def api_log_call():
         return jsonify({"ok": False, "error": "A contact is required"}), 400
 
     outcome = (d.get("outcome") or "").strip()
-    if outcome not in db.CALL_OUTCOMES:
+    spec = db.get_call_outcome(outcome)
+    if not spec:
         return jsonify({"ok": False, "error": f"Unknown outcome '{outcome}'"}), 400
 
     next_call_at = (d.get("next_call_at") or "").strip() or None
-    if db.CALL_OUTCOMES[outcome][3] and not next_call_at:
+    if spec["requires_date"] and not next_call_at:
         return jsonify({
             "ok": False,
-            "error": f"'{db.CALL_OUTCOMES[outcome][0]}' needs a date and time",
+            "error": f"'{spec['label']}' needs a date and time",
         }), 400
     if next_call_at:
         # Stored as the same 'YYYY-MM-DD HH:MM:SS' shape everything else uses,
@@ -1730,7 +1776,7 @@ def api_log_call():
     result = db.log_call(contact_id, outcome, d.get("notes", ""), next_call_at,
                          call_campaign_id=d.get("call_campaign_id") or None)
     contact = db.get_contact(contact_id)
-    label = db.CALL_OUTCOMES[outcome][0]
+    label = spec["label"]
     db.add_log(f"☎ {label} — {(contact or {}).get('company') or contact_id}")
     if result["stopped_email"]:
         db.add_log(f"  ↳ email sequence stopped for {(contact or {}).get('company') or contact_id}")

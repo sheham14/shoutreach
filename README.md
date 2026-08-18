@@ -434,6 +434,22 @@ the emails, so it reads *"Hi, is this Paradise Dental?"* rather than leaving
 you to substitute mid-sentence. Sections collapse individually so you can reach
 the right objection in a second.
 
+**Outcomes are editable.** The nine built-in ones are a starting point, not the
+vocabulary — press **⊙ Outcomes** to add your own. Each carries three switches:
+*needs a date* (required rather than merely allowed), *ends the lead* (drops it
+from every queue), and *stops email*. That first distinction matters: "Callback
+booked" demands a time, whereas something like "Follow up later" shouldn't
+invent a commitment nobody made, so a date stays optional on every outcome that
+isn't final. Built-ins can be renamed and recoloured but keep their behaviour;
+custom ones that have already been used are archived rather than deleted, so
+old call history stays readable.
+
+**Adding leads to a campaign**: select the campaign, then **+ Add leads** —
+pick from your existing contacts (filtered, with *never called* on by default),
+type a few in as `name, phone, website`, or import a CSV. The same action is on
+the Contacts page via bulk-select, for when you're already looking at a filtered
+list there.
+
 **Campaigns** group leads by a decision — "ten dental clinics in St John's" —
 as opposed to a lead list, which groups by whenever the scrape happened to run.
 Select contacts in **Contacts** and press **☎ Add to Call Campaign**; the

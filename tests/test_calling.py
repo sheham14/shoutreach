@@ -303,10 +303,82 @@ def main():
               db.get_contacts_page(page=1, per_page=500)["total"] == before_contacts)
         check("and so does the call history", len(db.get_call_history(ids[0])) >= 1)
 
-        print("\n17. THE ROUTES ARE ADMIN-ONLY")
+        print("\n17. THE OUTCOME VOCABULARY IS THE OPERATOR'S")
+        builtins = db.get_call_outcomes()
+        check("the built-in set is seeded", len(builtins) >= 9, str(len(builtins)))
+        check("and marked as built-in", all(o["is_builtin"] for o in builtins.values()))
+
+        # The case that prompted this: wanting to note a follow-up without
+        # claiming a callback was actually booked.
+        key = db.create_call_outcome("Follow up later", requires_date=False, tone="info")
+        check("a custom outcome is created", key == "follow_up_later", key)
+        spec = db.get_call_outcome(key)
+        check("it needs no date", not spec["requires_date"])
+        check("it does not end the lead", not spec["is_terminal"])
+        check("and does not touch email", not spec["stops_email"])
+
+        db.upsert_contacts([{"company": "Follow Up Co", "phone": "709-555-0611",
+                             "status": "no_website", "address": "9 Duckworth, St Johns, NL"}])
+        with db.get_db() as conn:
+            fid = conn.execute(
+                "SELECT id FROM contacts WHERE company='Follow Up Co'").fetchone()["id"]
+
+        r = client.post("/api/calls/log", json={
+            "contact_id": fid, "outcome": key, "notes": "ring back sometime",
+        }, headers=hdr)
+        check("it can be logged with no date at all", r.status_code == 200, str(r.get_json()))
+        contact = db.get_contact(fid)
+        check("the contact carries it", contact["call_status"] == key, contact["call_status"])
+        check("no phantom callback date was invented", contact["next_call_at"] is None,
+              str(contact["next_call_at"]))
+        check("and the lead stays callable",
+              any(l["id"] == fid for l in db.get_call_queue("all")))
+
+        print("\n18. A CUSTOM OUTCOME CAN END A LEAD IF YOU SAY SO")
+        dead = db.create_call_outcome("Out of business", is_terminal=True,
+                                      stops_email=True, tone="bad")
+        db.log_call(fid, dead, "shut down")
+        check("terminal custom outcomes retire the lead",
+              all(l["id"] != fid for l in db.get_call_queue("all")))
+        check("and appear in Worked",
+              any(l["id"] == fid for l in db.get_call_queue("worked")))
+
+        print("\n19. RENAMING IS SAFE, DELETING A USED OUTCOME ARCHIVES IT")
+        db.update_call_outcome(key, label="Follow up someday")
+        check("the label changes", db.get_call_outcome(key)["label"] == "Follow up someday")
+        with db.get_db() as conn:
+            still = conn.execute(
+                "SELECT outcome FROM call_log WHERE outcome=? LIMIT 1", (key,)).fetchone()
+        check("old calls still point at the same key", still is not None)
+
+        check("a used outcome archives rather than deletes",
+              db.delete_call_outcome(key) == "archived")
+        check("it leaves the picker", key not in db.get_call_outcomes())
+        check("but is still resolvable for history",
+              db.get_call_outcome(key) is not None)
+
+        unused = db.create_call_outcome("Never used")
+        check("an unused custom outcome deletes outright",
+              db.delete_call_outcome(unused) == "deleted")
+        check("built-ins cannot be removed at all",
+              db.delete_call_outcome("not_interested") == "refused")
+        check("nor have their behaviour flipped",
+              db.update_call_outcome("do_not_call", stops_email=0) is False
+              or db.get_call_outcome("do_not_call")["stops_email"] == 1)
+
+        print("\n20. THE SUMMARY COUNTS CALLS, NOT LEADS")
+        s = db.get_call_summary()
+        check("it reports every field the page shows",
+              all(k in s for k in ("leads", "calls_made", "calls_today",
+                                   "due", "booked", "not_interested")), str(s))
+        check("calls_made exceeds the leads dialled, since one lead can be rung twice",
+              s["calls_made"] >= 1, str(s["calls_made"]))
+        check("today's calls are counted", s["calls_today"] >= 1, str(s["calls_today"]))
+
+        print("\n21. THE ROUTES ARE ADMIN-ONLY")
         anon = app_mod.app.test_client()
         for path in ("/api/calls/queue", "/api/call-script", "/api/call-campaigns",
-                     f"/api/calls/{ids[0]}/ics"):
+                     "/api/call-outcomes", f"/api/calls/{ids[0]}/ics"):
             check(f"{path} needs a session", anon.get(path).status_code in (401, 403))
 
     finally:

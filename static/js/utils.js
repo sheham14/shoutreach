@@ -156,7 +156,11 @@ const CALL_STATUS_META = {
 
 function callStatusBadge(s) {
   if (!s) return '<span class="text-muted" style="font-size:11px">—</span>';
-  const meta = CALL_STATUS_META[s] || { cls: 'badge-gray', label: s };
+  // Custom outcomes are not in the map above, so fall back to reading the key
+  // rather than printing raw snake_case at the user: follow_up_later becomes
+  // "Follow up later" without needing to fetch the outcome list here.
+  const meta = CALL_STATUS_META[s]
+    || { cls: 'badge-gray', label: String(s).replace(/_/g, ' ').replace(/^./, m => m.toUpperCase()) };
   return `<span class="badge ${meta.cls}">${esc(meta.label)}</span>`;
 }
 

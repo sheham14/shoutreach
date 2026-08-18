@@ -5,6 +5,7 @@
       <div class="page-sub">Work the list — your notebook while you dial</div>
     </div>
     <div class="flex gap-2">
+      <button class="btn btn-ghost" onclick="toggleOutcomeEditor()">⊙ Outcomes</button>
       <button class="btn btn-ghost" onclick="toggleScriptEditor()">✎ Edit script</button>
       <button class="btn btn-ghost btn-sm" onclick="loadCallQueue()">↻ Refresh</button>
     </div>
@@ -23,12 +24,19 @@
         <option value="">All leads (no campaign)</option>
       </select>
       <button class="btn btn-ghost btn-sm" onclick="openNewCallCampaign()">+ New campaign</button>
+      <button class="btn btn-primary btn-sm" id="cq-campaign-add"
+              onclick="openAddLeadsModal()" style="display:none">+ Add leads</button>
       <button class="btn btn-ghost btn-sm" id="cq-campaign-delete"
               onclick="deleteCallCampaign()" style="display:none">✕ Delete campaign</button>
     </div>
     <div id="cq-campaign-cards" style="display:grid;gap:10px;
          grid-template-columns:repeat(auto-fill,minmax(210px,1fr))"></div>
   </div>
+
+  <!-- Totals across everything, mirroring the shape of the main dashboard so
+       the two read the same way. Per-campaign detail is in the cards above. -->
+  <div class="stat-grid" id="cq-summary"
+       style="grid-template-columns:repeat(6,1fr);margin-bottom:18px"></div>
 
   <!-- Buckets. "Today" first because it is the work: callbacks you promised,
        oldest first. New leads are the pile you dip into once that's clear. -->
@@ -50,6 +58,7 @@
     </select>
   </div>
 
+  <div id="cq-outcome-editor" style="display:none;margin-bottom:20px"></div>
   <div id="cq-script-editor" style="display:none;margin-bottom:20px"></div>
 
   <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,420px);gap:20px;align-items:start">
