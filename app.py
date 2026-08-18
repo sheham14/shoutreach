@@ -1328,6 +1328,7 @@ def _contact_query_args():
         "source_job_id":   request.args.get("source_job_id") or None,
         "status":          request.args.get("status") or None,
         "include_deleted": request.args.get("include_deleted") == "1",
+        "call_status":     request.args.get("call_status") or None,
     }
 
 
@@ -1603,13 +1604,15 @@ def api_logs():
 def api_call_queue():
     """The leads to work now, plus what is waiting in the other buckets."""
     bucket = request.args.get("bucket", "today")
-    if bucket not in ("today", "new", "upcoming", "all"):
+    if bucket not in ("today", "new", "upcoming", "all", "worked"):
         bucket = "today"
     source_job_id  = request.args.get("source_job_id") or None
     only_no_site   = request.args.get("no_website") == "1"
+    campaign_id    = request.args.get("call_campaign_id") or None
 
     leads = db.get_call_queue(bucket, source_job_id=source_job_id,
-                              only_no_website=only_no_site)
+                              only_no_website=only_no_site,
+                              call_campaign_id=campaign_id)
     # Prior contact is reported, not hidden: an emailed lead with no reply is
     # still worth dialling, one that already answered is not, and only the
     # operator can tell those apart.
@@ -1620,7 +1623,8 @@ def api_call_queue():
         "bucket":   bucket,
         "leads":    leads,
         "counts":   db.get_call_queue_counts(source_job_id=source_job_id,
-                                             only_no_website=only_no_site),
+                                             only_no_website=only_no_site,
+                                             call_campaign_id=campaign_id),
         "outcomes": [
             {"key": k, "label": v[0], "terminal": v[1],
              "stops_email": v[2], "wants_next_call": v[3]}
@@ -1628,6 +1632,73 @@ def api_call_queue():
         ],
         "attempt_limit": db.CALL_ATTEMPT_LIMIT,
     })
+
+
+@app.route("/api/call-campaigns", methods=["GET"])
+@admin_required
+def api_list_call_campaigns():
+    return jsonify(db.get_call_campaigns())
+
+
+@app.route("/api/call-campaigns", methods=["POST"])
+@admin_required
+def api_create_call_campaign():
+    d = request.json or {}
+    name = (d.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "Name is required"}), 400
+    cid = db.create_call_campaign(name, d.get("notes", ""))
+    contact_ids = d.get("contact_ids") or []
+    added = db.add_to_call_campaign(cid, contact_ids) if contact_ids else 0
+    db.add_log(f"☎ Call campaign '{name}' created with {added} lead(s)")
+    return jsonify({"ok": True, "id": cid, "added": added})
+
+
+@app.route("/api/call-campaigns/<int:cid>", methods=["PATCH"])
+@admin_required
+def api_update_call_campaign(cid):
+    db.update_call_campaign(cid, **(request.json or {}))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/call-campaigns/<int:cid>", methods=["DELETE"])
+@admin_required
+def api_delete_call_campaign(cid):
+    """Deletes the batch, never the leads — the contacts and their call history stay."""
+    db.delete_call_campaign(cid)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/call-campaigns/<int:cid>/members", methods=["POST"])
+@admin_required
+def api_add_call_campaign_members(cid):
+    d = request.json or {}
+    ids = d.get("contact_ids") or []
+    if not ids:
+        return jsonify({"ok": False, "error": "No contacts given"}), 400
+    added = db.add_to_call_campaign(cid, ids)
+    return jsonify({"ok": True, "added": added, "already_present": len(ids) - added})
+
+
+@app.route("/api/call-campaigns/<int:cid>/members", methods=["DELETE"])
+@admin_required
+def api_remove_call_campaign_members(cid):
+    d = request.json or {}
+    ids = d.get("contact_ids") or []
+    if not ids:
+        return jsonify({"ok": False, "error": "No contacts given"}), 400
+    return jsonify({"ok": True, "removed": db.remove_from_call_campaign(cid, ids)})
+
+
+@app.route("/api/calls/<int:cid>/reopen", methods=["POST"])
+@admin_required
+def api_reopen_call_lead(cid):
+    """Return a closed-out lead to the queue — the undo for a misclick."""
+    if not db.reopen_call_lead(cid):
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    contact = db.get_contact(cid)
+    db.add_log(f"☎ Reopened {(contact or {}).get('company') or cid} for calling")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/calls/log", methods=["POST"])
@@ -1656,7 +1727,8 @@ def api_log_call():
         if len(next_call_at) == 16:
             next_call_at += ":00"
 
-    result = db.log_call(contact_id, outcome, d.get("notes", ""), next_call_at)
+    result = db.log_call(contact_id, outcome, d.get("notes", ""), next_call_at,
+                         call_campaign_id=d.get("call_campaign_id") or None)
     contact = db.get_contact(contact_id)
     label = db.CALL_OUTCOMES[outcome][0]
     db.add_log(f"☎ {label} — {(contact or {}).get('company') or contact_id}")

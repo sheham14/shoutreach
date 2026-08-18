@@ -5,6 +5,7 @@
       <div class="page-sub">Your global contact database</div>
     </div>
     <div class="flex gap-2">
+      <button id="contacts-call-campaign-btn" class="btn btn-ghost" onclick="addSelectedToCallCampaign()" disabled>☎ Add to Call Campaign</button>
       <button id="contacts-delete-selected-btn" class="btn btn-danger" onclick="deleteSelectedContacts()" disabled>✕ Delete Selected</button>
       <button class="btn btn-ghost" onclick="openAddContactModal()">+ Add Contact</button>
       <button class="btn btn-primary" onclick="openImportModal()">⬆ Import CSV</button>
@@ -41,6 +42,25 @@
           <option value="active">Emailable</option>
           <option value="bounced">Bounced</option>
           <option value="unsubscribed">Unsubscribed</option>
+        </select>
+        <!-- Where a closed-out lead goes. A terminal call outcome drops a lead
+             from every calling queue, so this is the only place it can be
+             found again or reopened. -->
+        <select id="contacts-call-filter" onchange="contactFilterChanged()"
+                title="Filter by what happened when you called"
+                style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+                       padding:6px 10px;color:var(--text);font-size:13px;outline:none;
+                       font-family:var(--font);cursor:pointer">
+          <option value="">Any call status</option>
+          <option value="none">Never called</option>
+          <option value="any">Called (any outcome)</option>
+          <option value="callback">Callback booked</option>
+          <option value="interested">Interested</option>
+          <option value="proposal_sent">Proposal sent</option>
+          <option value="booked">Meeting booked</option>
+          <option value="not_interested">Not interested</option>
+          <option value="wrong_number">Wrong number</option>
+          <option value="do_not_call">Do not call</option>
         </select>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
           <input type="checkbox" id="contacts-show-deleted" onchange="contactFilterChanged()" style="cursor:pointer" />

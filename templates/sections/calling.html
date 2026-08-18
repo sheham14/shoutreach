@@ -10,6 +10,26 @@
     </div>
   </div>
 
+  <!-- Campaigns: a named batch you decided to work, as opposed to a lead list,
+       which groups by whenever you happened to scrape. Lives here rather than
+       on the main dashboard so the picker and its numbers sit together. -->
+  <div class="card" style="padding:16px;margin-bottom:18px">
+    <div class="flex items-center" style="margin-bottom:12px;gap:10px;flex-wrap:wrap">
+      <div class="card-title">Campaigns</div>
+      <select id="cq-campaign" onchange="setCallCampaign(this.value)"
+              style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+                     padding:6px 10px;color:var(--text);font-size:13px;outline:none;
+                     min-width:220px;font-family:var(--font);cursor:pointer">
+        <option value="">All leads (no campaign)</option>
+      </select>
+      <button class="btn btn-ghost btn-sm" onclick="openNewCallCampaign()">+ New campaign</button>
+      <button class="btn btn-ghost btn-sm" id="cq-campaign-delete"
+              onclick="deleteCallCampaign()" style="display:none">✕ Delete campaign</button>
+    </div>
+    <div id="cq-campaign-cards" style="display:grid;gap:10px;
+         grid-template-columns:repeat(auto-fill,minmax(210px,1fr))"></div>
+  </div>
+
   <!-- Buckets. "Today" first because it is the work: callbacks you promised,
        oldest first. New leads are the pile you dip into once that's clear. -->
   <div class="flex gap-2" style="margin-bottom:16px;flex-wrap:wrap">
@@ -17,6 +37,7 @@
     <button class="btn btn-ghost"   id="cq-tab-new"      onclick="setCallBucket('new')">Never called <span class="badge badge-gray" id="cq-count-new">0</span></button>
     <button class="btn btn-ghost"   id="cq-tab-upcoming" onclick="setCallBucket('upcoming')">Scheduled <span class="badge badge-gray" id="cq-count-upcoming">0</span></button>
     <button class="btn btn-ghost"   id="cq-tab-all"      onclick="setCallBucket('all')">All callable</button>
+    <button class="btn btn-ghost"   id="cq-tab-worked"   onclick="setCallBucket('worked')" title="Leads you closed out — not interested, wrong number, do not call, booked">Worked</button>
     <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;margin-left:8px;white-space:nowrap">
       <input type="checkbox" id="cq-no-website" onchange="loadCallQueue()" style="cursor:pointer" />
       No website only

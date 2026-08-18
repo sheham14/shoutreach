@@ -212,9 +212,101 @@ def main():
         r = client.put("/api/call-script", json={"sections": "not a list"}, headers=hdr)
         check("garbage is refused", r.status_code == 400)
 
-        print("\n12. THE ROUTES ARE ADMIN-ONLY")
+        print("\n12. A CLOSED-OUT LEAD IS FINDABLE, NOT GONE")
+        # It leaves every calling queue by design, so Contacts is the only
+        # place it can be seen -- and call_status is the only thing that
+        # distinguishes it from a lead nobody has ever dialled.
+        closed = db.get_contact(ids[3])          # marked not_interested earlier
+        check("the outcome is recorded on the contact",
+              closed["call_status"] == "not_interested", closed["call_status"])
+        check("and 'not interested' does NOT unsubscribe them",
+              closed["status"] != "unsubscribed", closed["status"])
+
+        page = db.get_contacts_page(page=1, per_page=100, call_status="not_interested")
+        check("filtering Contacts by call status finds it",
+              any(r["id"] == ids[3] for r in page["rows"]), str(page["total"]))
+        never = db.get_contacts_page(page=1, per_page=100, call_status="none")
+        check("'never called' excludes it",
+              all(r["id"] != ids[3] for r in never["rows"]))
+        any_called = db.get_contacts_page(page=1, per_page=100, call_status="any")
+        check("'called, any outcome' includes it",
+              any(r["id"] == ids[3] for r in any_called["rows"]))
+
+        worked = db.get_call_queue("worked")
+        check("the Worked bucket lists it", any(l["id"] == ids[3] for l in worked))
+        check("but the callable buckets still do not",
+              all(l["id"] != ids[3] for l in db.get_call_queue("all")))
+
+        print("\n13. A LEAD CLOSED BY MISTAKE CAN BE REOPENED")
+        r = client.post(f"/api/calls/{ids[3]}/reopen", headers=hdr)
+        check("reopen succeeds", r.status_code == 200, str(r.status_code))
+        check("it is callable again",
+              any(l["id"] == ids[3] for l in db.get_call_queue("all")))
+        check("and the call history is kept, not rewritten",
+              len(db.get_call_history(ids[3])) >= 1)
+
+        print("\n14. CALL CAMPAIGNS GROUP LEADS BY DECISION, NOT BY SCRAPE")
+        camp = db.create_call_campaign("St Johns dentists", "first batch")
+        added = db.add_to_call_campaign(camp, [ids[0], ids[1], ids[2]])
+        check("leads are added", added == 3, str(added))
+        check("adding the same lead twice is a no-op",
+              db.add_to_call_campaign(camp, [ids[0]]) == 0)
+
+        scoped = db.get_call_queue("all", call_campaign_id=camp)
+        check("the queue can be scoped to the campaign",
+              scoped and all(l["id"] in (ids[0], ids[1], ids[2]) for l in scoped),
+              str([l["id"] for l in scoped]))
+        unscoped = db.get_call_queue("all")
+        check("and is wider without it", len(unscoped) > len(scoped),
+              f"{len(unscoped)} vs {len(scoped)}")
+
+        stats = {c["id"]: c for c in db.get_call_campaigns()}[camp]
+        check("the overview counts its leads", stats["total"] == 3, str(stats["total"]))
+        check("and reports what is left", stats["remaining"] == stats["total"] - stats["closed"],
+              str(stats))
+
+        print("\n15. A CALL IS ATTRIBUTED TO THE CAMPAIGN IT WAS MADE UNDER")
+        # Assert the movement, not absolute numbers: an earlier section already
+        # booked one of these leads, and hardcoding totals would make this test
+        # break whenever anything above it changes.
+        before_stats = {c["id"]: c for c in db.get_call_campaigns()}[camp]
+        r = client.post("/api/calls/log", json={
+            "contact_id": ids[0], "outcome": "not_interested",
+            "notes": "no thanks", "call_campaign_id": camp,
+        }, headers=hdr)
+        check("logging with a campaign works", r.status_code == 200, str(r.get_json()))
+        with db.get_db() as conn:
+            row = conn.execute(
+                "SELECT call_campaign_id FROM call_log WHERE contact_id=? "
+                "ORDER BY id DESC LIMIT 1", (ids[0],)).fetchone()
+        check("the campaign is stored on the call", row["call_campaign_id"] == camp,
+              str(row["call_campaign_id"]))
+        after = {c["id"]: c for c in db.get_call_campaigns()}[camp]
+        check("one more lead counts as closed",
+              after["closed"] == before_stats["closed"] + 1,
+              f"{before_stats['closed']} -> {after['closed']}")
+        check("and one fewer remains",
+              after["remaining"] == before_stats["remaining"] - 1,
+              f"{before_stats['remaining']} -> {after['remaining']}")
+        check("the not-interested tally moved too",
+              after["not_interested"] == before_stats["not_interested"] + 1,
+              f"{before_stats['not_interested']} -> {after['not_interested']}")
+        check("the total is unchanged — closing a lead does not remove it",
+              after["total"] == before_stats["total"], str(after["total"]))
+
+        print("\n16. DELETING A CAMPAIGN KEEPS THE LEADS")
+        before_contacts = db.get_contacts_page(page=1, per_page=500)["total"]
+        r = client.delete(f"/api/call-campaigns/{camp}", headers=hdr)
+        check("the campaign goes", r.status_code == 200)
+        check("no campaign remains", all(c["id"] != camp for c in db.get_call_campaigns()))
+        check("every contact survives",
+              db.get_contacts_page(page=1, per_page=500)["total"] == before_contacts)
+        check("and so does the call history", len(db.get_call_history(ids[0])) >= 1)
+
+        print("\n17. THE ROUTES ARE ADMIN-ONLY")
         anon = app_mod.app.test_client()
-        for path in ("/api/calls/queue", "/api/call-script", f"/api/calls/{ids[0]}/ics"):
+        for path in ("/api/calls/queue", "/api/call-script", "/api/call-campaigns",
+                     f"/api/calls/{ids[0]}/ics"):
             check(f"{path} needs a session", anon.get(path).status_code in (401, 403))
 
     finally:

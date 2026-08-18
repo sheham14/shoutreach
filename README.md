@@ -434,6 +434,21 @@ the emails, so it reads *"Hi, is this Paradise Dental?"* rather than leaving
 you to substitute mid-sentence. Sections collapse individually so you can reach
 the right objection in a second.
 
+**Campaigns** group leads by a decision — "ten dental clinics in St John's" —
+as opposed to a lead list, which groups by whenever the scrape happened to run.
+Select contacts in **Contacts** and press **☎ Add to Call Campaign**; the
+picker on the calling page then scopes every bucket to that batch, and the
+overview cards show what's left, what's due, and what's booked per campaign.
+Deleting a campaign removes only the grouping — the contacts and their call
+history stay.
+
+**A closed-out lead doesn't disappear.** Terminal outcomes drop a lead from
+every calling queue, which is the point, but they stay visible in two places:
+the **Worked** bucket on the calling page, where **↩ Reopen** puts one back if
+you marked it wrongly, and **Contacts**, which has a **Call status** column and
+filter. Note that *Not interested* leaves the contact otherwise untouched,
+while *Do not call* also marks them unsubscribed.
+
 **Prior contact is shown, never used to hide a lead.** A lead you emailed with
 no reply is still worth ringing; one that already replied or opted out is not.
 The app tells you which and lets you decide.

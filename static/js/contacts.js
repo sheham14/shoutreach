@@ -9,6 +9,8 @@ const CONTACT_COLS = [
   { key: 'review_count',  label: 'Reviews' },
   { key: 'category',      label: 'Category' },
   { key: 'address',       label: 'Address' },
+  { key: 'call_status',   label: 'Call status' },
+  { key: 'call_attempts', label: 'Attempts' },
   { key: 'source_job_id', label: 'List' },
   { key: 'status',        label: 'Status' },
   { key: 'created_at',    label: 'Added' },
@@ -16,7 +18,7 @@ const CONTACT_COLS = [
 
 // Hidden by default purely to keep the table narrow enough to read — all of
 // them are one click away under ⊞ Columns.
-let contactHiddenCols  = new Set(['address', 'category']);
+let contactHiddenCols  = new Set(['address', 'category', 'call_attempts']);
 let contactSortCol     = '';
 let contactSortDir     = 'desc';
 let contactEditId      = null;
@@ -63,6 +65,8 @@ function _contactQueryString(extra = {}) {
   if (contactSourceId) p.set('source_job_id', contactSourceId);
   const status = document.getElementById('contacts-status-filter')?.value || '';
   if (status) p.set('status', status);
+  const callStatus = document.getElementById('contacts-call-filter')?.value || '';
+  if (callStatus) p.set('call_status', callStatus);
   if (document.getElementById('contacts-show-deleted')?.checked) p.set('include_deleted', '1');
   Object.entries(extra).forEach(([k, v]) => p.set(k, v));
   return p.toString();
@@ -232,6 +236,10 @@ function renderContactsTable() {
     const checked = contactSelectedIds.has(c.id) ? 'checked' : '';
     const cells = visibleCols.map(col => {
       if (col.key === 'status') return `<td>${contactStatusBadge(c.status)}</td>`;
+      if (col.key === 'call_status') return `<td>${callStatusBadge(c.call_status)}</td>`;
+      if (col.key === 'call_attempts') {
+        return `<td class="mono text-muted" style="font-size:12px">${c.call_attempts || ''}</td>`;
+      }
       if (col.key === 'created_at') {
         const d = (c.created_at || '').split('T')[0] || (c.created_at || '').split(' ')[0];
         return `<td class="mono text-muted" style="font-size:11px">${esc(d)}</td>`;
@@ -371,11 +379,60 @@ function _syncSelectAllCheckbox() {
 }
 
 function _updateDeleteSelectedBtn() {
-  const btn = document.getElementById('contacts-delete-selected-btn');
-  if (!btn) return;
   const n = contactSelectedIds.size;
-  btn.disabled = n === 0;
-  btn.textContent = n > 0 ? `✕ Delete Selected (${n})` : '✕ Delete Selected';
+  const btn = document.getElementById('contacts-delete-selected-btn');
+  if (btn) {
+    btn.disabled = n === 0;
+    btn.textContent = n > 0 ? `✕ Delete Selected (${n})` : '✕ Delete Selected';
+  }
+  const callBtn = document.getElementById('contacts-call-campaign-btn');
+  if (callBtn) {
+    callBtn.disabled = n === 0;
+    callBtn.textContent = n > 0 ? `☎ Add to Call Campaign (${n})` : '☎ Add to Call Campaign';
+  }
+}
+
+// Building a call list is a decision — "these ten clinics, today" — so it
+// starts from whatever you have already filtered and selected here rather than
+// from a separate picker that would make you find the same leads twice.
+async function addSelectedToCallCampaign() {
+  const ids = [...contactSelectedIds];
+  if (!ids.length) return;
+
+  const campaigns = await api('/api/call-campaigns') || [];
+  const menu = campaigns.map((c, i) => `${i + 1}. ${c.name} (${c.total} leads)`).join('\n');
+  const answer = prompt(
+    `Add ${ids.length} contact${ids.length === 1 ? '' : 's'} to which campaign?\n\n`
+    + (menu ? menu + '\n\n' : '')
+    + `Enter a number, or type a new campaign name.`
+  );
+  if (!answer || !answer.trim()) return;
+
+  const pick = parseInt(answer.trim());
+  let campaignId, campaignName;
+  if (!isNaN(pick) && pick >= 1 && pick <= campaigns.length) {
+    campaignId   = campaigns[pick - 1].id;
+    campaignName = campaigns[pick - 1].name;
+  } else {
+    const created = await api('/api/call-campaigns', 'POST', { name: answer.trim() });
+    if (!created || created.error) {
+      toast((created && created.error) || 'Could not create the campaign', 'err');
+      return;
+    }
+    campaignId   = created.id;
+    campaignName = answer.trim();
+  }
+
+  const res = await api(`/api/call-campaigns/${campaignId}/members`, 'POST', { contact_ids: ids });
+  if (!res || res.error) { toast((res && res.error) || 'Could not add them', 'err'); return; }
+
+  // Say what was skipped rather than silently adding fewer than asked.
+  const skipped = res.already_present
+    ? ` (${res.already_present} already there)` : '';
+  toast(`Added ${res.added} to "${campaignName}"${skipped}`);
+  contactSelectedIds.clear();
+  _updateDeleteSelectedBtn();
+  renderContactsTable();
 }
 
 async function deleteSelectedContacts() {

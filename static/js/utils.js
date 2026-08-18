@@ -139,6 +139,27 @@ function contactStatusBadge(s) {
 // column you have to scroll for. Only the states that change what you do:
 // no website is the strongest pitch for a web-design offer, and a business
 // with a site but no findable address is a call rather than an email.
+// What a call left behind. Terminal outcomes drop a lead out of every calling
+// queue, so without this a "not interested" contact was indistinguishable in
+// Contacts from one nobody had ever dialled.
+const CALL_STATUS_META = {
+  no_answer:      { cls: 'badge-gray',   label: 'No answer' },
+  voicemail:      { cls: 'badge-gray',   label: 'Voicemail' },
+  callback:       { cls: 'badge-blue',   label: 'Callback' },
+  interested:     { cls: 'badge-green',  label: 'Interested' },
+  proposal_sent:  { cls: 'badge-green',  label: 'Proposal sent' },
+  booked:         { cls: 'badge-green',  label: 'Booked' },
+  not_interested: { cls: 'badge-red',    label: 'Not interested' },
+  wrong_number:   { cls: 'badge-amber',  label: 'Wrong number' },
+  do_not_call:    { cls: 'badge-red',    label: 'Do not call' },
+};
+
+function callStatusBadge(s) {
+  if (!s) return '<span class="text-muted" style="font-size:11px">—</span>';
+  const meta = CALL_STATUS_META[s] || { cls: 'badge-gray', label: s };
+  return `<span class="badge ${meta.cls}">${esc(meta.label)}</span>`;
+}
+
 function contactSignalPill(c) {
   if (c.status === 'no_website') {
     return `<span class="badge badge-red" style="margin-left:6px;font-size:10px"

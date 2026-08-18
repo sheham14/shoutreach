@@ -198,6 +198,27 @@ def init_db():
                 updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
             );
 
+            -- A named batch of leads to work: "10 dental clinics, St John's".
+            -- Distinct from the scrape that found them, which groups by when
+            -- you happened to scrape rather than by any decision you made.
+            CREATE TABLE IF NOT EXISTS call_campaigns (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT    NOT NULL,
+                notes      TEXT    NOT NULL DEFAULT '',
+                status     TEXT    NOT NULL DEFAULT 'active',
+                created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- Membership is many-to-many on purpose: the same clinic can be
+            -- worked again months later under a different offer, and the
+            -- earlier campaign's record of what happened should survive that.
+            CREATE TABLE IF NOT EXISTS call_campaign_members (
+                call_campaign_id INTEGER NOT NULL REFERENCES call_campaigns(id) ON DELETE CASCADE,
+                contact_id       INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                added_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (call_campaign_id, contact_id)
+            );
+
             CREATE TABLE IF NOT EXISTS users (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 username      TEXT    NOT NULL UNIQUE,
@@ -262,6 +283,10 @@ def init_db():
             "ALTER TABLE contacts ADD COLUMN call_status TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE contacts ADD COLUMN next_call_at TEXT DEFAULT NULL",
             "ALTER TABLE contacts ADD COLUMN call_attempts INTEGER NOT NULL DEFAULT 0",
+            # Which batch a call was made under. Without it, a contact worked
+            # in two campaigns would have its calls counted against both and
+            # neither campaign's numbers would mean anything.
+            "ALTER TABLE call_log ADD COLUMN call_campaign_id INTEGER DEFAULT NULL",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -1213,7 +1238,7 @@ def get_contacts(limit=200, offset=0):
 _CONTACT_SORT_COLUMNS = frozenset({
     "id", "email", "first_name", "last_name", "company", "website", "address",
     "status", "created_at", "phone", "category", "rating", "review_count",
-    "domain", "mx_valid",
+    "domain", "mx_valid", "call_status", "call_attempts", "next_call_at",
 })
 
 # Search covers what someone would plausibly type looking for a lead.
@@ -1226,7 +1251,8 @@ _CONTACT_SEARCH_COLUMNS = (
 SOURCE_MANUAL = "manual"
 
 
-def _contact_filters(q="", source_job_id=None, status=None, include_deleted=False):
+def _contact_filters(q="", source_job_id=None, status=None, include_deleted=False,
+                     call_status=None):
     """Build the shared WHERE clause for the contact list views."""
     clauses, params = [], []
 
@@ -1236,6 +1262,18 @@ def _contact_filters(q="", source_job_id=None, status=None, include_deleted=Fals
     if status:
         clauses.append("status = ?")
         params.append(status)
+
+    # A call outcome was recorded on the contact but shown nowhere outside the
+    # calling queue -- and that queue hides finished leads by design, so a
+    # "not interested" contact looked identical to one never dialled.
+    if call_status:
+        if call_status == "none":
+            clauses.append("COALESCE(call_status,'') = ''")
+        elif call_status == "any":
+            clauses.append("COALESCE(call_status,'') != ''")
+        else:
+            clauses.append("call_status = ?")
+            params.append(call_status)
 
     if source_job_id is not None and source_job_id != "":
         if str(source_job_id) == SOURCE_MANUAL:
@@ -1255,7 +1293,8 @@ def _contact_filters(q="", source_job_id=None, status=None, include_deleted=Fals
 
 
 def get_contacts_page(page=1, per_page=50, q="", source_job_id=None, status=None,
-                      include_deleted=False, sort_col="", sort_dir="desc"):
+                      include_deleted=False, sort_col="", sort_dir="desc",
+                      call_status=None):
     """One page of contacts plus the total matching the same filter."""
     page     = max(1, int(page or 1))
     per_page = max(1, min(int(per_page or 50), 500))
@@ -1270,7 +1309,7 @@ def get_contacts_page(page=1, per_page=50, q="", source_job_id=None, status=None
         sort_col = ""
         order_by = "created_at DESC, id DESC"
 
-    where, params = _contact_filters(q, source_job_id, status, include_deleted)
+    where, params = _contact_filters(q, source_job_id, status, include_deleted, call_status)
 
     with get_db() as conn:
         total = conn.execute(
@@ -1292,7 +1331,8 @@ def get_contacts_page(page=1, per_page=50, q="", source_job_id=None, status=None
     }
 
 
-def get_contact_ids_matching(q="", source_job_id=None, status=None, include_deleted=False):
+def get_contact_ids_matching(q="", source_job_id=None, status=None, include_deleted=False,
+                             call_status=None):
     """
     Every contact id matching a filter, ignoring paging.
 
@@ -1300,7 +1340,7 @@ def get_contact_ids_matching(q="", source_job_id=None, status=None, include_dele
     reach the rows on screen, so a bulk delete over a filtered list would
     silently act on one page's worth.
     """
-    where, params = _contact_filters(q, source_job_id, status, include_deleted)
+    where, params = _contact_filters(q, source_job_id, status, include_deleted, call_status)
     with get_db() as conn:
         return [r["id"] for r in conn.execute(
             f"SELECT id FROM contacts {where}", params
@@ -2274,7 +2314,98 @@ _DEFAULT_SCRIPT_SECTIONS = [
 ]
 
 
-def log_call(contact_id: int, outcome: str, notes: str = "", next_call_at: str = None) -> dict:
+def create_call_campaign(name: str, notes: str = "") -> int:
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO call_campaigns(name, notes) VALUES(?,?)",
+            (name.strip() or "Untitled call campaign", notes or ""),
+        )
+        return cur.lastrowid
+
+
+def update_call_campaign(cid: int, **fields):
+    allowed = {"name", "notes", "status"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return
+    sets = ", ".join(f"{k}=?" for k in updates)
+    with get_db() as conn:
+        conn.execute(f"UPDATE call_campaigns SET {sets} WHERE id=?",
+                     (*updates.values(), cid))
+
+
+def delete_call_campaign(cid: int):
+    """Removes the campaign and its membership. Contacts and calls are kept."""
+    with get_db() as conn:
+        conn.execute("DELETE FROM call_campaign_members WHERE call_campaign_id=?", (cid,))
+        conn.execute("DELETE FROM call_campaigns WHERE id=?", (cid,))
+
+
+def add_to_call_campaign(cid: int, contact_ids) -> int:
+    """Add contacts, ignoring any already in this campaign. Returns how many were new."""
+    added = 0
+    with get_db() as conn:
+        for contact_id in contact_ids:
+            cur = conn.execute("""
+                INSERT OR IGNORE INTO call_campaign_members(call_campaign_id, contact_id)
+                VALUES(?,?)
+            """, (cid, int(contact_id)))
+            added += cur.rowcount
+    return added
+
+
+def remove_from_call_campaign(cid: int, contact_ids) -> int:
+    with get_db() as conn:
+        removed = 0
+        for contact_id in contact_ids:
+            cur = conn.execute(
+                "DELETE FROM call_campaign_members WHERE call_campaign_id=? AND contact_id=?",
+                (cid, int(contact_id)),
+            )
+            removed += cur.rowcount
+        return removed
+
+
+def get_call_campaigns():
+    """
+    Every campaign with its progress. One query per campaign is fine at this
+    scale and keeps the counting rules in one readable place rather than a
+    lattice of correlated subqueries.
+    """
+    terminal = [k for k, v in CALL_OUTCOMES.items() if v[1]]
+    placeholders = ",".join("?" * len(terminal))
+
+    with get_db() as conn:
+        campaigns = [dict(r) for r in conn.execute(
+            "SELECT * FROM call_campaigns ORDER BY id DESC"
+        ).fetchall()]
+
+        for c in campaigns:
+            row = conn.execute(f"""
+                SELECT
+                  COUNT(*)                                                        AS total,
+                  SUM(CASE WHEN COALESCE(ct.call_status,'') = '' THEN 1 ELSE 0 END) AS uncalled,
+                  SUM(CASE WHEN ct.call_status IN ({placeholders}) THEN 1 ELSE 0 END) AS closed,
+                  SUM(CASE WHEN ct.call_status = 'booked' THEN 1 ELSE 0 END)      AS booked,
+                  SUM(CASE WHEN ct.call_status = 'not_interested' THEN 1 ELSE 0 END) AS not_interested,
+                  SUM(CASE WHEN ct.next_call_at IS NOT NULL
+                            AND datetime(ct.next_call_at) <= datetime('now')
+                            AND ct.call_status NOT IN ({placeholders})
+                           THEN 1 ELSE 0 END)                                     AS due
+                  FROM call_campaign_members m
+                  JOIN contacts ct ON ct.id = m.contact_id
+                 WHERE m.call_campaign_id = ? AND ct.status != 'deleted'
+            """, (*terminal, *terminal, c["id"])).fetchone()
+
+            c.update({k: (row[k] or 0) for k in
+                      ("total", "uncalled", "closed", "booked", "not_interested", "due")})
+            # What is left to work, which is the number you actually plan by.
+            c["remaining"] = c["total"] - c["closed"]
+    return campaigns
+
+
+def log_call(contact_id: int, outcome: str, notes: str = "", next_call_at: str = None,
+             call_campaign_id: int = None) -> dict:
     """
     Record a call attempt and move the contact's calling state forward.
 
@@ -2297,9 +2428,10 @@ def log_call(contact_id: int, outcome: str, notes: str = "", next_call_at: str =
 
     with get_db() as conn:
         conn.execute("""
-            INSERT INTO call_log(contact_id, outcome, notes, next_call_at)
-            VALUES(?,?,?,?)
-        """, (contact_id, outcome, notes or "", next_call_at or None))
+            INSERT INTO call_log(contact_id, outcome, notes, next_call_at, call_campaign_id)
+            VALUES(?,?,?,?,?)
+        """, (contact_id, outcome, notes or "", next_call_at or None,
+              int(call_campaign_id) if call_campaign_id else None))
 
         # Retirement from the queue comes from call_status being terminal, not
         # from clearing the date, so keeping a booked meeting's time cannot put
@@ -2330,7 +2462,8 @@ def log_call(contact_id: int, outcome: str, notes: str = "", next_call_at: str =
     return {"outcome": outcome, "terminal": is_terminal, "stopped_email": stops_email}
 
 
-def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_website=False):
+def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_website=False,
+                   call_campaign_id=None):
     """
     The leads to work right now.
 
@@ -2352,6 +2485,32 @@ def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_websit
     ]
     params = list(terminal)
 
+    # "worked" is the opposite of every other bucket: it exists precisely to
+    # show the leads the others hide, so a lead closed out by mistake can be
+    # found and reopened instead of disappearing.
+    if bucket == "worked":
+        where = [
+            f"c.call_status IN ({placeholders})",
+            "c.status != 'deleted'",
+        ]
+        params = list(terminal)
+        if source_job_id:
+            where.append("c.source_job_id = ?")
+            params.append(int(source_job_id))
+        if only_no_website:
+            where.append("c.status = 'no_website'")
+        if call_campaign_id:
+            where.append("c.id IN (SELECT contact_id FROM call_campaign_members "
+                         "WHERE call_campaign_id = ?)")
+            params.append(int(call_campaign_id))
+        params.append(int(limit))
+        with get_db() as conn:
+            return [dict(r) for r in conn.execute(f"""
+                SELECT c.* FROM contacts c
+                 WHERE {' AND '.join(where)}
+                 ORDER BY c.id DESC LIMIT ?
+            """, params).fetchall()]
+
     if bucket == "today":
         where.append("c.next_call_at IS NOT NULL AND datetime(c.next_call_at) <= datetime('now')")
         order = "c.next_call_at ASC"
@@ -2369,6 +2528,10 @@ def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_websit
         params.append(int(source_job_id))
     if only_no_website:
         where.append("c.status = 'no_website'")
+    if call_campaign_id:
+        where.append("c.id IN (SELECT contact_id FROM call_campaign_members "
+                     "WHERE call_campaign_id = ?)")
+        params.append(int(call_campaign_id))
 
     params.append(int(limit))
     with get_db() as conn:
@@ -2381,13 +2544,32 @@ def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_websit
         return [dict(r) for r in rows]
 
 
-def get_call_queue_counts(source_job_id=None, only_no_website=False):
+def get_call_queue_counts(source_job_id=None, only_no_website=False, call_campaign_id=None):
     """Bucket sizes, so the tabs can show what is waiting without loading it."""
     return {
         b: len(get_call_queue(b, limit=100000, source_job_id=source_job_id,
-                              only_no_website=only_no_website))
-        for b in ("today", "new", "upcoming")
+                              only_no_website=only_no_website,
+                              call_campaign_id=call_campaign_id))
+        for b in ("today", "new", "upcoming", "worked")
     }
+
+
+def reopen_call_lead(contact_id: int) -> bool:
+    """
+    Put a closed-out lead back in the queue.
+
+    Marking the wrong row terminal during a calling session is easy, and
+    without this the only remedy is editing the database by hand. The call
+    history is left intact -- what happened still happened, this only says the
+    lead is workable again. An unsubscribe is deliberately not undone here:
+    that was a request from the prospect, not a misclick.
+    """
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE contacts SET call_status='', next_call_at=NULL WHERE id=?",
+            (contact_id,),
+        )
+        return cur.rowcount > 0
 
 
 def get_call_history(contact_id: int):

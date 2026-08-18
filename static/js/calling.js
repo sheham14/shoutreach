@@ -11,10 +11,94 @@ let _callOutcomes = [];
 let _callLead     = null;      // the lead currently on screen
 let _callScript   = null;
 let _attemptLimit = 6;
+let _callCampaigns = [];
+let _callCampaignId = '';   // '' = every lead, ignoring campaigns
 
 async function loadCalling() {
-  await Promise.all([loadCallScript(), loadCallSources()]);
+  await Promise.all([loadCallScript(), loadCallSources(), loadCallCampaigns()]);
   await loadCallQueue();
+}
+
+// ── Campaigns ────────────────────────────────────────────────────────────────
+//
+// A batch you decided to work ("10 clinics, St John's"), as distinct from a
+// lead list, which groups by whenever the scrape happened to run.
+
+async function loadCallCampaigns() {
+  _callCampaigns = await api('/api/call-campaigns') || [];
+  const sel = document.getElementById('cq-campaign');
+  if (sel) {
+    sel.innerHTML = '<option value="">All leads (no campaign)</option>' +
+      _callCampaigns.map(c =>
+        `<option value="${c.id}">${esc(c.name)} — ${c.remaining} left of ${c.total}</option>`
+      ).join('');
+    sel.value = _callCampaignId;
+  }
+  _renderCampaignCards();
+  const del = document.getElementById('cq-campaign-delete');
+  if (del) del.style.display = _callCampaignId ? 'inline-flex' : 'none';
+}
+
+function _renderCampaignCards() {
+  const wrap = document.getElementById('cq-campaign-cards');
+  if (!wrap) return;
+  if (!_callCampaigns.length) {
+    wrap.innerHTML = '<div class="text-muted text-small">No campaigns yet. Create one, then add leads from Contacts.</div>';
+    return;
+  }
+  wrap.innerHTML = _callCampaigns.map(c => {
+    const on = String(c.id) === String(_callCampaignId);
+    const pct = c.total ? Math.round((c.closed / c.total) * 100) : 0;
+    return `<div onclick="setCallCampaign('${c.id}')"
+      style="cursor:pointer;border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};
+             border-radius:8px;padding:12px;background:${on ? 'rgba(96,165,250,.06)' : 'transparent'}">
+      <div style="font-size:13px;font-weight:600;margin-bottom:6px">${esc(c.name)}</div>
+      <div style="height:5px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-bottom:8px">
+        <div style="height:100%;width:${pct}%;background:var(--green)"></div>
+      </div>
+      <div class="text-muted" style="font-size:11px;line-height:1.7">
+        <div>${c.remaining} left of ${c.total}</div>
+        <div>${c.due} due now · ${c.uncalled} never called</div>
+        <div style="color:var(--green)">${c.booked} booked</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function setCallCampaign(id) {
+  _callCampaignId = id ? String(id) : '';
+  const sel = document.getElementById('cq-campaign');
+  if (sel) sel.value = _callCampaignId;
+  const del = document.getElementById('cq-campaign-delete');
+  if (del) del.style.display = _callCampaignId ? 'inline-flex' : 'none';
+  _renderCampaignCards();
+  loadCallQueue();
+}
+
+async function openNewCallCampaign() {
+  const name = prompt('Name this campaign — e.g. "Dental clinics, St Johns"');
+  if (!name || !name.trim()) return;
+  const res = await api('/api/call-campaigns', 'POST', { name: name.trim() });
+  if (!res || res.error) { toast((res && res.error) || 'Could not create it', 'err'); return; }
+  toast('Campaign created — add leads from Contacts');
+  _callCampaignId = String(res.id);
+  await loadCallCampaigns();
+  loadCallQueue();
+}
+
+async function deleteCallCampaign() {
+  if (!_callCampaignId) return;
+  const c = _callCampaigns.find(x => String(x.id) === _callCampaignId);
+  // Worth stating plainly: this removes the grouping, not the leads.
+  if (!confirm(`Delete the campaign "${c ? c.name : ''}"?\n\n`
+             + `The ${c ? c.total : 0} contacts and their call history are kept — `
+             + `only the grouping goes.`)) return;
+  const res = await api(`/api/call-campaigns/${_callCampaignId}`, 'DELETE');
+  if (!res || res.error) { toast((res && res.error) || 'Could not delete', 'err'); return; }
+  toast('Campaign deleted — leads kept');
+  _callCampaignId = '';
+  await loadCallCampaigns();
+  loadCallQueue();
 }
 
 async function loadCallSources() {
@@ -28,7 +112,7 @@ async function loadCallSources() {
 
 function setCallBucket(bucket) {
   _callBucket = bucket;
-  ['today', 'new', 'upcoming', 'all'].forEach(b => {
+  ['today', 'new', 'upcoming', 'all', 'worked'].forEach(b => {
     const el = document.getElementById(`cq-tab-${b}`);
     if (!el) return;
     el.classList.toggle('btn-primary', b === bucket);
@@ -42,6 +126,7 @@ async function loadCallQueue() {
   const src = document.getElementById('cq-source-filter')?.value;
   if (src) p.set('source_job_id', src);
   if (document.getElementById('cq-no-website')?.checked) p.set('no_website', '1');
+  if (_callCampaignId) p.set('call_campaign_id', _callCampaignId);
 
   const data = await api('/api/calls/queue?' + p.toString());
   if (!data || !data.leads) { toast('Could not load the call queue', 'err'); return; }
@@ -50,15 +135,17 @@ async function loadCallQueue() {
   _callOutcomes = data.outcomes || [];
   _attemptLimit = data.attempt_limit || 6;
 
-  ['today', 'new', 'upcoming'].forEach(b => {
+  ['today', 'new', 'upcoming', 'worked'].forEach(b => {
     const el = document.getElementById(`cq-count-${b}`);
     if (el) el.textContent = (data.counts || {})[b] ?? 0;
   });
 
   _renderCallTable();
 
-  // Drop straight into the first lead so the common case is zero clicks.
-  if (_callLeads.length) openCallLead(_callLeads[0].id);
+  // Drop straight into the first lead so the common case is zero clicks --
+  // except when reviewing closed-out leads, where there is nothing to dial and
+  // opening one would just put a live outcome form in front of you.
+  if (_callLeads.length && _callBucket !== 'worked') openCallLead(_callLeads[0].id);
   else {
     _callLead = null;
     document.getElementById('cq-lead-card').style.display = 'none';
@@ -67,7 +154,8 @@ async function loadCallQueue() {
 }
 
 function _renderCallTable() {
-  const titles = { today: 'Due now', new: 'Never called', upcoming: 'Scheduled', all: 'All callable' };
+  const titles = { today: 'Due now', new: 'Never called', upcoming: 'Scheduled',
+                   all: 'All callable', worked: 'Worked — closed out' };
   document.getElementById('cq-list-title').textContent = titles[_callBucket] || 'Queue';
   document.getElementById('cq-list-count').textContent =
     `${_callLeads.length} lead${_callLeads.length === 1 ? '' : 's'}`;
@@ -89,7 +177,11 @@ function _renderCallTable() {
       <td class="mono" style="font-size:12px${over ? ';color:var(--amber)' : ''}"
           ${over ? `title="Past ${_attemptLimit} attempts — probably time to let it go"` : ''}>${l.call_attempts}</td>
       <td class="mono text-muted" style="font-size:11px">${due}</td>
-      <td><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openCallLead(${l.id})">Open</button></td>
+      <td>${_callBucket === 'worked'
+            ? `${callStatusBadge(l.call_status)} <button class="btn btn-ghost btn-sm"
+                 onclick="event.stopPropagation();reopenCallLead(${l.id})"
+                 title="Put this lead back in the queue">↩ Reopen</button>`
+            : `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openCallLead(${l.id})">Open</button>`}</td>
     </tr>`;
   }).join('');
 }
@@ -209,10 +301,12 @@ async function saveCallOutcome() {
     outcome:      _chosenOutcome,
     notes:        document.getElementById('cq-notes').value,
     next_call_at: nextAt || null,
+    call_campaign_id: _callCampaignId || null,
   });
   if (!res || res.error) { toast((res && res.error) || 'Could not save', 'err'); return; }
 
   toast(res.stopped_email ? 'Logged — email sequence stopped' : 'Logged');
+  loadCallCampaigns();
   _advanceToNextLead(_callLead.id);
 }
 
@@ -224,6 +318,13 @@ function _advanceToNextLead(justDoneId) {
   _callLeads = _callLeads.filter(l => l.id !== justDoneId);
   if (next) { _renderCallTable(); openCallLead(next.id); }
   else loadCallQueue();
+}
+
+async function reopenCallLead(id) {
+  const res = await api(`/api/calls/${id}/reopen`, 'POST');
+  if (!res || res.error) { toast((res && res.error) || 'Could not reopen', 'err'); return; }
+  toast('Back in the queue');
+  loadCallQueue();
 }
 
 function skipCallLead() {
