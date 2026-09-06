@@ -31,7 +31,26 @@ async function runSchedulerNow() {
   }
 }
 
+async function loadEmailCheckingToggle() {
+  const settings = await api('/api/settings') || {};
+  document.getElementById('email-checking-toggle').checked =
+    (settings.email_checking_enabled ?? '1') === '1';
+}
+
+async function toggleEmailChecking(enabled) {
+  const res = await api('/api/settings', 'POST', { email_checking_enabled: enabled ? '1' : '0' });
+  if (!res || res.error) {
+    toast((res && res.error) || 'Could not save', 'err');
+    document.getElementById('email-checking-toggle').checked = !enabled; // revert
+    return;
+  }
+  toast(enabled
+    ? 'Will check for replies & bounces every 5 minutes'
+    : 'Automatic checking off — "Check for replies & send" in the sidebar still works on demand');
+}
+
 async function refreshDashboard() {
+  loadEmailCheckingToggle();
   const s = await api('/api/stats');
   document.getElementById('s-total').textContent   = s.total;
   document.getElementById('s-sent').textContent    = s.sent;

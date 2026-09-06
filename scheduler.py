@@ -4,6 +4,10 @@ scheduler.py — Background job engine.
 Runs three recurring jobs:
   1. process_queue()      — every 60s — sends due emails with random human-like delays
   2. check_replies()      — every 5m  — scans IMAP for replies, pauses sequences
+     (skipped when settings['email_checking_enabled'] == '0' — an IMAP login
+     every 5 minutes costs real time and log volume with no campaigns
+     running, and the Dashboard toggle exists for exactly that case. A manual
+     "Check for replies & send" click always runs it regardless.)
   3. run_wa_signal_scan() — every 60s — plain-HTTP booking-gap check for WhatsApp leads
 
 Anti-spam protections enforced here:
@@ -38,6 +42,16 @@ _scheduler_lock = threading.Lock()
 _stop_event = threading.Event()
 _wake_event = threading.Event()
 _run_now_reply_check = False  # set by request_run_now(include_reply_check=True)
+
+
+def email_checking_enabled() -> bool:
+    """
+    Whether the periodic (not manual) reply/bounce check should run this
+    tick. Off only if the operator explicitly disabled it in Settings/the
+    Dashboard toggle -- absent or any other value defaults to on, so an
+    existing install's behavior never changes just by upgrading.
+    """
+    return db.get_settings().get("email_checking_enabled", "1") == "1"
 
 
 def request_run_now(include_reply_check: bool = False) -> None:
@@ -306,7 +320,12 @@ def _run_loop():
         do_reply_check = _run_now_reply_check
         _run_now_reply_check = False
         now = time.time()
-        if do_reply_check or now - last_reply_check > 300:  # 5 minutes
+        # Off by default only if the operator has explicitly turned it off --
+        # every existing install keeps checking unless someone opts out. A
+        # manual "Check for replies & send" click (do_reply_check) always
+        # runs regardless: turning off the automatic poll is not the same as
+        # saying "never, not even when I ask for it".
+        if do_reply_check or (email_checking_enabled() and now - last_reply_check > 300):  # 5 minutes
             run_reply_check()
             run_bounce_check()
             last_reply_check = now

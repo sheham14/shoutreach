@@ -7,6 +7,26 @@
     <button class="btn btn-ghost btn-sm" onclick="refreshDashboard()">↻ Refresh</button>
   </div>
 
+  <!-- Reply/bounce checking logs in on IMAP every 5 minutes whether or not
+       any campaign is actually running, which costs real time on a small
+       server and fills the log table with nothing worth reading when
+       there's nothing to check. This turns off only the automatic timer --
+       the sidebar's "Check for replies & send" button still works right
+       through it, since clicking that is always a deliberate ask. -->
+  <div class="card" style="padding:14px 18px;margin-bottom:18px">
+    <label style="display:flex;align-items:center;gap:10px;cursor:pointer;flex-wrap:wrap">
+      <input type="checkbox" id="email-checking-toggle" onchange="toggleEmailChecking(this.checked)" style="cursor:pointer" />
+      <span style="font-size:13px;font-weight:600">Automatically check for replies &amp; bounces</span>
+      <button type="button" class="info-dot" onclick="event.preventDefault();toggleInfo(this)">ⓘ</button>
+      <div class="info-tip" style="flex-basis:100%">
+        Every 5 minutes this logs into your inbox to check for replies and bounces — useful while a
+        campaign is actively sending, pointless (and a little costly) while none are. Turning it off
+        doesn't stop anything already running; it just skips the automatic check. You can always run
+        one on demand with "Check for replies &amp; send" in the sidebar.
+      </div>
+    </label>
+  </div>
+
   <div class="stat-grid" id="global-stats">
     <div class="stat-card"><div class="stat-label">Total Contacts</div><div class="stat-value blue" id="s-total">—</div></div>
     <div class="stat-card"><div class="stat-label">Emails Sent</div><div class="stat-value" id="s-sent">—</div></div>
