@@ -4083,6 +4083,18 @@ def prune_logs(retention_days=60) -> int:
         return cur.rowcount
 
 
+def clear_logs() -> int:
+    """
+    Delete every row in the activity log, on request rather than by age.
+    Distinct from prune_logs (the automatic 60-day retention job) -- this is
+    "wipe it now", for an operator who just wants a clean slate rather than
+    waiting out the retention window. Logs are an operational trail, not
+    outreach data: clearing them can't lose a contact, a send, or a reply.
+    """
+    with get_db() as conn:
+        return conn.execute("DELETE FROM logs").rowcount
+
+
 # ── Users & Auth ──────────────────────────────────────────────────────────────
 #
 # Password hash format:

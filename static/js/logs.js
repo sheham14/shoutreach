@@ -12,3 +12,11 @@ async function loadLogs() {
     </div>
   `).join('');
 }
+
+async function clearAllLogs() {
+  if (!confirm('Permanently delete every activity log entry? This cannot be undone — it does not touch contacts, campaigns, or sends, only this history.')) return;
+  const res = await api('/api/logs', 'DELETE');
+  if (!res || res.error) { toast((res && res.error) || 'Could not clear logs', 'err'); return; }
+  toast(`Cleared ${res.deleted} log entr${res.deleted === 1 ? 'y' : 'ies'}`);
+  loadLogs();
+}

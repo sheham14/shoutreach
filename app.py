@@ -1696,6 +1696,16 @@ def api_logs():
     return jsonify(db.get_logs(100))
 
 
+@app.route("/api/logs", methods=["DELETE"])
+@admin_required
+def api_clear_logs():
+    """Wipes the activity log on request. See db.clear_logs for why this is
+    safe: it's an operational trail, not outreach data."""
+    deleted = db.clear_logs()
+    db.add_log(f"🧹 Activity log cleared ({deleted} entries removed)")
+    return jsonify({"ok": True, "deleted": deleted})
+
+
 # ── API: Cold calling ─────────────────────────────────────────────────────────
 
 @app.route("/api/calls/queue", methods=["GET"])
