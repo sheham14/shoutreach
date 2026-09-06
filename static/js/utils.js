@@ -3,6 +3,7 @@ function showSection(name) {
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
   document.getElementById('section-' + name)?.classList.add('active');
   document.querySelector(`nav a[data-section="${name}"]`)?.classList.add('active');
+  toggleSidebar(false); // a tap that navigates should close the drawer behind it
 
   if (name === 'dashboard')  refreshDashboard();
   if (name === 'campaigns')  loadCampaigns();
@@ -15,6 +16,16 @@ function showSection(name) {
   if (name === 'database')   loadDbTables();
 }
 
+// Off-canvas drawer on mobile (see the @media block in main.css). A no-op on
+// a desktop-width screen, where .sidebar isn't transformed off-screen at all.
+function toggleSidebar(force) {
+  const sidebar = document.querySelector('.sidebar');
+  const scrim = document.getElementById('sidebar-scrim');
+  const open = force !== undefined ? force : !sidebar.classList.contains('open');
+  sidebar.classList.toggle('open', open);
+  scrim.classList.toggle('open', open);
+}
+
 function toast(msg, type = 'ok') {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -25,6 +36,25 @@ function toast(msg, type = 'ok') {
 
 function openModal(id)  { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+// ── Tap-to-explain info dots ─────────────────────────────────────────────────
+//
+// Deliberately tap, not hover: this is aimed at a colleague on a phone, and
+// hover-only tooltips don't exist on a touchscreen. infoDot() returns a
+// button immediately followed by its (initially hidden) explanation, as
+// sibling elements -- toggleInfo relies on that adjacency, so keep them
+// together wherever this is used.
+function infoDot(text) {
+  return `<button type="button" class="info-dot" onclick="toggleInfo(this)">ⓘ</button><div class="info-tip">${esc(text)}</div>`;
+}
+
+function toggleInfo(btn) {
+  const tip = btn.nextElementSibling;
+  if (!tip || !tip.classList.contains('info-tip')) return;
+  const open = !tip.classList.contains('open');
+  tip.classList.toggle('open', open);
+  btn.classList.toggle('open', open);
+}
 
 // ── Cross-channel duplicate confirmation ────────────────────────────────────
 //

@@ -12,6 +12,8 @@
 <body>
 
 <div class="shell">
+  <button class="sidebar-toggle" onclick="toggleSidebar()" aria-label="Menu">☰</button>
+  <div class="sidebar-scrim" id="sidebar-scrim" onclick="toggleSidebar(false)"></div>
   {% include 'sections/sidebar.html' %}
   <main class="main">
     {% include 'sections/dashboard.html' %}

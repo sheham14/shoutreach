@@ -21,16 +21,16 @@ async function loadWhatsApp() {
   await loadWaBucket();
 }
 
+// Four tiles, not eight — the full breakdown is still one tap away as the
+// bucket tabs below, so the summary's job is just "how much is waiting on
+// me," not a second copy of every number on the page.
 async function loadWaSummary() {
   const s = await api('/api/wa/summary') || {};
   const tiles = [
-    ['Total',            s.total],
-    ['Awaiting signal',  s.pending_signal],
-    ['Needs review',     s.awaiting_review],
-    ['Awaiting draft',   s.awaiting_draft],
-    ['Ready to send',    s.ready_to_send],
-    ['In cadence',       s.in_cadence],
-    ['Replied',          s.replied],
+    ['Total leads',    s.total],
+    ['Needs review',   s.awaiting_review],
+    ['Ready to send',  s.ready_to_send],
+    ['Replied',        s.replied],
   ];
   document.getElementById('wa-summary').innerHTML = tiles.map(([label, value]) => `
     <div class="stat-card">
@@ -71,7 +71,7 @@ function setWaBucket(bucket) {
 async function loadWaBucket() {
   const titles = {
     review: 'Needs review', ready: 'Ready to send', due: 'Follow-up due',
-    cadence: 'In cadence', all: 'All leads',
+    cadence: 'Waiting for reply', all: 'All leads',
   };
   document.getElementById('wa-list-title').textContent = titles[_waBucket] || 'Leads';
 
@@ -85,14 +85,7 @@ async function loadWaBucket() {
   }
   document.getElementById('wa-list-count').textContent =
     `${_waLeads.length} lead${_waLeads.length === 1 ? '' : 's'}`;
-  _renderWaTable();
-}
-
-function _waSignalPill(l) {
-  if (!l.signal_type) return '';
-  const cls = l.signal_type === 'gap_found' ? 'badge-red'
-            : l.signal_type === 'no_gap'    ? 'badge-green' : 'badge-amber';
-  return `<span class="badge ${cls}" style="margin-left:6px;font-size:10px">${WA_SIGNAL_LABELS[l.signal_type] || l.signal_type}</span>`;
+  _renderWaList();
 }
 
 function _waStatusBadge(l) {
@@ -100,90 +93,121 @@ function _waStatusBadge(l) {
   if (l.replied)  return `<span class="badge badge-green">Replied</span>`;
   if (l.paused)   return `<span class="badge badge-amber">Paused</span>`;
   const map = {
-    '': 'Awaiting signal check', signal_ready: 'Needs review',
-    confirmed: 'Awaiting draft', drafted: 'Ready to send', sent: 'Sent',
+    '': 'Checking their website…', signal_ready: 'Needs your review',
+    confirmed: 'Being written up', drafted: 'Ready to send', sent: 'Sent, waiting',
   };
   return `<span class="badge badge-gray">${esc(map[l.wa_status] || l.wa_status || '—')}</span>`;
 }
 
-function _renderWaTable() {
-  const tbody = document.getElementById('wa-table');
+function _renderWaList() {
+  const wrap = document.getElementById('wa-list');
   if (!_waLeads.length) {
-    tbody.innerHTML = `<tr><td colspan="5"><div class="empty-state"><p>Nothing here right now</p></div></td></tr>`;
+    wrap.innerHTML = `<div class="empty-state"><p>Nothing here right now</p></div>`;
     return;
   }
-  tbody.innerHTML = _waLeads.map(l => _renderWaRow(l)).join('');
+  wrap.innerHTML = _waLeads.map(l => _renderWaCard(l)).join('');
 }
 
-function _businessCell(l) {
+function _cardTop(l) {
   const bits = [];
-  if (l.website) bits.push(`<a href="${esc(l.website)}" target="_blank" rel="noopener" style="color:var(--blue)">${esc(l.website)}</a>`);
   if (l.rating != null) bits.push(`${esc(l.rating)}★`);
-  return `<div>${esc(l.company || '—')}</div>
-          <div class="text-muted text-small">${bits.join(' &nbsp;·&nbsp; ')}</div>`;
+  if (l.website) bits.push(`<a href="${esc(l.website)}" target="_blank" rel="noopener" style="color:var(--blue)">website</a>`);
+  return `
+    <div class="wa-card-top">
+      <div>
+        <div class="wa-card-name">${esc(l.company || 'Unnamed business')}</div>
+        ${bits.length ? `<div class="wa-card-meta">${bits.join(' &nbsp;·&nbsp; ')}</div>` : ''}
+      </div>
+      ${_waStatusBadge(l)}
+    </div>
+    <div class="wa-card-phone">📞 ${esc(l.wa_number || 'No number')}${l.number_type === 'landline'
+      ? ' <span class="landline-note">(landline — may not have WhatsApp)</span>' : ''}</div>`;
 }
 
 function _moveButton(l) {
-  return `<button class="btn btn-ghost btn-sm" onclick="moveWaLead(${l.id})"
-            title="The number turned out not to be on WhatsApp">Not on WhatsApp</button>`;
+  return `<button class="btn btn-ghost btn-sm" onclick="moveWaLead(${l.id})">Not on WhatsApp</button>`;
 }
 
-function _renderWaRow(l) {
-  const business = `<td>${_businessCell(l)}</td>`;
-  const number   = `<td class="mono" style="font-size:12px">${esc(l.wa_number || '—')}${l.number_type === 'landline' ? ' <span class="text-muted" style="font-size:10px">(landline)</span>' : ''}</td>`;
-  const status   = `<td>${_waStatusBadge(l)}</td>`;
+function _renderWaCard(l) {
+  const top = _cardTop(l);
 
   if (_waBucket === 'review' || (!l.signal_confirmed && l.wa_status === 'signal_ready')) {
-    const middle = `<td>
-      <select id="wa-sig-type-${l.id}" style="margin-bottom:6px;background:var(--bg3);border:1px solid var(--border2);
-              border-radius:6px;padding:5px 8px;color:var(--text);font-size:12px;font-family:var(--font)">
-        ${['gap_found', 'no_gap', 'unclear'].map(t =>
-          `<option value="${t}" ${l.signal_type === t ? 'selected' : ''}>${WA_SIGNAL_LABELS[t]}</option>`).join('')}
-      </select>
-      <textarea id="wa-sig-detail-${l.id}" style="min-height:50px;font-size:12px"
-                placeholder="What did you actually see on their site?">${esc(l.signal_detail || '')}</textarea>
-    </td>`;
-    const actions = `<td><button class="btn btn-primary btn-sm" onclick="confirmWaSignal(${l.id})">Confirm</button>${_moveButton(l)}</td>`;
-    return `<tr>${business}${number}${middle}${status}${actions}</tr>`;
+    return `<div class="wa-card">
+      ${top}
+      <div class="wa-card-row">
+        <select id="wa-sig-type-${l.id}" style="background:var(--bg3);border:1px solid var(--border2);
+                border-radius:6px;padding:7px 10px;color:var(--text);font-size:13px;font-family:var(--font)">
+          ${['gap_found', 'no_gap', 'unclear'].map(t =>
+            `<option value="${t}" ${l.signal_type === t ? 'selected' : ''}>${WA_SIGNAL_LABELS[t]}</option>`).join('')}
+        </select>
+        ${infoDot("gap found = their website has no visible way to book online, which is the whole pitch. "
+          + "no gap = they already have online booking, so a compliment message goes out instead. "
+          + "unclear = their site didn't load properly or had almost nothing on it — open the website "
+          + "link above and check by hand before picking one.")}
+      </div>
+      <div class="wa-card-body">
+        <textarea id="wa-sig-detail-${l.id}"
+                  placeholder="What did you actually see on their site?">${esc(l.signal_detail || '')}</textarea>
+      </div>
+      <div class="wa-card-actions">
+        <button class="btn btn-primary btn-sm" onclick="confirmWaSignal(${l.id})">Confirm</button>
+        ${_moveButton(l)}
+      </div>
+    </div>`;
   }
 
   if (_waBucket === 'due') {
-    const middle = `<td><textarea id="wa-msg-${l.id}" style="min-height:60px;font-size:13px">${esc(l.followup_draft || '')}</textarea></td>`;
-    const actions = `<td>
-      <button class="btn btn-primary btn-sm" onclick="openWaLink(${l.id}, 'followup')">Open in WhatsApp</button>
-      <div class="text-muted text-small" style="margin-top:4px">${l.followup_count || 0} follow-up${l.followup_count === 1 ? '' : 's'} so far</div>
-      ${_moveButton(l)}
-    </td>`;
-    return `<tr>${business}${number}${middle}${status}${actions}</tr>`;
+    return `<div class="wa-card">
+      ${top}
+      <div class="wa-card-body">
+        <textarea id="wa-msg-${l.id}">${esc(l.followup_draft || '')}</textarea>
+      </div>
+      <div class="wa-card-actions">
+        <button class="btn btn-primary btn-sm" onclick="openWaLink(${l.id}, 'followup')">Open in WhatsApp</button>
+        ${_moveButton(l)}
+      </div>
+      <div class="wa-card-footnote">${l.followup_count || 0} follow-up${l.followup_count === 1 ? '' : 's'} sent so far</div>
+    </div>`;
   }
 
   if (l.wa_status === 'drafted' || l.wa_status === 'sent' || l.replied) {
-    const middle = `<td><textarea id="wa-msg-${l.id}" style="min-height:60px;font-size:13px">${esc(l.draft_message || '')}</textarea></td>`;
     const sentInfo = l.sent_date
-      ? `<div class="text-muted text-small">Sent ${esc(l.sent_date.substring(0, 16))}
-           <a href="#" onclick="event.preventDefault();correctWaSentDate(${l.id})" style="color:var(--blue)">(fix)</a></div>`
+      ? `<div class="wa-card-footnote">Opened ${esc(l.sent_date.substring(0, 16))}
+           <a href="#" onclick="event.preventDefault();correctWaSentDate(${l.id})" style="color:var(--blue)">didn't actually send?</a></div>`
       : '';
-    const repliedToggle = l.wa_status === 'sent' || l.replied
-      ? `<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);cursor:pointer;margin-top:4px">
+    const repliedToggle = (l.wa_status === 'sent' || l.replied)
+      ? `<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);cursor:pointer">
            <input type="checkbox" ${l.replied ? 'checked' : ''} onchange="toggleWaReplied(${l.id}, this.checked)" />
-           Replied
+           They replied
          </label>`
       : '';
     const sendBtn = l.wa_status === 'drafted'
       ? `<button class="btn btn-primary btn-sm" onclick="openWaLink(${l.id}, 'opener')">Open in WhatsApp</button>`
       : '';
     const pauseBtn = !l.replied
-      ? `<button class="btn btn-ghost btn-sm" onclick="toggleWaPaused(${l.id}, ${!l.paused})">${l.paused ? 'Resume' : 'Pause'}</button>`
+      ? `<button class="btn btn-ghost btn-sm" onclick="toggleWaPaused(${l.id}, ${!l.paused})">${l.paused ? 'Resume follow-ups' : 'Pause follow-ups'}</button>
+         ${infoDot("Pausing keeps the lead on file but stops it from ever showing up under “Follow-up due” "
+           + "again, until you resume it or they reply. Use it for “not now, maybe later” — for "
+           + "“never contact them again” use Not on WhatsApp or delete the lead instead.")}`
       : '';
-    const actions = `<td>${sendBtn} ${pauseBtn}${sentInfo}${repliedToggle}${!l.replied ? _moveButton(l) : ''}</td>`;
-    return `<tr>${business}${number}${middle}${status}${actions}</tr>`;
+    return `<div class="wa-card">
+      ${top}
+      <div class="wa-card-body">
+        <textarea id="wa-msg-${l.id}">${esc(l.draft_message || '')}</textarea>
+      </div>
+      <div class="wa-card-actions">${sendBtn} ${pauseBtn} ${repliedToggle} ${!l.replied ? _moveButton(l) : ''}</div>
+      ${sentInfo}
+    </div>`;
   }
 
   // '' (awaiting signal) or 'confirmed' (awaiting draft) or moved -- nothing
   // to act on here yet.
-  const middle = `<td class="text-muted text-small">${esc(l.signal_detail || (l.wa_status === '' ? 'Checked automatically, usually within a few minutes' : ''))}</td>`;
-  const actions = `<td>${l.moved_to ? '' : _moveButton(l)}</td>`;
-  return `<tr>${business}${number}${middle}${status}${actions}</tr>`;
+  const note = l.signal_detail || (l.wa_status === '' ? 'Checked automatically, usually within a few minutes.' : '');
+  return `<div class="wa-card">
+    ${top}
+    ${note ? `<div class="text-muted text-small" style="margin-bottom:8px">${esc(note)}</div>` : ''}
+    ${l.moved_to ? '' : `<div class="wa-card-actions">${_moveButton(l)}</div>`}
+  </div>`;
 }
 
 async function confirmWaSignal(id) {
