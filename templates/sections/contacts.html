@@ -15,16 +15,10 @@
   <div class="card">
     <div class="card-header">
       <div class="flex gap-2 items-center">
-        <input id="contacts-search" placeholder="Search..."
-               oninput="contactSearch()"
-               style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
-                      padding:6px 12px;color:var(--text);font-size:13px;outline:none;width:220px;
-                      font-family:var(--font)" />
-        <select id="contacts-source-filter" onchange="contactFilterChanged()"
-                title="Filter by the scrape that produced these leads"
-                style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
-                       padding:6px 10px;color:var(--text);font-size:13px;outline:none;
-                       max-width:260px;font-family:var(--font);cursor:pointer">
+        <input id="contacts-search" class="search-input" placeholder="Search..."
+               oninput="contactSearch()" />
+        <select id="contacts-source-filter" class="filter-select" onchange="contactFilterChanged()"
+                title="Filter by the scrape that produced these leads">
           <option value="">All lists</option>
         </select>
         <!-- This table is email addresses now, not businesses -- a lead
@@ -33,11 +27,8 @@
              findable: "no website" is the strongest pitch for a web-design
              offer, and that list lives in Calling's "add leads" search, which
              looks at businesses directly rather than at addresses. -->
-        <select id="contacts-status-filter" onchange="contactFilterChanged()"
-                title="Filter by this address's status"
-                style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
-                       padding:6px 10px;color:var(--text);font-size:13px;outline:none;
-                       font-family:var(--font);cursor:pointer">
+        <select id="contacts-status-filter" class="filter-select" onchange="contactFilterChanged()"
+                title="Filter by this address's status">
           <option value="">Any status</option>
           <option value="active">Active</option>
           <option value="bounced">Bounced</option>
@@ -46,11 +37,8 @@
         <!-- Where a closed-out lead goes. A terminal call outcome drops a lead
              from every calling queue, so this is the only place it can be
              found again or reopened. -->
-        <select id="contacts-call-filter" onchange="contactFilterChanged()"
-                title="Filter by what happened when you called"
-                style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
-                       padding:6px 10px;color:var(--text);font-size:13px;outline:none;
-                       font-family:var(--font);cursor:pointer">
+        <select id="contacts-call-filter" class="filter-select" onchange="contactFilterChanged()"
+                title="Filter by what happened when you called">
           <option value="">Any call status</option>
           <option value="none">Never called</option>
           <option value="any">Called (any outcome)</option>

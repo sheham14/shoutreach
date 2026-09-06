@@ -8,7 +8,7 @@
     Without these, emails will land in spam or be rejected. See README.md for a setup checklist.
   </div>
 
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+  <div class="responsive-grid-2" style="gap:24px">
 
     <div class="card" style="padding:24px;grid-column:1/-1">
       <div class="flex items-center" style="margin-bottom:16px">
@@ -78,7 +78,7 @@
     </div>
     <p class="text-muted text-small" style="margin-bottom:16px">AI-powered copy review scores your email, flags issues, and suggests improvements. Add your API key for whichever provider you prefer — costs fractions of a cent per review.</p>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div class="responsive-grid-2" style="gap:16px">
       <div class="form-group" style="margin-bottom:0">
         <label>AI Provider</label>
         <select id="cfg-ai-provider" onchange="aiProviderChanged()">
@@ -135,7 +135,7 @@
       </div>
     </div>
     <div class="form-hint" style="margin-top:14px">On your machine:</div>
-    <div class="mono" style="margin-top:6px;padding:10px 12px;background:var(--bg3);border-radius:6px;font-size:11px;line-height:1.8">
+    <div class="mono mono-block" style="margin-top:6px;padding:10px 12px;background:var(--bg3);border-radius:6px;font-size:11px;line-height:1.8;white-space:nowrap">
       <span style="color:var(--muted)"># PowerShell — quotes required</span><br>
       $env:SHOUTREACH_URL = "<span id="cfg-worker-origin">…</span>"<br>
       $env:SHOUTREACH_API_KEY = "&lt;the key above&gt;"<br>

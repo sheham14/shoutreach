@@ -421,6 +421,30 @@
   /* ── Hamburger toggle (mobile only — see the @media block below) ─────────── */
   .sidebar-toggle { display: none; }
 
+  /* ── Shared filter-bar controls ───────────────────────────────────────────
+     Contacts, Calling and Database each hand-rolled the same search box and
+     filter-select styling inline, at a fixed pixel width. An inline width
+     wins over anything a media query says about a class, which is exactly
+     why the earlier mobile pass didn't touch them -- there was no class
+     there to target. Consolidated here once, so mobile only needs to be
+     fixed in one place, and any future page gets it for free. */
+  .search-input, .filter-select {
+    background: var(--bg3); border: 1px solid var(--border2); border-radius: 6px;
+    padding: 6px 12px; color: var(--text); font-size: 13px; outline: none;
+    font-family: var(--font);
+  }
+  .search-input { width: 220px; }
+  .filter-select { max-width: 260px; cursor: pointer; }
+
+  /* ── Two/three-column layout blocks ──────────────────────────────────────
+     Settings and the Scraper page lay out cards side by side with an inline
+     `display:grid;grid-template-columns:...`. Same problem as above: inline
+     beats a media query. These classes replace the inline column count (gap
+     and margin can stay inline, they don't break anything at 375px) so
+     there's one place, not five, that decides what "narrow" means. */
+  .responsive-grid-2 { display: grid; grid-template-columns: 1fr 1fr; }
+  .responsive-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; }
+
   /* ── Mobile layout ─────────────────────────────────────────────────────────
      Nothing above this point assumed a screen narrower than a laptop. Below
      768px the fixed 220px sidebar alone leaves less width than a phone has,
@@ -452,7 +476,13 @@
     .page-header .flex { flex-wrap: wrap; }
     .page-header .btn { flex: 1 1 auto; justify-content: center; }
 
-    .stat-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    /* !important because every page that sets its own column count
+       (repeat(4/5/6,1fr) for various stat rows) does it as an inline style,
+       which otherwise wins over this rule outright and the row never
+       actually collapses -- it just renders that many columns squeezed into
+       a phone's width. This is deliberately overriding inline styles this
+       stylesheet doesn't control per-page; that's what the !important is for. */
+    .stat-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 10px; }
     .stat-card { padding: 12px 14px; }
     .stat-value { font-size: 20px; }
 
@@ -461,6 +491,31 @@
     /* Bigger tap targets everywhere a finger, not a cursor, is doing the tapping. */
     .btn { padding: 10px 16px; font-size: 14px; }
     .btn-sm { padding: 8px 12px; font-size: 13px; }
+
+    /* A card-header packs a title plus several buttons/inputs in one row
+       (Database's search+columns+export, Contacts' filters, etc.) -- fine
+       on a laptop, guaranteed to overflow a phone unless it can wrap. */
+    .card-header { flex-wrap: wrap; row-gap: 8px; }
+    .card-header > .flex { flex-wrap: wrap; width: 100%; }
+
+    .search-input, .filter-select { width: 100%; max-width: 100%; }
+
+    .responsive-grid-2, .responsive-grid-3 { grid-template-columns: 1fr; }
+
+    /* Every add/edit modal (account, contact, campaign, new campaign) lays
+       its fields out two per row with this class. It's a real class, not an
+       inline style, so oddly this was the easiest one to miss -- there was
+       just never a mobile rule for it at all until now. */
+    .form-grid { grid-template-columns: 1fr; }
+
+    /* The calling page's queue-plus-detail two-pane layout and its fixed
+       420px second column -- there's no useful way to show two panes side
+       by side on a 375px screen, so the detail card drops below the queue. */
+    #calling-split { grid-template-columns: 1fr !important; }
+
+    /* A code block wide enough to need horizontal scroll on a laptop needs
+       it far more on a phone; nothing upstream guaranteed this. */
+    pre, .mono-block { overflow-x: auto; }
   }
 
   /* ── WhatsApp lead cards ───────────────────────────────────────────────────

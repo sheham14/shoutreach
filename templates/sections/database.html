@@ -13,12 +13,9 @@
       <div class="card-header">
         <div class="card-title" id="db-table-name"></div>
         <div class="flex gap-2 items-center">
-          <input id="db-search"
+          <input id="db-search" class="search-input"
             placeholder="Search..."
-            oninput="dbSearch()"
-            style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
-                   padding:6px 12px;color:var(--text);font-size:13px;outline:none;width:200px;
-                   font-family:var(--font)" />
+            oninput="dbSearch()" />
           <div id="db-col-toggle-wrap" style="position:relative">
             <button class="btn btn-ghost btn-sm" onclick="dbToggleColDropdown()">⊞ Columns</button>
             <div id="db-col-dropdown"
