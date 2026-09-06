@@ -1,0 +1,48 @@
+<div class="section" id="section-whatsapp">
+  <div class="page-header">
+    <div>
+      <div class="page-title">WhatsApp</div>
+      <div class="page-sub">Sending is always manual — this only ever prepares a message for you to open and send yourself</div>
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-ghost" onclick="toggleWaTemplateEditor()">✎ Edit templates</button>
+      <button class="btn btn-primary" onclick="openWaImportModal()">+ Import leads</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadWhatsApp()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <div class="stat-grid" id="wa-summary" style="grid-template-columns:repeat(7,1fr);margin-bottom:18px"></div>
+
+  <div id="wa-template-editor" style="display:none;margin-bottom:20px"></div>
+
+  <div class="flex gap-2 items-center" style="margin-bottom:16px;flex-wrap:wrap">
+    <button class="btn btn-primary" id="wa-tab-review"   onclick="setWaBucket('review')">Needs review <span class="badge badge-gray" id="wa-count-review">0</span></button>
+    <button class="btn btn-ghost"   id="wa-tab-ready"     onclick="setWaBucket('ready')">Ready to send <span class="badge badge-gray" id="wa-count-ready">0</span></button>
+    <button class="btn btn-ghost"   id="wa-tab-due"       onclick="setWaBucket('due')">Follow-up due <span class="badge badge-gray" id="wa-count-due">0</span></button>
+    <button class="btn btn-ghost"   id="wa-tab-cadence"   onclick="setWaBucket('cadence')">In cadence <span class="badge badge-gray" id="wa-count-cadence">0</span></button>
+    <button class="btn btn-ghost"   id="wa-tab-all"       onclick="setWaBucket('all')">All</button>
+    <button class="btn btn-ghost btn-sm" id="wa-draft-batch-btn" onclick="runWaDraftBatch()"
+            style="margin-left:auto;display:none" title="Templates the confirmed signals into drafts, in one batch">
+      ✎ Draft confirmed leads <span class="badge badge-gray" id="wa-count-confirmed">0</span>
+    </button>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title" id="wa-list-title">Needs review</div>
+      <span class="text-muted text-small mono" id="wa-list-count"></span>
+    </div>
+    <div class="table-wrap" style="max-height:calc(100vh - 380px);overflow-y:auto">
+      <table>
+        <thead><tr>
+          <th style="min-width:160px">Business</th>
+          <th>Number</th>
+          <th style="min-width:320px">Message / signal</th>
+          <th style="min-width:140px">Status</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="wa-table"></tbody>
+      </table>
+    </div>
+  </div>
+</div>

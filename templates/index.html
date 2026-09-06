@@ -17,6 +17,7 @@
     {% include 'sections/dashboard.html' %}
     {% include 'sections/campaigns.html' %}
     {% include 'sections/calling.html' %}
+    {% include 'sections/whatsapp.html' %}
     {% include 'sections/contacts.html' %}
     {% include 'sections/logs.html' %}
     {% include 'sections/settings.html' %}
@@ -37,6 +38,7 @@
 {% include 'modals/edit_campaign.html' %}
 {% include 'modals/preview.html' %}
 {% include 'modals/add_call_leads.html' %}
+{% include 'modals/import_wa_leads.html' %}
 
 <div class="modal-overlay" id="modal-add-user">
   <div class="modal" style="max-width:380px">
@@ -90,6 +92,7 @@
 <script src="{{ url_for('static', filename='js/campaigns.js') }}"></script>
 <script src="{{ url_for('static', filename='js/contacts.js') }}"></script>
 <script src="{{ url_for('static', filename='js/calling.js') }}"></script>
+<script src="{{ url_for('static', filename='js/whatsapp.js') }}"></script>
 <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
 <script src="{{ url_for('static', filename='js/logs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scraper.js') }}"></script>

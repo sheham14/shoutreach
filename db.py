@@ -3564,6 +3564,459 @@ def save_call_script(script_id: int, name: str, sections: list):
         """, (name or "Default script", json.dumps(sections or []), script_id))
 
 
+# ── WhatsApp ──────────────────────────────────────────────────────────────────
+#
+# Sending is manual by design -- see wa_leads' own comment in init_db. Nothing
+# below ever transmits anything; it stages a business as a lead, detects and
+# records a confirmable signal, drafts a message, and tracks that the
+# operator clicked Open in WhatsApp. The follow-up cadence is a live query
+# (get_wa_followups_due), not a scheduled job, on the same principle: no
+# background code path in this module touches the network unattended.
+
+# Dialling codes for the numbers this module actually needs to format. Not a
+# general phone library -- normalize_phone is NANP-only for the same reason,
+# and Gulf numbers need a different rule (no NANP-style "drop everything but
+# the last 10 digits"; a UAE or Qatar number has no fixed total length once
+# the country code is included). Extend this as new countries come up.
+WA_COUNTRY_CODES = {"AE": "971", "QA": "974"}
+
+
+def format_whatsapp_number(raw: str, country: str = "") -> str:
+    """
+    Digits only, full international form, ready to drop straight into a
+    wa.me link. wa.me rejects a leading + or a local trunk 0, and Google
+    Maps shows Gulf numbers in local format ("050 123 4567") with no country
+    code at all, so this has to add what Maps left out rather than just
+    stripping punctuation the way normalize_phone does for NANP numbers.
+
+    Returns '' if there are no digits to work with. If `country` is
+    unrecognized, returns the digits as-is rather than guessing a country --
+    a wrong guess produces a wa.me link that silently opens the wrong chat,
+    which is worse than a lead the operator has to fix by hand.
+    """
+    digits = re.sub(r"\D", "", raw or "")
+    if not digits:
+        return ""
+    country = (country or "").strip().upper()
+    code = WA_COUNTRY_CODES.get(country)
+    if not code:
+        for c in WA_COUNTRY_CODES.values():
+            if digits.startswith(c):
+                return digits
+        return digits
+
+    if digits.startswith(code):
+        return digits
+    if digits.startswith("00" + code):
+        return digits[2:]
+    # UAE numbers are dialled with a leading trunk 0 ("050 123 4567") that
+    # the country code replaces; Qatar has no trunk prefix to strip at all.
+    if country == "AE" and digits.startswith("0"):
+        digits = digits[1:]
+    return code + digits
+
+
+def classify_number_type(raw: str, country: str = "") -> str:
+    """
+    'mobile' / 'landline' / 'unknown' from the dialling prefix.
+
+    A soft signal, not a filter: WhatsApp Business does run on landlines, so
+    this sorts the queue (mobiles first, since they're the likelier hit)
+    rather than hiding anything. Unrecognized country or prefix both fall
+    through to 'unknown' rather than a guess.
+    """
+    digits = re.sub(r"\D", "", raw or "")
+    country = (country or "").strip().upper()
+    if not digits:
+        return "unknown"
+
+    if country == "AE":
+        local = digits
+        if local.startswith("971"):
+            local = local[3:]
+        elif local.startswith("0"):
+            local = local[1:]
+        if local[:1] == "5":
+            return "mobile"
+        if local[:1] in "234679":
+            return "landline"
+        return "unknown"
+
+    if country == "QA":
+        local = digits[3:] if digits.startswith("974") else digits
+        if local[:1] in "3567":
+            return "mobile"
+        if local[:1] == "4":
+            return "landline"
+        return "unknown"
+
+    return "unknown"
+
+
+# Filled in by the operator, not invented for them -- but unlike the call
+# script (which starts empty because a phone conversation is entirely the
+# operator's words), a WhatsApp opener is drafted by the system from a
+# confirmed signal, so starting with real, editable copy is the actual
+# feature rather than words put in anyone's mouth.
+_DEFAULT_WA_TEMPLATE_GAP = (
+    "Hi! I noticed {{business_name}}'s website doesn't have an online "
+    "booking option — {{signal_detail}}. I help clinics add simple online "
+    "booking so patients can book without calling. Worth a quick chat?"
+)
+_DEFAULT_WA_TEMPLATE_NO_GAP = (
+    "Hi! I came across {{business_name}} and noticed you've already got "
+    "online booking set up nicely — {{signal_detail}}. Just wanted to say "
+    "it's great to see, wishing you all the best!"
+)
+_DEFAULT_WA_TEMPLATE_FOLLOWUP = (
+    "Hi again! Just following up on my last message to {{business_name}} — "
+    "no worries if now isn't a good time, happy to check back later."
+)
+
+_WA_TEMPLATE_SETTINGS_KEYS = {
+    "gap":      ("wa_template_gap", _DEFAULT_WA_TEMPLATE_GAP),
+    "no_gap":   ("wa_template_no_gap", _DEFAULT_WA_TEMPLATE_NO_GAP),
+    "followup": ("wa_template_followup", _DEFAULT_WA_TEMPLATE_FOLLOWUP),
+}
+
+
+def get_wa_templates() -> dict:
+    """The three editable templates, seeded with real starting copy on first read."""
+    settings = get_settings()
+    return {
+        key: settings.get(setting_key, default)
+        for key, (setting_key, default) in _WA_TEMPLATE_SETTINGS_KEYS.items()
+    }
+
+
+def save_wa_templates(templates: dict):
+    updates = {}
+    for key, (setting_key, _default) in _WA_TEMPLATE_SETTINGS_KEYS.items():
+        if key in templates:
+            updates[setting_key] = templates[key]
+    if updates:
+        save_settings(updates)
+
+
+def _render_wa_template(template: str, business: dict, signal_detail: str) -> str:
+    return (template
+            .replace("{{business_name}}", business.get("name") or "there")
+            .replace("{{signal_detail}}", signal_detail or ""))
+
+
+def upsert_wa_leads(rows: list, default_country: str = "") -> tuple:
+    """
+    Import WhatsApp leads: resolve/create the business the same way any
+    channel's import does (find_or_create_business, so a clinic already
+    known from email or calling is recognised rather than duplicated), then
+    attach or update its wa_leads row.
+
+    `country` on a row overrides `default_country` -- a CSV can carry a
+    country column of its own; the picker in the import UI is the fallback
+    for one that doesn't.
+
+    Returns (accepted, business_ids), same shape as upsert_businesses.
+    """
+    with get_db() as conn:
+        accepted = 0
+        touched = set()
+        ordered_ids = []
+
+        for r in rows:
+            name = (r.get("company") or r.get("name") or "").strip()
+            phone = (r.get("phone") or "").strip()
+            email = (r.get("email") or "").strip().lower()
+            website = (r.get("website") or "").strip()
+            if not any((email, name, phone, website)):
+                continue
+
+            business_id = find_or_create_business(conn, r)
+            touched.add(business_id)
+            if business_id not in ordered_ids:
+                ordered_ids.append(business_id)
+
+            if email and "@" in email:
+                status = r.get("status", "active")
+                if status in ("no_website", "form_only", "no_email", ""):
+                    status = "active"
+                conn.execute("""
+                    INSERT INTO email_leads(business_id, email, first_name, last_name, status, mx_valid)
+                    VALUES(:business_id,:email,:first_name,:last_name,:status,:mx_valid)
+                    ON CONFLICT(email) WHERE email IS NOT NULL AND email != '' DO UPDATE SET
+                        first_name = COALESCE(NULLIF(excluded.first_name,''), email_leads.first_name),
+                        last_name  = COALESCE(NULLIF(excluded.last_name,''),  email_leads.last_name),
+                        mx_valid   = COALESCE(excluded.mx_valid,              email_leads.mx_valid)
+                """, {
+                    "business_id": business_id, "email": email,
+                    "first_name": r.get("first_name", ""), "last_name": r.get("last_name", ""),
+                    "status": status, "mx_valid": r.get("mx_valid"),
+                })
+                conn.execute(
+                    "UPDATE businesses SET web_status='has_email' WHERE id=? AND web_status=''",
+                    (business_id,),
+                )
+
+            country = (r.get("country") or default_country or "").strip().upper()
+            wa_number = format_whatsapp_number(phone, country) if phone else ""
+            number_type = classify_number_type(phone, country) if phone else "unknown"
+
+            existing = conn.execute(
+                "SELECT id, wa_number, country FROM wa_leads WHERE business_id=?", (business_id,)
+            ).fetchone()
+            if existing:
+                conn.execute("""
+                    UPDATE wa_leads SET
+                        wa_number   = COALESCE(NULLIF(wa_number,''), ?),
+                        country     = COALESCE(NULLIF(country,''), ?),
+                        number_type = CASE WHEN COALESCE(NULLIF(wa_number,''), ?) != wa_number
+                                           THEN ? ELSE number_type END
+                    WHERE id=?
+                """, (wa_number, country, wa_number, number_type, existing["id"]))
+            else:
+                conn.execute("""
+                    INSERT INTO wa_leads(business_id, wa_number, country, number_type)
+                    VALUES(?,?,?,?)
+                """, (business_id, wa_number, country, number_type))
+            accepted += 1
+
+        for business_id in touched:
+            _pick_business_winner(conn, business_id)
+
+        return accepted, ordered_ids
+
+
+# Every row a WhatsApp list view needs, business joined in the same shape the
+# other two channels use -- `company` for the name, so the UI needs no
+# special-casing per channel.
+_WA_LEAD_COLUMNS = """
+    w.id, w.business_id, w.wa_number, w.country, w.number_type, w.wa_status,
+    w.signal_type, w.signal_detail, w.signal_confirmed, w.draft_message,
+    w.template_variant, w.sent_date, w.replied, w.followup_count, w.paused,
+    w.moved_to, w.notes, w.created_at,
+    b.name AS company, b.website, b.address, b.city, b.phone, b.category,
+    b.rating, b.review_count, b.do_not_contact
+"""
+_WA_LEAD_JOIN = "FROM wa_leads w JOIN businesses b ON b.id = w.business_id"
+
+
+def get_wa_lead(wa_lead_id: int):
+    with get_db() as conn:
+        row = conn.execute(
+            f"SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN} WHERE w.id=?", (wa_lead_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_wa_leads(status: str = None, limit: int = 200) -> list:
+    """
+    The WhatsApp list, optionally scoped to one lifecycle stage:
+    '' (imported, awaiting signal), 'signal_ready' (needs operator review),
+    'confirmed' (signal locked in, awaiting drafting), 'drafted' (ready to
+    open), 'sent' (in the cadence), 'replied' / 'moved' (terminal).
+    """
+    where, params = "", []
+    if status is not None:
+        where = "WHERE w.wa_status = ?"
+        params.append(status)
+    params.append(limit)
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN} {where} "
+            f"ORDER BY w.created_at DESC LIMIT ?", params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_wa_summary() -> dict:
+    with get_db() as conn:
+        row = conn.execute("""
+            SELECT
+              COUNT(*)                                                     AS total,
+              SUM(CASE WHEN wa_status=''            THEN 1 ELSE 0 END)     AS pending_signal,
+              SUM(CASE WHEN wa_status='signal_ready' THEN 1 ELSE 0 END)    AS awaiting_review,
+              SUM(CASE WHEN wa_status='confirmed'   THEN 1 ELSE 0 END)     AS awaiting_draft,
+              SUM(CASE WHEN wa_status='drafted'     THEN 1 ELSE 0 END)     AS ready_to_send,
+              SUM(CASE WHEN wa_status='sent'        THEN 1 ELSE 0 END)     AS in_cadence,
+              SUM(replied)                                                 AS replied,
+              SUM(CASE WHEN moved_to != ''          THEN 1 ELSE 0 END)     AS moved
+              FROM wa_leads
+        """).fetchone()
+        return {k: (row[k] or 0) for k in row.keys()}
+
+
+def get_wa_leads_pending_signal(limit: int = 5) -> list:
+    """
+    WhatsApp leads awaiting their first (and only) signal check. Consumed by
+    the background scan in scheduler.py, never by a request -- see that
+    module for why this can't run inline.
+    """
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT w.id, b.website FROM wa_leads w JOIN businesses b ON b.id = w.business_id
+             WHERE w.wa_status = ''
+             ORDER BY w.created_at ASC LIMIT ?
+        """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def set_wa_signal(wa_lead_id: int, signal_type: str, signal_detail: str):
+    """Records a detected (not yet operator-confirmed) signal."""
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE wa_leads SET signal_type=?, signal_detail=?, wa_status='signal_ready'
+             WHERE id=?
+        """, (signal_type, signal_detail, wa_lead_id))
+
+
+def confirm_wa_signal(wa_lead_id: int, signal_type: str, signal_detail: str):
+    """
+    The operator locks in a signal -- either as detected, or corrected by
+    hand. Nothing drafts from this lead until this has been called; that
+    gate is signal_confirmed, checked by get_wa_leads_ready_to_draft.
+    """
+    if signal_type not in ("gap_found", "no_gap", "unclear"):
+        raise ValueError(f"Unknown signal type: {signal_type}")
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE wa_leads SET
+                signal_type=?, signal_detail=?, signal_confirmed=1, wa_status='confirmed'
+             WHERE id=?
+        """, (signal_type, signal_detail, wa_lead_id))
+
+
+def get_wa_leads_ready_to_draft(limit: int = 200) -> list:
+    """Confirmed leads with no draft yet -- what the batch draft step processes."""
+    with get_db() as conn:
+        rows = conn.execute(f"""
+            SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN}
+             WHERE w.wa_status='confirmed' AND w.signal_confirmed=1
+             ORDER BY w.created_at ASC LIMIT ?
+        """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def save_wa_draft(wa_lead_id: int, message: str, template_variant: str = ""):
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE wa_leads SET draft_message=?, template_variant=?, wa_status='drafted'
+             WHERE id=?
+        """, (message, template_variant, wa_lead_id))
+
+
+def update_wa_message(wa_lead_id: int, message: str):
+    """Inline edits to the draft before it's sent -- doesn't touch wa_status."""
+    with get_db() as conn:
+        conn.execute("UPDATE wa_leads SET draft_message=? WHERE id=?", (message, wa_lead_id))
+
+
+def mark_wa_sent(wa_lead_id: int, message: str, kind: str = "opener", template_variant: str = ""):
+    """
+    Records that the operator clicked Open in WhatsApp -- an approximation,
+    not delivery confirmation; see wa_log's comment in init_db. Follow-ups
+    call this too, incrementing followup_count so the cadence knows how many
+    have gone out; the opener does not count as a follow-up.
+    """
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO wa_log(wa_lead_id, kind, message, template_variant)
+            VALUES(?,?,?,?)
+        """, (wa_lead_id, kind, message, template_variant))
+        if kind == "followup":
+            conn.execute("""
+                UPDATE wa_leads SET
+                    sent_date=datetime('now'), wa_status='sent',
+                    followup_count = followup_count + 1
+                 WHERE id=?
+            """, (wa_lead_id,))
+        else:
+            conn.execute(
+                "UPDATE wa_leads SET sent_date=datetime('now'), wa_status='sent' WHERE id=?",
+                (wa_lead_id,),
+            )
+
+
+def correct_wa_sent_date(wa_lead_id: int, sent_date: str = None):
+    """
+    Manual fix for "I opened the link but didn't actually send." sent_date is
+    never verified against WhatsApp itself -- there's no way to -- so this is
+    the one correction the operator has. sent_date=None clears it, which also
+    drops the lead out of the follow-up-due query until it's sent again.
+    """
+    with get_db() as conn:
+        conn.execute("UPDATE wa_leads SET sent_date=? WHERE id=?", (sent_date, wa_lead_id))
+
+
+def mark_wa_replied(wa_lead_id: int, replied: bool = True):
+    """Marking replied removes the lead from the cadence immediately, at any
+    follow-up count -- see get_wa_followups_due, which excludes replied=1."""
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE wa_leads SET replied=?, wa_status=? WHERE id=?
+        """, (1 if replied else 0, "replied" if replied else "sent", wa_lead_id))
+
+
+def set_wa_paused(wa_lead_id: int, paused: bool = True):
+    """The only way to stop the cadence short of a reply -- follow-ups are
+    otherwise infinite by design; there is no auto-dormant-after-N here."""
+    with get_db() as conn:
+        conn.execute("UPDATE wa_leads SET paused=? WHERE id=?", (1 if paused else 0, wa_lead_id))
+
+
+def get_wa_followups_due(days: int = 3, limit: int = 200) -> list:
+    """
+    Leads due for a follow-up: sent at least `days` ago, not replied, not
+    paused, not moved to another channel. A live query, not a scheduled job
+    -- nothing about surfacing "this is due" should touch the network, and
+    computing it on read means there is no background code path here at all
+    for anyone auditing the manual-send constraint to have to trust.
+    """
+    with get_db() as conn:
+        rows = conn.execute(f"""
+            SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN}
+             WHERE w.wa_status = 'sent'
+               AND w.replied = 0 AND w.paused = 0 AND w.moved_to = ''
+               AND w.sent_date IS NOT NULL
+               AND datetime(w.sent_date) <= datetime('now', ?)
+             ORDER BY w.sent_date ASC LIMIT ?
+        """, (f"-{int(days)} days", limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def move_wa_lead(wa_lead_id: int, destination: str) -> dict:
+    """
+    The number turned out not to be on WhatsApp (discovered by the operator,
+    not this app -- see the module handover for why there's no automatic
+    check). Files the business under Calling or Email instead of losing the
+    lead, and marks moved_to so it drops out of the WhatsApp cadence and a
+    later re-scrape can't quietly re-queue a number already ruled out here.
+
+    'call' creates/reuses a call_leads row and returns its id so the caller
+    can offer adding it straight to a campaign. 'email' has nowhere to
+    enroll a business with no address on file, so it only ensures the
+    business exists as a prospect -- ready to pick up once an email surfaces.
+    """
+    if destination not in ("call", "email"):
+        raise ValueError(f"Unknown destination: {destination}")
+    lead = get_wa_lead(wa_lead_id)
+    if not lead:
+        raise ValueError("WhatsApp lead not found")
+
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE wa_leads SET moved_to=?, paused=1 WHERE id=?",
+            (destination, wa_lead_id),
+        )
+        if destination == "call":
+            call_lead_id = get_or_create_call_lead(conn, lead["business_id"])
+            return {"destination": "call", "call_lead_id": call_lead_id}
+        else:
+            conn.execute(
+                "UPDATE businesses SET web_status=COALESCE(NULLIF(web_status,''),'no_email') "
+                "WHERE id=?", (lead["business_id"],),
+            )
+            return {"destination": "email", "business_id": lead["business_id"]}
+
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 def get_stats(campaign_id=None):

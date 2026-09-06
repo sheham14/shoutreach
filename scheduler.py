@@ -1,9 +1,10 @@
 """
 scheduler.py — Background job engine.
 
-Runs two recurring jobs:
-  1. process_queue()  — every 60s  — sends due emails with random human-like delays
-  2. check_replies()  — every 15m  — scans IMAP for replies, pauses sequences
+Runs three recurring jobs:
+  1. process_queue()      — every 60s — sends due emails with random human-like delays
+  2. check_replies()      — every 5m  — scans IMAP for replies, pauses sequences
+  3. run_wa_signal_scan() — every 60s — plain-HTTP booking-gap check for WhatsApp leads
 
 Anti-spam protections enforced here:
   ✓ Business hours gate       — no sends outside Mon-Fri configured window
@@ -11,6 +12,12 @@ Anti-spam protections enforced here:
   ✓ Random inter-email delay  — 45–120s (configurable) between sends
   ✓ Bounce rate circuit-breaker — auto-pauses campaign if bounce rate > threshold
   ✓ Reply detection            — stops sequences for contacts who replied
+
+run_wa_signal_scan() is the only WhatsApp-related code in this file, and
+deliberately so: it only ever reads a homepage and records what it saw.
+Nothing in the WhatsApp module runs on a schedule or in the background other
+than that -- sending is manual, and the follow-up cadence is computed as a
+live query (db.get_wa_followups_due), not a job in this loop.
 """
 
 import json
@@ -22,6 +29,7 @@ import threading
 
 import db
 import sender as email_sender
+import wa_signal
 
 logger = logging.getLogger("scheduler")
 
@@ -243,6 +251,29 @@ def run_bounce_check():
         db.add_log(f"Bounce check error: {e}", "ERROR")
 
 
+# Small and slow on purpose: each site gets up to wa_signal.REQUEST_TIMEOUT
+# (6s) and this runs on the same thread as email sending and reply checks, so
+# a batch that all timed out would otherwise eat a big chunk of every tick.
+# Worst case here is ~18s added to a 60s cycle.
+WA_SIGNAL_BATCH_SIZE = 3
+
+
+def run_wa_signal_scan():
+    """Detects a booking-gap signal for WhatsApp leads still awaiting one.
+
+    Never runs from a request thread -- see wa_signal.py's module comment."""
+    try:
+        pending = db.get_wa_leads_pending_signal(limit=WA_SIGNAL_BATCH_SIZE)
+        for lead in pending:
+            result = wa_signal.detect_signal(lead["website"])
+            db.set_wa_signal(lead["id"], result["signal_type"], result["signal_detail"])
+        if pending:
+            logger.debug("WhatsApp signal scan: checked %d lead(s)", len(pending))
+    except Exception as e:
+        db.add_log(f"WhatsApp signal scan error: {e}", "ERROR")
+        logger.exception("run_wa_signal_scan error")
+
+
 LOG_RETENTION_DAYS = 60
 
 
@@ -270,6 +301,7 @@ def _run_loop():
 
     while not _stop_event.is_set():
         process_queue()
+        run_wa_signal_scan()
 
         do_reply_check = _run_now_reply_check
         _run_now_reply_check = False

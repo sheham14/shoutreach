@@ -979,6 +979,81 @@ def api_ai_review():
         return jsonify({"error": "Unexpected error — check server logs for details"}), 500
 
 
+# ── AI: plain-text completion (WhatsApp paraphrase) ──────────────────────────
+#
+# Separate from the review callers above: those are locked to the review
+# prompt and a fixed JSON reply shape. This is the same three providers and
+# the same _ai_http_post transport, but for "here's a prompt, give me text
+# back" -- used once, in a batch, to paraphrase a page of templated WhatsApp
+# openers for variety. Never called per-lead; see api_wa_draft_batch.
+
+def _call_claude_text(api_key: str, prompt: str, model: str) -> str:
+    payload = json.dumps({
+        "model": model or _CLAUDE_DEFAULT,
+        "max_tokens": 2048,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    data = _ai_http_post(
+        "https://api.anthropic.com/v1/messages", payload,
+        {"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+    )
+    return data["content"][0]["text"]
+
+
+def _call_gemini_text(api_key: str, prompt: str, model: str) -> str:
+    model = model or _GEMINI_DEFAULT
+    payload = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.7},
+    }).encode()
+    data = _ai_http_post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+        payload, {"content-type": "application/json"},
+    )
+    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def _call_openai_text(api_key: str, prompt: str, model: str) -> str:
+    payload = json.dumps({
+        "model": model or _OPENAI_DEFAULT,
+        "max_completion_tokens": 2048,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    data = _ai_http_post(
+        "https://api.openai.com/v1/chat/completions", payload,
+        {"Authorization": f"Bearer {api_key}", "content-type": "application/json"},
+    )
+    return data["choices"][0]["message"]["content"]
+
+
+_AI_TEXT_CALLERS = {
+    "claude": (_call_claude_text, "anthropic_api_key"),
+    "gemini": (_call_gemini_text, "gemini_api_key"),
+    "openai": (_call_openai_text, "openai_api_key"),
+}
+
+
+def _call_configured_ai_text(prompt: str) -> str:
+    """
+    Fires `prompt` at whichever provider Settings has configured. Raises
+    ValueError with a user-facing reason (AI disabled, no key, provider
+    error) -- callers that must never block on this (the paraphrase batch)
+    catch it and fall back rather than propagate it.
+    """
+    s = db.get_settings()
+    if s.get("ai_features_enabled") != "1":
+        raise ValueError("AI features are not enabled")
+    provider = s.get("ai_provider", "claude")
+    if provider not in _AI_TEXT_CALLERS:
+        provider = "claude"
+    caller_fn, key_setting = _AI_TEXT_CALLERS[provider]
+    api_key = s.get(key_setting, "").strip()
+    if not api_key:
+        raise ValueError(f"API key for {provider} is not configured")
+    model = s.get("ai_model", "").strip()
+    return caller_fn(api_key, prompt, model)
+
+
 # Leading characters that make Excel/Sheets treat a cell as a formula. Tab and
 # carriage return are included because both are stripped before evaluation, so
 # "	=cmd" is still executed.
@@ -1940,6 +2015,273 @@ def api_call_ics(cid):
     resp.headers["Content-Type"] = "text/calendar; charset=utf-8"
     resp.headers["Content-Disposition"] = f'attachment; filename="call-{cid}.ics"'
     return resp
+
+
+# ── API: WhatsApp ─────────────────────────────────────────────────────────────
+#
+# Every route here either reads state or stages one (a signal, a draft, a
+# sent-date). None of them can cause a WhatsApp message to be transmitted --
+# the operator does that themselves, outside this app, by tapping Send after
+# opening the wa.me link the frontend builds from draft_message. If a change
+# here ever needs this app to reach WhatsApp on its own, stop and flag it
+# rather than build it; see docs/WhatsApp Module Handover.md.
+
+_WA_DEFAULT_FOLLOWUP_DAYS = 3
+
+
+@app.route("/api/wa/import", methods=["POST"])
+@admin_required
+def api_wa_import():
+    """
+    Accepts JSON { "rows": [...], "country": "AE" } or a multipart CSV with a
+    'country' form field. `country` is the fallback used for any row that
+    doesn't carry its own -- the usual case, since one scrape is normally one
+    city/country at a time.
+    """
+    if request.content_type and "multipart" in request.content_type:
+        f = request.files.get("file")
+        if not f:
+            return jsonify({"ok": False, "error": "No file"}), 400
+        raw = f.read(8 * 1024 * 1024 + 1)
+        if len(raw) > 8 * 1024 * 1024:
+            return jsonify({"ok": False, "error": "CSV too large (max 8 MB)."}), 413
+        content = raw.decode("utf-8", errors="replace")
+        rows = list(csv.DictReader(io.StringIO(content)))
+        default_country = (request.form.get("country") or "").strip().upper()
+    else:
+        data = request.json or {}
+        rows = data.get("rows", [])
+        if not isinstance(rows, list):
+            return jsonify({"ok": False, "error": "rows must be a list"}), 400
+        default_country = (data.get("country") or "").strip().upper()
+
+    if not rows:
+        return jsonify({"ok": False, "error": "No rows"}), 400
+    if len(rows) > 50_000:
+        return jsonify({"ok": False, "error": "Too many rows (max 50,000)."}), 413
+
+    confirmed = bool((request.json or {}).get("confirm_conflicts")) if request.is_json else False
+    conflicts = []
+    if not confirmed:
+        with_identity = [r for r in rows if (r.get("phone") or r.get("email") or "").strip()]
+        conflicts = db.find_cross_channel_conflicts(with_identity, channel="whatsapp")
+        if conflicts:
+            # Rows are plain dicts (parsed fresh from CSV/JSON), so matched
+            # by (phone, company) rather than object identity.
+            flagged_keys = {(c["row"].get("phone"), c["row"].get("company")) for c in conflicts}
+            rows = [r for r in rows if (r.get("phone"), r.get("company")) not in flagged_keys]
+
+    inserted, business_ids = db.upsert_wa_leads(rows, default_country=default_country)
+    return jsonify({
+        "ok": True, "inserted": inserted, "business_ids": business_ids,
+        "conflicts": [
+            {"business_id": c["business_id"], "business_name": c["business_name"],
+             "channels": c["channel_labels"], "row": c["row"]}
+            for c in conflicts
+        ],
+    })
+
+
+@app.route("/api/wa/leads", methods=["GET"])
+@admin_required
+def api_wa_leads():
+    status = request.args.get("status")
+    limit = min(int(request.args.get("limit", 200)), 1000)
+    return jsonify(db.get_wa_leads(status=status, limit=limit))
+
+
+@app.route("/api/wa/summary", methods=["GET"])
+@admin_required
+def api_wa_summary():
+    return jsonify(db.get_wa_summary())
+
+
+@app.route("/api/wa/followups-due", methods=["GET"])
+@admin_required
+def api_wa_followups_due():
+    days = int(db.get_settings().get("wa_followup_days", _WA_DEFAULT_FOLLOWUP_DAYS))
+    due = db.get_wa_followups_due(days=days)
+    # The follow-up template only ever needs the business name, so it's
+    # rendered here rather than asking the frontend to duplicate
+    # db._render_wa_template's placeholder logic.
+    template = db.get_wa_templates()["followup"]
+    for lead in due:
+        lead["followup_draft"] = db._render_wa_template(template, {"name": lead["company"]}, "")
+    return jsonify(due)
+
+
+@app.route("/api/wa/leads/<int:wid>/confirm", methods=["POST"])
+@admin_required
+def api_wa_confirm(wid):
+    """
+    Locks in a signal -- as detected, or corrected by the operator first.
+    Nothing downstream (drafting) will touch this lead until this has run.
+    """
+    d = request.json or {}
+    signal_type = (d.get("signal_type") or "").strip()
+    signal_detail = (d.get("signal_detail") or "").strip()
+    if not signal_detail:
+        return jsonify({"ok": False, "error": "A signal detail is required"}), 400
+    try:
+        db.confirm_wa_signal(wid, signal_type, signal_detail)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True})
+
+
+# One call, not one per lead: every confirmed-but-undrafted lead's templated
+# base message is built first, then handed to the AI provider together for a
+# single paraphrase pass. Keeps cost and latency per lead near zero and stays
+# well clear of anything resembling a research step per lead.
+_WA_PARAPHRASE_PROMPT = """You are helping a small business paraphrase a batch of short WhatsApp opener messages so they don't all read identically to different recipients.
+
+Rules:
+- Preserve every factual claim in each message EXACTLY — do not invent, embellish, remove, or soften any detail.
+- Keep each message under 300 characters, friendly and casual in tone, no emojis unless the original already has them.
+- Return ONLY a JSON array of strings, the same length and in the same order as the input. No markdown fences, no commentary, no extra keys.
+
+Messages:
+{messages}"""
+
+
+@app.route("/api/wa/draft-batch", methods=["POST"])
+@admin_required
+def api_wa_draft_batch():
+    """
+    Drafts every confirmed-but-undrafted lead in one pass: render the
+    template, then one AI call to paraphrase the whole batch for variety. If
+    AI is off, unconfigured, or the call fails, every lead still gets its
+    plain templated message — drafting must never block on the AI being
+    available, it's a variety pass, not the source of the content.
+    """
+    limit = min(int((request.json or {}).get("limit", 50)), 200)
+    leads = db.get_wa_leads_ready_to_draft(limit=limit)
+    if not leads:
+        return jsonify({"ok": True, "drafted": 0})
+
+    templates = db.get_wa_templates()
+    base_messages = []
+    for lead in leads:
+        template = templates["gap"] if lead["signal_type"] == "gap_found" else templates["no_gap"]
+        base_messages.append(db._render_wa_template(
+            template, {"name": lead["company"]}, lead["signal_detail"],
+        ))
+
+    final_messages = base_messages
+    paraphrase_error = None
+    try:
+        prompt = _WA_PARAPHRASE_PROMPT.format(messages=json.dumps(base_messages))
+        raw = _call_configured_ai_text(prompt)
+        parsed = json.loads(_strip_code_fence(raw.strip()))
+        if isinstance(parsed, list) and len(parsed) == len(base_messages) and all(
+            isinstance(m, str) and m.strip() for m in parsed
+        ):
+            final_messages = parsed
+        else:
+            paraphrase_error = "AI response shape didn't match — used the plain template instead"
+    except ValueError as exc:
+        paraphrase_error = str(exc)
+    except Exception as exc:
+        logging.warning("WhatsApp paraphrase batch failed: %s", exc)
+        paraphrase_error = "Paraphrase call failed — used the plain template instead"
+
+    variant = "paraphrased" if final_messages is not base_messages else "template"
+    for lead, message in zip(leads, final_messages):
+        db.save_wa_draft(lead["id"], message, variant)
+
+    result = {"ok": True, "drafted": len(leads), "variant": variant}
+    if paraphrase_error:
+        result["note"] = paraphrase_error
+    return jsonify(result)
+
+
+@app.route("/api/wa/leads/<int:wid>/message", methods=["PUT"])
+@admin_required
+def api_wa_update_message(wid):
+    message = ((request.json or {}).get("message") or "").strip()
+    if not message:
+        return jsonify({"ok": False, "error": "Message cannot be empty"}), 400
+    db.update_wa_message(wid, message)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/wa/leads/<int:wid>/sent", methods=["POST"])
+@admin_required
+def api_wa_mark_sent(wid):
+    """
+    Records that the operator clicked Open in WhatsApp. This is the entire
+    "send" surface of this module — nothing here transmits a message, it
+    logs that the link was opened, which is all that can be observed from
+    outside WhatsApp.
+    """
+    d = request.json or {}
+    kind = d.get("kind", "opener")
+    if kind not in ("opener", "followup"):
+        return jsonify({"ok": False, "error": "kind must be 'opener' or 'followup'"}), 400
+    lead = db.get_wa_lead(wid)
+    if not lead:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    message = (d.get("message") or lead.get("draft_message") or "").strip()
+    db.mark_wa_sent(wid, message, kind=kind, template_variant=lead.get("template_variant", ""))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/wa/leads/<int:wid>/sent-date", methods=["PUT"])
+@admin_required
+def api_wa_correct_sent_date(wid):
+    """Manual correction for 'I opened the link but didn't actually send.'"""
+    sent_date = (request.json or {}).get("sent_date") or None
+    if sent_date:
+        sent_date = sent_date.replace("T", " ")
+        if len(sent_date) == 16:
+            sent_date += ":00"
+    db.correct_wa_sent_date(wid, sent_date)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/wa/leads/<int:wid>/replied", methods=["POST"])
+@admin_required
+def api_wa_mark_replied(wid):
+    replied = bool((request.json or {}).get("replied", True))
+    db.mark_wa_replied(wid, replied)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/wa/leads/<int:wid>/pause", methods=["POST"])
+@admin_required
+def api_wa_set_paused(wid):
+    paused = bool((request.json or {}).get("paused", True))
+    db.set_wa_paused(wid, paused)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/wa/leads/<int:wid>/move", methods=["POST"])
+@admin_required
+def api_wa_move_lead(wid):
+    """The number turned out not to be on WhatsApp — file it under Calling
+    or Email instead of losing the lead. See db.move_wa_lead."""
+    destination = ((request.json or {}).get("destination") or "").strip()
+    try:
+        result = db.move_wa_lead(wid, destination)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, **result})
+
+
+@app.route("/api/wa/templates", methods=["GET"])
+@admin_required
+def api_wa_get_templates():
+    return jsonify(db.get_wa_templates())
+
+
+@app.route("/api/wa/templates", methods=["PUT"])
+@admin_required
+def api_wa_save_templates():
+    templates = (request.json or {}).get("templates") or {}
+    if not isinstance(templates, dict):
+        return jsonify({"ok": False, "error": "templates must be an object"}), 400
+    db.save_wa_templates(templates)
+    return jsonify({"ok": True})
 
 
 # ── API: Database viewer ───────────────────────────────────────────────────────

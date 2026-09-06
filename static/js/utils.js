@@ -8,6 +8,7 @@ function showSection(name) {
   if (name === 'campaigns')  loadCampaigns();
   if (name === 'contacts')   loadContacts();
   if (name === 'calling')    loadCalling();
+  if (name === 'whatsapp')   loadWhatsApp();
   if (name === 'logs')       loadLogs();
   if (name === 'settings')   { loadSettings(); loadAccounts(); loadUsers(); }
   if (name === 'scraper')    loadScraper();
