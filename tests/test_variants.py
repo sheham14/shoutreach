@@ -48,14 +48,14 @@ def make_contacts(db, n, prefix="c"):
     later groups as duplicates of the earlier ones, so they silently refused to
     enroll and the variant assertions had nothing to measure.
     """
-    db.upsert_contacts([
+    db.upsert_businesses([
         {"email": f"{prefix}{i}@{prefix}{i}.ca", "company": f"{prefix} {i}",
          "website": f"https://{prefix}{i}.ca"}
         for i in range(n)
     ])
     with db.get_db() as conn:
         return [r["id"] for r in conn.execute(
-            "SELECT id FROM contacts WHERE email LIKE ? ORDER BY id", (f"{prefix}%@%",)
+            "SELECT id FROM email_leads WHERE email LIKE ? ORDER BY id", (f"{prefix}%@%",)
         ).fetchall()]
 
 
@@ -180,10 +180,10 @@ def main():
         db.enroll_contacts_bulk(cid6, ids6)
         with db.get_db() as conn:
             first = conn.execute(
-                "SELECT id, contact_id FROM enrollments WHERE campaign_id=? ORDER BY id LIMIT 1",
+                "SELECT id, email_lead_id FROM enrollments WHERE campaign_id=? ORDER BY id LIMIT 1",
                 (cid6,)
             ).fetchone()
-        db.log_send(cid6, first["contact_id"], 1, "one", "msg-1")
+        db.log_send(cid6, first["email_lead_id"], 1, "one", "msg-1")
 
         s6 = db.get_steps(cid6)[0]
         db.save_step_variants(s6["id"], [

@@ -1347,7 +1347,7 @@ def api_get_contacts():
     except (TypeError, ValueError):
         page, per_page = 1, 50
 
-    return jsonify(db.get_contacts_page(
+    return jsonify(db.get_email_leads_page(
         page=page,
         per_page=per_page,
         sort_col=request.args.get("sort_col", ""),
@@ -1359,7 +1359,7 @@ def api_get_contacts():
 @app.route("/api/contacts/sources", methods=["GET"])
 def api_contact_sources():
     """The lead lists — one per scrape, plus a bucket for manual/CSV adds."""
-    return jsonify(db.get_contact_sources())
+    return jsonify(db.get_lead_sources())
 
 
 @app.route("/api/contacts/ids", methods=["GET"])
@@ -1371,7 +1371,7 @@ def api_contact_ids():
     page, so a bulk action over a filtered list would quietly apply to 50 of
     them.
     """
-    ids = db.get_contact_ids_matching(**_contact_query_args())
+    ids = db.get_email_lead_ids_matching(**_contact_query_args())
     return jsonify({"ids": ids, "total": len(ids)})
 
 
@@ -1474,8 +1474,32 @@ def api_import_contacts():
             len(rows), _MX_INLINE_LIMIT,
         )
 
-    inserted = db.upsert_contacts(rows)
-    return jsonify({"ok": True, "inserted": inserted, "invalid_mx": invalid_mx})
+    # Cross-channel duplicate check: a row with an email that resolves to a
+    # business already active on calling or WhatsApp gets held out rather
+    # than silently attached, so adding a second channel to a business is a
+    # decision the operator makes on purpose. Skipped for the scrape worker,
+    # which runs unattended and has nobody to confirm anything with -- and for
+    # the confirmed re-submission, which is the operator's own "yes, all of
+    # these too" after seeing exactly this list.
+    confirmed = bool((request.json or {}).get("confirm_conflicts")) if request.is_json else False
+    conflicts = []
+    if not _has_valid_worker_key() and not confirmed:
+        with_email = [r for r in rows if (r.get("email") or "").strip()]
+        conflicts = db.find_cross_channel_conflicts(with_email, channel="email")
+        if conflicts:
+            flagged_emails = {c["row"].get("email") for c in conflicts}
+            rows = [r for r in rows if r.get("email") not in flagged_emails]
+
+    inserted, business_ids = db.upsert_businesses(rows)
+    return jsonify({
+        "ok": True, "inserted": inserted, "invalid_mx": invalid_mx,
+        "business_ids": business_ids,
+        "conflicts": [
+            {"business_id": c["business_id"], "business_name": c["business_name"],
+             "channels": c["channel_labels"], "row": c["row"]}
+            for c in conflicts
+        ],
+    })
 
 
 @app.route("/api/contacts/bulk-delete", methods=["POST"])
@@ -1484,7 +1508,7 @@ def api_bulk_delete_contacts():
     ids = (request.json or {}).get("ids", [])
     if not ids:
         return jsonify({"ok": False, "error": "No IDs provided"}), 400
-    db.delete_contacts(ids)
+    db.delete_email_leads(ids)
     db.add_log(f"Hard-deleted {len(ids)} contacts via UI")
     return jsonify({"ok": True, "deleted": len(ids)})
 
@@ -1493,7 +1517,7 @@ def api_bulk_delete_contacts():
 @admin_required
 def api_add_contact():
     d = request.json or {}
-    contact_id, err = db.create_contact(
+    contact_id, err = db.create_email_lead(
         email      = d.get('email', ''),
         first_name = d.get('first_name', ''),
         last_name  = d.get('last_name', ''),
@@ -1511,7 +1535,7 @@ def api_add_contact():
 @admin_required
 def api_update_contact(cid):
     d = request.json or {}
-    ok, err = db.update_contact(cid, d)
+    ok, err = db.update_email_lead(cid, d)
     if not ok:
         return jsonify({'ok': False, 'error': err}), 400
     return jsonify({'ok': True})
@@ -1520,7 +1544,7 @@ def api_update_contact(cid):
 @app.route("/api/contacts/<int:cid>", methods=["DELETE"])
 @admin_required
 def api_delete_contact(cid):
-    db.delete_contact(cid)
+    db.delete_email_lead(cid)
     return jsonify({'ok': True})
 
 
@@ -1536,7 +1560,7 @@ def api_enroll_contacts(cid):
     if d.get("all"):
         with db.get_db() as conn:
             ids = [r[0] for r in conn.execute(
-                "SELECT id FROM contacts WHERE status='active'"
+                "SELECT id FROM email_leads WHERE status='active'"
             ).fetchall()]
     else:
         ids = d.get("contact_ids", [])
@@ -1679,6 +1703,24 @@ def api_delete_call_outcome(key):
     return jsonify({"ok": True, "result": result})
 
 
+@app.route("/api/businesses/search", methods=["GET"])
+@admin_required
+def api_search_businesses():
+    """
+    Businesses matching a filter, for "add existing leads" pickers.
+
+    Looks at businesses directly rather than email leads, so a clinic the
+    scraper found with no email at all is findable here -- which is the point
+    of the calling "from contacts" tab, and will be WhatsApp's too.
+    """
+    return jsonify(db.search_businesses(
+        q=request.args.get("q", ""),
+        status=request.args.get("status") or None,
+        call_status=request.args.get("call_status") or None,
+        limit=int(request.args.get("per_page", 100)),
+    ))
+
+
 @app.route("/api/call-campaigns", methods=["GET"])
 @admin_required
 def api_list_call_campaigns():
@@ -1694,9 +1736,19 @@ def api_create_call_campaign():
         return jsonify({"ok": False, "error": "Name is required"}), 400
     cid = db.create_call_campaign(name, d.get("notes", ""))
     contact_ids = d.get("contact_ids") or []
+    conflicts = []
+    if contact_ids and not d.get("confirm_conflicts"):
+        conflicts = db.channel_conflicts_for_businesses(contact_ids, channel="call")
+        if conflicts:
+            flagged = {c["business_id"] for c in conflicts}
+            contact_ids = [i for i in contact_ids if int(i) not in flagged]
     added = db.add_to_call_campaign(cid, contact_ids) if contact_ids else 0
     db.add_log(f"☎ Call campaign '{name}' created with {added} lead(s)")
-    return jsonify({"ok": True, "id": cid, "added": added})
+    return jsonify({
+        "ok": True, "id": cid, "added": added,
+        "conflicts": [{"business_id": c["business_id"], "business_name": c["business_name"],
+                       "channels": c["channel_labels"]} for c in conflicts],
+    })
 
 
 @app.route("/api/call-campaigns/<int:cid>", methods=["PATCH"])
@@ -1721,8 +1773,20 @@ def api_add_call_campaign_members(cid):
     ids = d.get("contact_ids") or []
     if not ids:
         return jsonify({"ok": False, "error": "No contacts given"}), 400
-    added = db.add_to_call_campaign(cid, ids)
-    return jsonify({"ok": True, "added": added, "already_present": len(ids) - added})
+
+    conflicts = []
+    if not d.get("confirm_conflicts"):
+        conflicts = db.channel_conflicts_for_businesses(ids, channel="call")
+        if conflicts:
+            flagged = {c["business_id"] for c in conflicts}
+            ids = [i for i in ids if int(i) not in flagged]
+
+    added = db.add_to_call_campaign(cid, ids) if ids else 0
+    return jsonify({
+        "ok": True, "added": added, "already_present": len(ids) - added,
+        "conflicts": [{"business_id": c["business_id"], "business_name": c["business_name"],
+                       "channels": c["channel_labels"]} for c in conflicts],
+    })
 
 
 @app.route("/api/call-campaigns/<int:cid>/members", methods=["DELETE"])
@@ -1738,20 +1802,32 @@ def api_remove_call_campaign_members(cid):
 @app.route("/api/calls/<int:cid>/reopen", methods=["POST"])
 @admin_required
 def api_reopen_call_lead(cid):
-    """Return a closed-out lead to the queue — the undo for a misclick."""
-    if not db.reopen_call_lead(cid):
+    """
+    Return a closed-out lead to the queue — the undo for a misclick.
+
+    cid is the business id, matching every other calling route and what the
+    queue rows hand back as `.id` — the operator picks a clinic, not a row in
+    a table they never see.
+    """
+    lead = db.get_call_lead_view(cid)
+    if not lead or not lead.get("call_lead_id") or not db.reopen_call_lead(lead["call_lead_id"]):
         return jsonify({"ok": False, "error": "Not found"}), 404
-    contact = db.get_contact(cid)
-    db.add_log(f"☎ Reopened {(contact or {}).get('company') or cid} for calling")
+    db.add_log(f"☎ Reopened {lead.get('company') or cid} for calling")
     return jsonify({"ok": True})
 
 
 @app.route("/api/calls/log", methods=["POST"])
 @admin_required
 def api_log_call():
+    """
+    Body's `contact_id` is a business id (kept as-is for the frontend, which
+    still calls it that). A business dialled for the first time has no
+    call_leads row yet, so one is created here rather than requiring it to
+    exist upfront.
+    """
     d = request.json or {}
     try:
-        contact_id = int(d.get("contact_id"))
+        business_id = int(d.get("contact_id"))
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "A contact is required"}), 400
 
@@ -1773,20 +1849,24 @@ def api_log_call():
         if len(next_call_at) == 16:
             next_call_at += ":00"
 
-    result = db.log_call(contact_id, outcome, d.get("notes", ""), next_call_at,
+    with db.get_db() as conn:
+        call_lead_id = db.get_or_create_call_lead(conn, business_id)
+
+    result = db.log_call(call_lead_id, outcome, d.get("notes", ""), next_call_at,
                          call_campaign_id=d.get("call_campaign_id") or None)
-    contact = db.get_contact(contact_id)
+    business = db.get_business(business_id)
     label = spec["label"]
-    db.add_log(f"☎ {label} — {(contact or {}).get('company') or contact_id}")
+    db.add_log(f"☎ {label} — {(business or {}).get('name') or business_id}")
     if result["stopped_email"]:
-        db.add_log(f"  ↳ email sequence stopped for {(contact or {}).get('company') or contact_id}")
+        db.add_log(f"  ↳ email sequence stopped for {(business or {}).get('name') or business_id}")
     return jsonify({"ok": True, **result})
 
 
 @app.route("/api/calls/contact/<int:cid>", methods=["GET"])
 @admin_required
 def api_call_contact(cid):
-    contact = db.get_contact(cid)
+    """cid is the business id — see api_log_call."""
+    contact = db.get_call_lead_view(cid)
     if not contact:
         return jsonify({"error": "Not found"}), 404
     return jsonify({
@@ -1829,7 +1909,7 @@ def api_call_ics(cid):
     alive, and the in-app queue already covers callbacks. Real sync is only
     worth building if two-way updates start to matter.
     """
-    contact = db.get_contact(cid)
+    contact = db.get_call_lead_view(cid)
     if not contact or not contact.get("next_call_at"):
         return jsonify({"error": "No scheduled time for this contact"}), 404
 

@@ -469,25 +469,53 @@ async function importContacts() {
       body: form,
     });
     if (res.status === 401) { window.location.href = '/login'; return; }
-    const data = await res.json();
-    const inv = data.invalid_mx ? ` (${data.invalid_mx} invalid MX — see Invalid Emails list)` : '';
-    toast(`Imported ${data.inserted} contacts ✓${inv}`);
-    closeModal('modal-import');
-    loadContacts();
+    const first = await res.json();
+    // A CSV held-back conflict is re-submitted as JSON rows, not a re-upload
+    // -- the flagged rows are already sitting in the response.
+    const final = await confirmChannelConflicts(first, () =>
+      api('/api/contacts/import', 'POST', {
+        rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
+      })
+    );
+    reportImport(mergeImportResults(first, final));
     return;
   }
 
   if (paste) {
     const rows = paste.split('\n').map(line => ({ email: line.trim() })).filter(r => r.email);
-    const data = await api('/api/contacts/import', 'POST', { rows });
-    const inv = data.invalid_mx ? ` (${data.invalid_mx} invalid MX — see Invalid Emails list)` : '';
-    toast(`Imported ${data.inserted} contacts ✓${inv}`);
-    closeModal('modal-import');
-    loadContacts();
+    const first = await api('/api/contacts/import', 'POST', { rows });
+    const final = await confirmChannelConflicts(first, () =>
+      api('/api/contacts/import', 'POST', {
+        rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
+      })
+    );
+    reportImport(mergeImportResults(first, final));
     return;
   }
 
   toast('Select a file or paste emails', 'err');
+}
+
+// confirmChannelConflicts returns the SAME object back when the operator
+// declines, or a fresh response from the confirmed resend when they accept --
+// that reference difference is how much this needs to know to combine the
+// two calls' counts into one honest total instead of reporting only the last.
+function mergeImportResults(first, final) {
+  if (final === first) return first;
+  return {
+    inserted:   (first.inserted || 0) + (final.inserted || 0),
+    invalid_mx: (first.invalid_mx || 0) + (final.invalid_mx || 0),
+    conflicts:  [],
+  };
+}
+
+function reportImport(data) {
+  const inv = data.invalid_mx ? ` (${data.invalid_mx} invalid MX — see Invalid Emails list)` : '';
+  const held = data.conflicts && data.conflicts.length
+    ? ` — ${data.conflicts.length} skipped (already on another channel)` : '';
+  toast(`Imported ${data.inserted} contacts ✓${inv}${held}`);
+  closeModal('modal-import');
+  loadContacts();
 }
 
 // ── Add / Edit ────────────────────────────────────────────────────────────────

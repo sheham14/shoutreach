@@ -165,13 +165,13 @@ def main():
 
         print("\n7. THE DAILY CAP IS REPORTED, AND FROM THE SAME COUNT THE SCHEDULER USES")
         db.update_campaign(cid, status="active", daily_limit=2)
-        db.upsert_contacts([{"email": "cap1@x1.ca", "company": "X1", "website": "https://x1.ca"},
-                            {"email": "cap2@x2.ca", "company": "X2", "website": "https://x2.ca"}])
+        db.upsert_businesses([{"email": "cap1@x1.ca", "company": "X1", "website": "https://x1.ca"},
+                              {"email": "cap2@x2.ca", "company": "X2", "website": "https://x2.ca"}])
         with db.get_db() as conn:
             ids = [r["id"] for r in conn.execute(
-                "SELECT id FROM contacts WHERE email LIKE 'cap%'").fetchall()]
-        for n, contact_id in enumerate(ids):
-            db.log_send(cid, contact_id, 1, "s", f"m{n}")
+                "SELECT id FROM email_leads WHERE email LIKE 'cap%'").fetchall()]
+        for n, lead_id in enumerate(ids):
+            db.log_send(cid, lead_id, 1, "s", f"m{n}")
         check("db and scheduler agree on today's count",
               db.get_campaign_today_count(cid) == 2, str(db.get_campaign_today_count(cid)))
         import scheduler as sched

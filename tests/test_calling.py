@@ -8,6 +8,18 @@ and its states ("no answer, try again", "booked") do not map onto the
 enrollment lifecycle. What the two channels must share is the answer: telling
 someone "not interested" on the phone has to stop the emails, or the scheduler
 sends a cheerful follow-up two days later.
+
+Identity is a business now, shared across channels; calling state lives on a
+call_leads row keyed by business_id, created the moment a business is first
+dialled. Two ids matter throughout this file and they are NOT interchangeable:
+
+  business id   -- what every HTTP calling route takes (matches what the
+                   queue hands back as `.id`), and what add_to_call_campaign
+                   and get_call_history take directly.
+  call_lead_id  -- what db.log_call() itself takes, since it writes straight
+                   to a call_leads row. The HTTP route resolves this for you;
+                   calling db.log_call() directly does not, so this file uses
+                   _call_lead() to do what the route does internally.
 """
 import importlib
 import os
@@ -49,17 +61,22 @@ def main():
         db, app_mod, client = boot(work)
         hdr = {"X-CSRF-Token": "t"}
 
-        db.upsert_contacts([
+        def _call_lead(business_id):
+            """What api_log_call does internally -- get or create the row db.log_call needs."""
+            with db.get_db() as conn:
+                return db.get_or_create_call_lead(conn, business_id)
+
+        db.upsert_businesses([
             {"email": f"c{i}@biz{i}.ca", "company": f"Biz {i}",
              "website": f"https://biz{i}.ca", "phone": f"709-555-01{i:02d}"}
             for i in range(5)
         ])
-        db.upsert_contacts([{"company": "No Site Clinic", "website": "",
-                             "phone": "709-555-0900", "status": "no_website",
-                             "address": "1 Water St, St John's, NL"}])
+        db.upsert_businesses([{"company": "No Site Clinic", "website": "",
+                               "phone": "709-555-0900", "status": "no_website",
+                               "address": "1 Water St, St John's, NL"}])
         with db.get_db() as conn:
             ids = [r["id"] for r in conn.execute(
-                "SELECT id FROM contacts ORDER BY id").fetchall()]
+                "SELECT id FROM businesses ORDER BY id").fetchall()]
 
         print("\n1. A NEVER-CALLED LEAD STARTS IN THE NEW PILE")
         new = db.get_call_queue("new")
@@ -67,13 +84,13 @@ def main():
         check("and none is due yet", db.get_call_queue("today") == [])
 
         print("\n2. LEADS WITHOUT A PHONE ARE NOT CALLABLE")
-        db.upsert_contacts([{"email": "nophone@x.ca", "company": "No Phone",
-                             "website": "https://nophone.ca"}])
+        db.upsert_businesses([{"email": "nophone@x.ca", "company": "No Phone",
+                               "website": "https://nophone.ca"}])
         check("a lead with no number never enters the queue",
               all(l["company"] != "No Phone" for l in db.get_call_queue("all")))
 
         print("\n3. A CALLBACK COMES BACK WHEN IT IS DUE, NOT BEFORE")
-        db.log_call(ids[0], "callback", "Asked me to try Thursday",
+        db.log_call(_call_lead(ids[0]), "callback", "Asked me to try Thursday",
                     next_call_at="2099-01-01 10:00:00")
         check("a future callback is not in today's queue",
               all(l["id"] != ids[0] for l in db.get_call_queue("today")))
@@ -82,69 +99,72 @@ def main():
         check("and it has left the new pile",
               all(l["id"] != ids[0] for l in db.get_call_queue("new")))
 
-        db.log_call(ids[1], "callback", "call back this morning",
+        db.log_call(_call_lead(ids[1]), "callback", "call back this morning",
                     next_call_at="2020-01-01 10:00:00")
         check("an overdue callback IS due now",
               any(l["id"] == ids[1] for l in db.get_call_queue("today")))
 
         print("\n4. ATTEMPTS ACCUMULATE")
-        db.log_call(ids[2], "no_answer")
-        db.log_call(ids[2], "no_answer")
-        db.log_call(ids[2], "voicemail", "left a message")
-        contact = db.get_contact(ids[2])
-        check("each attempt counts", contact["call_attempts"] == 3,
-              str(contact["call_attempts"]))
+        cl2 = _call_lead(ids[2])
+        db.log_call(cl2, "no_answer")
+        db.log_call(cl2, "no_answer")
+        db.log_call(cl2, "voicemail", "left a message")
+        lead = db.get_call_lead_view(ids[2])
+        check("each attempt counts", lead["call_attempts"] == 3,
+              str(lead["call_attempts"]))
         check("the latest outcome is the current state",
-              contact["call_status"] == "voicemail", contact["call_status"])
+              lead["call_status"] == "voicemail", lead["call_status"])
         check("but the history keeps all three",
               len(db.get_call_history(ids[2])) == 3)
         check("an un-reached lead stays callable",
               any(l["id"] == ids[2] for l in db.get_call_queue("all")))
 
         print("\n5. A TERMINAL OUTCOME RETIRES THE LEAD FROM EVERY BUCKET")
-        db.log_call(ids[3], "not_interested", "Happy with their current guy")
+        db.log_call(_call_lead(ids[3]), "not_interested", "Happy with their current guy")
         for bucket in ("today", "new", "upcoming", "all"):
             check(f"gone from '{bucket}'",
                   all(l["id"] != ids[3] for l in db.get_call_queue(bucket)))
 
         print("\n6. A TERMINAL CALL STOPS THE EMAIL SEQUENCE")
+        biz4_lead_id = db.get_email_lead_by_email("c4@biz4.ca")["id"]
         cid = db.create_campaign("Live campaign")
         db.upsert_step(cid, 1, "s", "b", 0)
-        db.enroll_contacts_bulk(cid, [ids[4]])
+        db.enroll_contacts_bulk(cid, [biz4_lead_id])
         with db.get_db() as conn:
             before = conn.execute(
-                "SELECT status FROM enrollments WHERE contact_id=?", (ids[4],)
+                "SELECT status FROM enrollments WHERE email_lead_id=?", (biz4_lead_id,)
             ).fetchone()["status"]
-        check("the contact starts queued for email", before == "queued", before)
+        check("the address starts queued for email", before == "queued", before)
 
-        res = db.log_call(ids[4], "not_interested", "said no on the phone")
+        res = db.log_call(_call_lead(ids[4]), "not_interested", "said no on the phone")
         check("the outcome reports that it stopped email", res["stopped_email"] is True)
         with db.get_db() as conn:
             after = conn.execute(
-                "SELECT status FROM enrollments WHERE contact_id=?", (ids[4],)
+                "SELECT status FROM enrollments WHERE email_lead_id=?", (biz4_lead_id,)
             ).fetchone()["status"]
         check("and the enrollment is no longer sendable",
               after not in ("queued", "paused"), after)
         check("so the scheduler sees nothing due",
-              all(e["contact_id"] != ids[4] for e in db.get_due_enrollments(cid)))
+              all(e["email_lead_id"] != biz4_lead_id for e in db.get_due_enrollments(cid)))
 
         print("\n7. DO NOT CALL SUPPRESSES EVERY CHANNEL")
-        db.log_call(ids[5], "do_not_call", "asked not to be contacted again")
-        contact = db.get_contact(ids[5])
-        check("the contact is unsubscribed, not merely un-callable",
-              contact["status"] == "unsubscribed", contact["status"])
+        db.log_call(_call_lead(ids[5]), "do_not_call", "asked not to be contacted again")
+        lead5 = db.get_call_lead_view(ids[5])
+        check("the business is flagged do-not-contact, not merely un-callable",
+              lead5["do_not_contact"] == 1, lead5["do_not_contact"])
         check("and cannot resurface in a call queue",
               all(l["id"] != ids[5] for l in db.get_call_queue("all")))
 
         print("\n8. A NON-TERMINAL OUTCOME LEAVES EMAIL ALONE")
-        db.upsert_contacts([{"email": "keep@keepme.ca", "company": "Keep Me",
-                             "website": "https://keepme.ca", "phone": "709-555-0777"}])
-        keep = db.get_contact_by_email("keep@keepme.ca")["id"]
-        db.enroll_contacts_bulk(cid, [keep])
-        db.log_call(keep, "voicemail", "left a message")
+        db.upsert_businesses([{"email": "keep@keepme.ca", "company": "Keep Me",
+                               "website": "https://keepme.ca", "phone": "709-555-0777"}])
+        keep_lead = db.get_email_lead_by_email("keep@keepme.ca")
+        keep_email_lead_id = keep_lead["id"]
+        db.enroll_contacts_bulk(cid, [keep_email_lead_id])
+        db.log_call(_call_lead(keep_lead["business_id"]), "voicemail", "left a message")
         with db.get_db() as conn:
             still = conn.execute(
-                "SELECT status FROM enrollments WHERE contact_id=?", (keep,)
+                "SELECT status FROM enrollments WHERE email_lead_id=?", (keep_email_lead_id,)
             ).fetchone()["status"]
         check("a voicemail does not cancel the email sequence", still == "queued", still)
 
@@ -171,7 +191,7 @@ def main():
             "next_call_at": "2099-03-04T14:30",
         }, headers=hdr)
         check("a booked meeting is accepted", r.status_code == 200, str(r.get_json()))
-        stored = db.get_contact(ids[2])["next_call_at"]
+        stored = db.get_call_lead_view(ids[2])["next_call_at"]
         check("the datetime-local value is stored in the DB's own shape",
               stored == "2099-03-04 14:30:00", str(stored))
 
@@ -190,9 +210,9 @@ def main():
         check("a lead with nothing scheduled has nothing to download",
               r.status_code == 404, str(r.status_code))
         check("and a terminal outcome with no date left none behind",
-              db.get_contact(ids[3])["next_call_at"] is None)
+              db.get_call_lead_view(ids[3])["next_call_at"] is None)
         check("while a booked meeting kept its time",
-              db.get_contact(ids[2])["next_call_at"] == "2099-03-04 14:30:00")
+              db.get_call_lead_view(ids[2])["next_call_at"] == "2099-03-04 14:30:00")
 
         print("\n11. THE SCRIPT IS THE OPERATOR'S, AND STARTS EMPTY")
         script = client.get("/api/call-script").get_json()
@@ -216,21 +236,21 @@ def main():
         # It leaves every calling queue by design, so Contacts is the only
         # place it can be seen -- and call_status is the only thing that
         # distinguishes it from a lead nobody has ever dialled.
-        closed = db.get_contact(ids[3])          # marked not_interested earlier
-        check("the outcome is recorded on the contact",
+        closed = db.get_call_lead_view(ids[3])          # marked not_interested earlier
+        check("the outcome is recorded on the lead",
               closed["call_status"] == "not_interested", closed["call_status"])
-        check("and 'not interested' does NOT unsubscribe them",
-              closed["status"] != "unsubscribed", closed["status"])
+        check("and 'not interested' does NOT mark do-not-contact",
+              closed["do_not_contact"] != 1, closed["do_not_contact"])
 
-        page = db.get_contacts_page(page=1, per_page=100, call_status="not_interested")
+        page = db.get_email_leads_page(page=1, per_page=100, call_status="not_interested")
         check("filtering Contacts by call status finds it",
-              any(r["id"] == ids[3] for r in page["rows"]), str(page["total"]))
-        never = db.get_contacts_page(page=1, per_page=100, call_status="none")
+              any(r["business_id"] == ids[3] for r in page["rows"]), str(page["total"]))
+        never = db.get_email_leads_page(page=1, per_page=100, call_status="none")
         check("'never called' excludes it",
-              all(r["id"] != ids[3] for r in never["rows"]))
-        any_called = db.get_contacts_page(page=1, per_page=100, call_status="any")
+              all(r["business_id"] != ids[3] for r in never["rows"]))
+        any_called = db.get_email_leads_page(page=1, per_page=100, call_status="any")
         check("'called, any outcome' includes it",
-              any(r["id"] == ids[3] for r in any_called["rows"]))
+              any(r["business_id"] == ids[3] for r in any_called["rows"]))
 
         worked = db.get_call_queue("worked")
         check("the Worked bucket lists it", any(l["id"] == ids[3] for l in worked))
@@ -276,9 +296,11 @@ def main():
         }, headers=hdr)
         check("logging with a campaign works", r.status_code == 200, str(r.get_json()))
         with db.get_db() as conn:
-            row = conn.execute(
-                "SELECT call_campaign_id FROM call_log WHERE contact_id=? "
-                "ORDER BY id DESC LIMIT 1", (ids[0],)).fetchone()
+            row = conn.execute("""
+                SELECT l.call_campaign_id FROM call_log l
+                  JOIN call_leads cl ON cl.id = l.call_lead_id
+                 WHERE cl.business_id=? ORDER BY l.id DESC LIMIT 1
+            """, (ids[0],)).fetchone()
         check("the campaign is stored on the call", row["call_campaign_id"] == camp,
               str(row["call_campaign_id"]))
         after = {c["id"]: c for c in db.get_call_campaigns()}[camp]
@@ -295,12 +317,12 @@ def main():
               after["total"] == before_stats["total"], str(after["total"]))
 
         print("\n16. DELETING A CAMPAIGN KEEPS THE LEADS")
-        before_contacts = db.get_contacts_page(page=1, per_page=500)["total"]
+        before_contacts = db.get_email_leads_page(page=1, per_page=500)["total"]
         r = client.delete(f"/api/call-campaigns/{camp}", headers=hdr)
         check("the campaign goes", r.status_code == 200)
         check("no campaign remains", all(c["id"] != camp for c in db.get_call_campaigns()))
         check("every contact survives",
-              db.get_contacts_page(page=1, per_page=500)["total"] == before_contacts)
+              db.get_email_leads_page(page=1, per_page=500)["total"] == before_contacts)
         check("and so does the call history", len(db.get_call_history(ids[0])) >= 1)
 
         print("\n17. THE OUTCOME VOCABULARY IS THE OPERATOR'S")
@@ -317,27 +339,27 @@ def main():
         check("it does not end the lead", not spec["is_terminal"])
         check("and does not touch email", not spec["stops_email"])
 
-        db.upsert_contacts([{"company": "Follow Up Co", "phone": "709-555-0611",
-                             "status": "no_website", "address": "9 Duckworth, St Johns, NL"}])
+        db.upsert_businesses([{"company": "Follow Up Co", "phone": "709-555-0611",
+                               "status": "no_website", "address": "9 Duckworth, St Johns, NL"}])
         with db.get_db() as conn:
             fid = conn.execute(
-                "SELECT id FROM contacts WHERE company='Follow Up Co'").fetchone()["id"]
+                "SELECT id FROM businesses WHERE name='Follow Up Co'").fetchone()["id"]
 
         r = client.post("/api/calls/log", json={
             "contact_id": fid, "outcome": key, "notes": "ring back sometime",
         }, headers=hdr)
         check("it can be logged with no date at all", r.status_code == 200, str(r.get_json()))
-        contact = db.get_contact(fid)
-        check("the contact carries it", contact["call_status"] == key, contact["call_status"])
-        check("no phantom callback date was invented", contact["next_call_at"] is None,
-              str(contact["next_call_at"]))
+        flead = db.get_call_lead_view(fid)
+        check("the lead carries it", flead["call_status"] == key, flead["call_status"])
+        check("no phantom callback date was invented", flead["next_call_at"] is None,
+              str(flead["next_call_at"]))
         check("and the lead stays callable",
               any(l["id"] == fid for l in db.get_call_queue("all")))
 
         print("\n18. A CUSTOM OUTCOME CAN END A LEAD IF YOU SAY SO")
         dead = db.create_call_outcome("Out of business", is_terminal=True,
                                       stops_email=True, tone="bad")
-        db.log_call(fid, dead, "shut down")
+        db.log_call(_call_lead(fid), dead, "shut down")
         check("terminal custom outcomes retire the lead",
               all(l["id"] != fid for l in db.get_call_queue("all")))
         check("and appear in Worked",

@@ -67,40 +67,157 @@ def init_db():
                 UNIQUE(campaign_id, step_num)
             );
 
-            -- email is nullable: the scraper stores no-email prospects.
-            -- Uniqueness comes from the partial index contacts_email_unique
-            -- below, not a table constraint, so NULLs are allowed to repeat.
-            CREATE TABLE IF NOT EXISTS contacts (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                email      TEXT DEFAULT NULL,
-                first_name TEXT NOT NULL DEFAULT '',
-                last_name  TEXT NOT NULL DEFAULT '',
-                company    TEXT NOT NULL DEFAULT '',
-                extra      TEXT NOT NULL DEFAULT '{}',
-                status     TEXT NOT NULL DEFAULT 'active',
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            -- ─── Identity ───────────────────────────────────────────────────
+            --
+            -- One row per real-world business, independent of how we reach it.
+            -- Everything channel-specific lives in email_leads / call_leads /
+            -- wa_leads, which reference this.
+            --
+            -- Splitting identity out of the channel is what makes "is this
+            -- clinic already being emailed" a foreign-key lookup instead of a
+            -- fuzzy match on phone or domain. The domain-arbitration code this
+            -- replaced existed only because `domain` was standing in for
+            -- business identity, which broke on freemail and on group
+            -- practices sharing one address.
+            CREATE TABLE IF NOT EXISTS businesses (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                name             TEXT    NOT NULL DEFAULT '',
+                phone            TEXT    NOT NULL DEFAULT '',
+                phone_normalized TEXT    NOT NULL DEFAULT '',
+                website          TEXT    NOT NULL DEFAULT '',
+                domain           TEXT    NOT NULL DEFAULT '',
+                address          TEXT    NOT NULL DEFAULT '',
+                city             TEXT    NOT NULL DEFAULT '',
+                country          TEXT    NOT NULL DEFAULT '',
+                category         TEXT    NOT NULL DEFAULT '',
+                rating           REAL    DEFAULT NULL,
+                review_count     INTEGER DEFAULT NULL,
+                -- What the scraper could establish about reaching them on the
+                -- web: '' unknown, 'no_website', 'form_only', 'has_email'.
+                -- Distinct from email_leads.status, which tracks the lifecycle
+                -- of one address rather than a fact about the business.
+                web_status       TEXT    NOT NULL DEFAULT '',
+                source_job_id    INTEGER DEFAULT NULL,
+                extra            TEXT    NOT NULL DEFAULT '{}',
+                -- Suppresses this business on every channel at once. A clinic
+                -- that says "stop contacting us" on WhatsApp must not keep
+                -- receiving email, and one flag here is the only way to be
+                -- sure of that.
+                do_not_contact   INTEGER NOT NULL DEFAULT 0,
+                notes            TEXT    NOT NULL DEFAULT '',
+                created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- ─── Per-channel lead state ─────────────────────────────────────
+
+            -- One row per email address. A business legitimately has several
+            -- (info@, the owner, a billing address), so this is many-to-one
+            -- against businesses -- which is also how "several addresses at
+            -- one clinic, only email the best" is expressed now.
+            --
+            -- email is nullable and uniqueness comes from the partial index
+            -- email_leads_email_unique below, not a table constraint, so
+            -- prospect rows with no address found yet are allowed to repeat.
+            CREATE TABLE IF NOT EXISTS email_leads (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                business_id       INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+                email             TEXT    DEFAULT NULL,
+                first_name        TEXT    NOT NULL DEFAULT '',
+                last_name         TEXT    NOT NULL DEFAULT '',
+                status            TEXT    NOT NULL DEFAULT 'active',
+                mx_valid          INTEGER DEFAULT NULL,
+                soft_bounce_count INTEGER NOT NULL DEFAULT 0,
+                -- Points at the address chosen to actually receive mail when a
+                -- business has several. Kept out of `status` because
+                -- get_due_enrollments filters on status and a mid-sequence
+                -- lead flipped here would silently lose its follow-ups.
+                duplicate_of      INTEGER DEFAULT NULL,
+                created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS call_leads (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                business_id   INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+                call_status   TEXT    NOT NULL DEFAULT '',
+                next_call_at  TEXT    DEFAULT NULL,
+                call_attempts INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(business_id)
+            );
+
+            -- WhatsApp. Sending is manual by design: this table stages a
+            -- message and records that the operator opened the wa.me link.
+            -- Nothing in this schema is driven by a scheduler, and there is no
+            -- send path -- see wa_log's comment.
+            CREATE TABLE IF NOT EXISTS wa_leads (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                business_id      INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+                -- Digits only, full international form, ready to drop into a
+                -- wa.me link. Computed once at import against the lead's
+                -- country rather than at click time, so a number that cannot
+                -- be formatted is visible in the table before it wastes a tap.
+                wa_number        TEXT    NOT NULL DEFAULT '',
+                country          TEXT    NOT NULL DEFAULT '',
+                -- 'mobile' / 'landline' / 'unknown', from dialling-prefix
+                -- rules. A landline is less likely to be on WhatsApp, but
+                -- WhatsApp Business does run on them, so this sorts the queue
+                -- rather than filtering it.
+                number_type      TEXT    NOT NULL DEFAULT 'unknown',
+                wa_status        TEXT    NOT NULL DEFAULT '',
+                signal_type      TEXT    DEFAULT NULL,
+                signal_detail    TEXT    NOT NULL DEFAULT '',
+                signal_confirmed INTEGER NOT NULL DEFAULT 0,
+                draft_message    TEXT    NOT NULL DEFAULT '',
+                template_variant TEXT    NOT NULL DEFAULT '',
+                sent_date        TEXT    DEFAULT NULL,
+                replied          INTEGER NOT NULL DEFAULT 0,
+                followup_count   INTEGER NOT NULL DEFAULT 0,
+                paused           INTEGER NOT NULL DEFAULT 0,
+                -- Where a lead went when its number turned out not to be on
+                -- WhatsApp, e.g. 'call' or 'email'. Kept rather than deleted
+                -- so a later scrape cannot quietly re-queue a number already
+                -- ruled out here.
+                moved_to         TEXT    NOT NULL DEFAULT '',
+                notes            TEXT    NOT NULL DEFAULT '',
+                created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(business_id)
+            );
+
+            -- Every WhatsApp message the operator actually opened in WhatsApp,
+            -- append-only. "Sent" here means the wa.me link was opened, not
+            -- that WhatsApp confirmed delivery or that a message left the
+            -- phone -- there is no way to observe either from outside the app,
+            -- and treating this as delivery would be a lie the follow-up
+            -- cadence then acts on.
+            CREATE TABLE IF NOT EXISTS wa_log (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                wa_lead_id       INTEGER NOT NULL REFERENCES wa_leads(id) ON DELETE CASCADE,
+                kind             TEXT    NOT NULL DEFAULT 'opener',
+                message          TEXT    NOT NULL DEFAULT '',
+                template_variant TEXT    NOT NULL DEFAULT '',
+                sent_at          TEXT    NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE TABLE IF NOT EXISTS enrollments (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                campaign_id  INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
-                contact_id   INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                current_step INTEGER NOT NULL DEFAULT 1,
-                status       TEXT    NOT NULL DEFAULT 'queued',
-                next_send_at TEXT,
-                enrolled_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(campaign_id, contact_id)
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id   INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+                email_lead_id INTEGER NOT NULL REFERENCES email_leads(id) ON DELETE CASCADE,
+                current_step  INTEGER NOT NULL DEFAULT 1,
+                status        TEXT    NOT NULL DEFAULT 'queued',
+                next_send_at  TEXT,
+                enrolled_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(campaign_id, email_lead_id)
             );
 
             CREATE TABLE IF NOT EXISTS sends (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                campaign_id INTEGER,
-                contact_id  INTEGER,
-                step_num    INTEGER,
-                subject     TEXT,
-                msg_id      TEXT,
-                status      TEXT NOT NULL DEFAULT 'sent',
-                sent_at     TEXT NOT NULL DEFAULT (datetime('now'))
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id   INTEGER,
+                email_lead_id INTEGER,
+                step_num      INTEGER,
+                subject       TEXT,
+                msg_id        TEXT,
+                status        TEXT NOT NULL DEFAULT 'sent',
+                sent_at       TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE TABLE IF NOT EXISTS daily_counts (
@@ -180,7 +297,7 @@ def init_db():
             -- in front of you before dialling someone a fourth time.
             CREATE TABLE IF NOT EXISTS call_log (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                contact_id   INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                call_lead_id INTEGER NOT NULL REFERENCES call_leads(id) ON DELETE CASCADE,
                 outcome      TEXT    NOT NULL,
                 notes        TEXT    NOT NULL DEFAULT '',
                 next_call_at TEXT,
@@ -234,9 +351,9 @@ def init_db():
             -- earlier campaign's record of what happened should survive that.
             CREATE TABLE IF NOT EXISTS call_campaign_members (
                 call_campaign_id INTEGER NOT NULL REFERENCES call_campaigns(id) ON DELETE CASCADE,
-                contact_id       INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                call_lead_id     INTEGER NOT NULL REFERENCES call_leads(id) ON DELETE CASCADE,
                 added_at         TEXT    NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (call_campaign_id, contact_id)
+                PRIMARY KEY (call_campaign_id, call_lead_id)
             );
 
             CREATE TABLE IF NOT EXISTS users (
@@ -248,14 +365,16 @@ def init_db():
             );
         """)
 
-        # Schema migrations — safe to run repeatedly on existing databases
+        # Schema migrations — safe to run repeatedly on existing databases.
+        #
+        # Columns for the retired `contacts` table are gone from this list:
+        # businesses / email_leads / call_leads declare their own columns in
+        # full above, and the one-shot split below is what carries old data
+        # across. Adding a column to a new table means editing its CREATE and
+        # adding one line here, nothing else.
         for _col_sql in [
-            "ALTER TABLE contacts ADD COLUMN soft_bounce_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE contacts ADD COLUMN website TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE contacts ADD COLUMN address TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE sends ADD COLUMN account_id INTEGER",
             "ALTER TABLE enrollments ADD COLUMN variant_label TEXT",
-            "ALTER TABLE contacts ADD COLUMN mx_valid INTEGER DEFAULT NULL",
             "ALTER TABLE campaigns ADD COLUMN timezone TEXT DEFAULT NULL",
             "ALTER TABLE campaigns ADD COLUMN variables TEXT DEFAULT '{}'",
             # Which weekdays this campaign may send on, as Python weekday
@@ -266,47 +385,16 @@ def init_db():
             # send on the two nobody is working. Defaults to Mon-Fri so
             # existing campaigns keep behaving exactly as before.
             "ALTER TABLE campaigns ADD COLUMN send_days TEXT NOT NULL DEFAULT '0,1,2,3,4'",
-            # Canonical host for a contact's website. Deduping on the raw
-            # website string failed constantly because Maps hands out
-            # http://x.ca, https://www.x.ca/ and http://x.ca/?utm_source=gmb
-            # for the same business.
-            "ALTER TABLE contacts ADD COLUMN domain TEXT NOT NULL DEFAULT ''",
-            # Points at the contact that won for this domain. Suppression is
-            # kept OUT of `status` on purpose: get_due_enrollments filters
-            # status='active', and follow-ups re-enter through that same
-            # query, so flipping a mid-sequence contact's status would
-            # silently cancel steps 2 and 3.
-            "ALTER TABLE contacts ADD COLUMN duplicate_of INTEGER DEFAULT NULL",
-            # Promoted out of the `extra` JSON blob: the scraper always reads
-            # these off the Maps detail panel, and they're what make a lead
-            # worth qualifying by hand (a bad phone number or a 2-star rating
-            # says more than the email address does).
-            "ALTER TABLE contacts ADD COLUMN phone TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE contacts ADD COLUMN category TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE contacts ADD COLUMN rating REAL DEFAULT NULL",
-            "ALTER TABLE contacts ADD COLUMN review_count INTEGER DEFAULT NULL",
-            # Which scrape found this lead -- powers the "lead list" filter in
-            # Contacts. Deliberately NOT a foreign key: leads must outlive the
-            # scrape_jobs row that produced them, and a pruned job should
-            # degrade to an "unknown source" label, not block the delete or
-            # orphan the contact. NULL means manually added or CSV-imported.
-            "ALTER TABLE contacts ADD COLUMN source_job_id INTEGER DEFAULT NULL",
-            # Comparable form of `phone`. Maps hands the same number back as
-            # "+1 709-555-0123", "(709) 555-0123" and "709.555.0123", so the
-            # raw column can never answer "have I already dialled this
-            # business". Kept beside the original rather than replacing it --
-            # the display value is what you want on screen.
-            "ALTER TABLE contacts ADD COLUMN phone_normalized TEXT NOT NULL DEFAULT ''",
-            # Current calling state, denormalized from call_log so the queue is
-            # one indexed scan rather than a correlated subquery per contact.
-            # '' means never called, which is what puts a lead in the new pile.
-            "ALTER TABLE contacts ADD COLUMN call_status TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE contacts ADD COLUMN next_call_at TEXT DEFAULT NULL",
-            "ALTER TABLE contacts ADD COLUMN call_attempts INTEGER NOT NULL DEFAULT 0",
-            # Which batch a call was made under. Without it, a contact worked
-            # in two campaigns would have its calls counted against both and
+            # Which batch a call was made under. Without it, a lead worked in
+            # two campaigns would have its calls counted against both and
             # neither campaign's numbers would mean anything.
             "ALTER TABLE call_log ADD COLUMN call_campaign_id INTEGER DEFAULT NULL",
+            # Where a scrape was aimed. The WhatsApp module needs a country to
+            # turn a locally-formatted Gulf number into something a wa.me link
+            # will accept, and the scrape already knows it -- "dental clinics
+            # Doha" is a country fact the operator should not have to restate
+            # at import time.
+            "ALTER TABLE scrape_jobs ADD COLUMN country TEXT NOT NULL DEFAULT ''",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -315,61 +403,18 @@ def init_db():
                 # but log it — a genuine migration failure must not be invisible.
                 logger.debug("Column migration skipped: %s (%s)", _col_sql, exc)
 
-        # Make email nullable on legacy databases created before the scraper
-        # needed to store no-email prospects. Fresh databases are already
-        # nullable (see CREATE TABLE above), so this never fires for them.
-        #
-        # This rebuild must list EVERY column added by the ALTER loop above --
-        # anything omitted here is silently dropped. That is exactly how
-        # mx_valid went missing (Fable Audit 2.1). Add new columns in both places.
-        _col_info = conn.execute("PRAGMA table_info(contacts)").fetchall()
-        _email_col = next((r for r in _col_info if r['name'] == 'email'), None)
-        if _email_col and _email_col['notnull']:
-            logger.info("Migrating contacts.email to nullable (legacy schema)")
-            conn.executescript("""
-                PRAGMA foreign_keys = OFF;
-                CREATE TABLE contacts_new (
-                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email             TEXT DEFAULT NULL,
-                    first_name        TEXT NOT NULL DEFAULT '',
-                    last_name         TEXT NOT NULL DEFAULT '',
-                    company           TEXT NOT NULL DEFAULT '',
-                    extra             TEXT NOT NULL DEFAULT '{}',
-                    status            TEXT NOT NULL DEFAULT 'active',
-                    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
-                    website           TEXT NOT NULL DEFAULT '',
-                    address           TEXT NOT NULL DEFAULT '',
-                    soft_bounce_count INTEGER NOT NULL DEFAULT 0,
-                    mx_valid          INTEGER DEFAULT NULL,
-                    domain            TEXT NOT NULL DEFAULT '',
-                    duplicate_of      INTEGER DEFAULT NULL,
-                    phone             TEXT NOT NULL DEFAULT '',
-                    category          TEXT NOT NULL DEFAULT '',
-                    rating            REAL DEFAULT NULL,
-                    review_count      INTEGER DEFAULT NULL,
-                    source_job_id     INTEGER DEFAULT NULL,
-                    phone_normalized  TEXT NOT NULL DEFAULT '',
-                    call_status       TEXT NOT NULL DEFAULT '',
-                    next_call_at      TEXT DEFAULT NULL,
-                    call_attempts     INTEGER NOT NULL DEFAULT 0
-                );
-                INSERT INTO contacts_new
-                    SELECT id, email, first_name, last_name, company, extra, status,
-                           created_at, COALESCE(website,''), COALESCE(address,''),
-                           COALESCE(soft_bounce_count, 0), mx_valid,
-                           COALESCE(domain,''), duplicate_of,
-                           COALESCE(phone,''), COALESCE(category,''),
-                           rating, review_count, source_job_id,
-                           COALESCE(phone_normalized,''), COALESCE(call_status,''),
-                           next_call_at, COALESCE(call_attempts, 0)
-                    FROM contacts;
-                DROP TABLE contacts;
-                ALTER TABLE contacts_new RENAME TO contacts;
-                PRAGMA foreign_keys = ON;
-            """)
+        # One-shot split of the old single `contacts` table into a business
+        # identity plus per-channel leads. No-ops on a database that has
+        # already been split, and on a fresh one that never had `contacts`.
+        try:
+            _split_contacts_into_channels(conn)
+        except Exception as exc:
+            logger.exception("Contact split migration failed: %s", exc)
+            raise
+
         conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS contacts_email_unique
-            ON contacts(email) WHERE email IS NOT NULL AND email != ''
+            CREATE UNIQUE INDEX IF NOT EXISTS email_leads_email_unique
+            ON email_leads(email) WHERE email IS NOT NULL AND email != ''
         """)
 
         # Hot-path indexes — used by the scheduler / reply-detection loops.
@@ -379,83 +424,52 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS sends_campaign_sent_at  ON sends(campaign_id, sent_at)",
             "CREATE INDEX IF NOT EXISTS sends_sent_at_idx       ON sends(sent_at)",
             "CREATE INDEX IF NOT EXISTS enrollments_due_idx     ON enrollments(campaign_id, status, next_send_at)",
-            "CREATE INDEX IF NOT EXISTS enrollments_contact_idx ON enrollments(contact_id, status)",
-            "CREATE INDEX IF NOT EXISTS contacts_status_idx     ON contacts(status)",
-            "CREATE INDEX IF NOT EXISTS contacts_domain_idx     ON contacts(domain) WHERE domain != ''",
+            "CREATE INDEX IF NOT EXISTS enrollments_lead_idx    ON enrollments(email_lead_id, status)",
             "CREATE INDEX IF NOT EXISTS logs_created_at_idx     ON logs(created_at)",
-            "CREATE INDEX IF NOT EXISTS contacts_source_job_idx ON contacts(source_job_id) WHERE source_job_id IS NOT NULL",
-            "CREATE INDEX IF NOT EXISTS contacts_created_at_idx ON contacts(created_at)",
             # Backs has_sent_step, which runs once per email before sending.
-            "CREATE INDEX IF NOT EXISTS sends_dedupe_idx ON sends(campaign_id, contact_id, step_num)",
-            "CREATE INDEX IF NOT EXISTS contacts_phone_idx ON contacts(phone_normalized) WHERE phone_normalized != ''",
-            "CREATE INDEX IF NOT EXISTS contacts_next_call_idx ON contacts(next_call_at) WHERE next_call_at IS NOT NULL",
-            "CREATE INDEX IF NOT EXISTS contacts_call_status_idx ON contacts(call_status)",
-            "CREATE INDEX IF NOT EXISTS call_log_contact_idx ON call_log(contact_id, called_at)",
+            "CREATE INDEX IF NOT EXISTS sends_dedupe_idx ON sends(campaign_id, email_lead_id, step_num)",
+
+            # Identity. phone and domain are how an inbound scrape row is
+            # matched to a business we already know about, so both are on the
+            # hot path of every import.
+            "CREATE INDEX IF NOT EXISTS businesses_phone_idx      ON businesses(phone_normalized) WHERE phone_normalized != ''",
+            "CREATE INDEX IF NOT EXISTS businesses_domain_idx     ON businesses(domain) WHERE domain != ''",
+            "CREATE INDEX IF NOT EXISTS businesses_source_job_idx ON businesses(source_job_id) WHERE source_job_id IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS businesses_created_at_idx ON businesses(created_at)",
+            "CREATE INDEX IF NOT EXISTS businesses_dnc_idx        ON businesses(do_not_contact) WHERE do_not_contact = 1",
+
+            # Per-channel. business_id carries the cross-channel lookups
+            # ("is this clinic already being called"), which used to be a
+            # fuzzy phone match across one shared table.
+            "CREATE INDEX IF NOT EXISTS email_leads_business_idx ON email_leads(business_id)",
+            "CREATE INDEX IF NOT EXISTS email_leads_status_idx   ON email_leads(status)",
+            "CREATE INDEX IF NOT EXISTS call_leads_business_idx  ON call_leads(business_id)",
+            "CREATE INDEX IF NOT EXISTS call_leads_next_call_idx ON call_leads(next_call_at) WHERE next_call_at IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS call_leads_status_idx    ON call_leads(call_status)",
+            "CREATE INDEX IF NOT EXISTS call_log_lead_idx        ON call_log(call_lead_id, called_at)",
+            "CREATE INDEX IF NOT EXISTS wa_leads_business_idx    ON wa_leads(business_id)",
+            "CREATE INDEX IF NOT EXISTS wa_leads_status_idx      ON wa_leads(wa_status)",
+            # Backs the follow-up-due query, which is a live read on every
+            # load of the WhatsApp section rather than a scheduled job.
+            "CREATE INDEX IF NOT EXISTS wa_leads_due_idx         ON wa_leads(sent_date) WHERE replied = 0 AND paused = 0",
+            "CREATE INDEX IF NOT EXISTS wa_log_lead_idx          ON wa_log(wa_lead_id, sent_at)",
         ):
             try:
                 conn.execute(idx_sql)
             except Exception as exc:
                 logger.debug("Index create skipped: %s (%s)", idx_sql, exc)
 
-        # Backfill domain for rows that predate the column.
-        try:
-            todo = conn.execute(
-                "SELECT id, website FROM contacts "
-                "WHERE domain = '' AND website != ''"
-            ).fetchall()
-            for row in todo:
-                conn.execute(
-                    "UPDATE contacts SET domain=? WHERE id=?",
-                    (canonical_domain(row["website"]), row["id"]),
-                )
-            if todo:
-                logger.info("Backfilled domain for %d contact(s)", len(todo))
-        except Exception as exc:
-            logger.warning("Domain backfill skipped: %s", exc)
-
-        # Repair leads suppressed by treating a freemail domain as a business.
-        # Contacts with no website fell back to the address's own domain, so
-        # every gmail.com lead was arbitrated against every other one and all
-        # but the first were marked duplicate_of and refused at enrollment.
-        # Clear the domain (they dedupe on the exact address instead) and lift
-        # the suppression, or those leads stay silently unmailable.
-        try:
-            placeholders = ",".join("?" * len(FREEMAIL_DOMAINS))
-            freed = conn.execute(f"""
-                UPDATE contacts
-                   SET domain = '', duplicate_of = NULL
-                 WHERE domain IN ({placeholders})
-            """, tuple(FREEMAIL_DOMAINS)).rowcount
-            if freed:
-                logger.info(
-                    "Freed %d contact(s) that were suppressed as freemail-domain "
-                    "duplicates", freed,
-                )
-        except Exception as exc:
-            logger.warning("Freemail suppression repair skipped: %s", exc)
+        # The domain backfill, the freemail-suppression repair and the phone
+        # normalization backfill that used to run here are gone: all three
+        # patched rows in `contacts`, and the split migration above computes
+        # domain and phone_normalized as it writes each business. The freemail
+        # bug they worked around cannot recur -- identity is business_id now,
+        # not a domain string, so gmail.com is never mistaken for a business.
 
         try:
             _seed_call_outcomes(conn)
         except Exception as exc:
             logger.warning("Call outcome seeding skipped: %s", exc)
-
-        # Comparable phone for rows scraped before the column existed, so
-        # "have I already dialled this business" works on the list you already
-        # have rather than only on the next scrape.
-        try:
-            todo = conn.execute(
-                "SELECT id, phone FROM contacts WHERE phone_normalized = '' AND phone != ''"
-            ).fetchall()
-            for row in todo:
-                key = normalize_phone(row["phone"])
-                if key:
-                    conn.execute(
-                        "UPDATE contacts SET phone_normalized=? WHERE id=?", (key, row["id"])
-                    )
-            if todo:
-                logger.info("Normalized phone for %d contact(s)", len(todo))
-        except Exception as exc:
-            logger.warning("Phone normalization backfill skipped: %s", exc)
 
         # Every step owns at least one variant, and its copy lives there.
         #
@@ -484,44 +498,335 @@ def init_db():
         except Exception as exc:
             logger.warning("Step variant promotion skipped: %s", exc)
 
-        # Backfill phone/category/rating/review_count for rows imported before
-        # these had their own columns -- they're sitting in `extra` from a CSV
-        # import (the scraper's CSV writes a "reviews" column; the DB column is
-        # review_count to read better next to rating).
-        try:
-            todo = conn.execute("""
-                SELECT id, extra FROM contacts
-                WHERE phone = '' AND category = '' AND rating IS NULL
-                  AND review_count IS NULL AND extra != '{}'
-            """).fetchall()
-            backfilled = 0
-            for row in todo:
-                try:
-                    extra = json.loads(row["extra"] or "{}")
-                except Exception:
-                    continue
-                if not any(k in extra for k in ("phone", "category", "rating", "reviews")):
-                    continue
-                rating = None
-                try:
-                    rating = float(extra["rating"]) if extra.get("rating") not in (None, "") else None
-                except (TypeError, ValueError):
-                    pass
-                review_count = None
-                try:
-                    review_count = int(extra["reviews"]) if extra.get("reviews") not in (None, "") else None
-                except (TypeError, ValueError):
-                    pass
-                conn.execute(
-                    "UPDATE contacts SET phone=?, category=?, rating=?, review_count=? WHERE id=?",
-                    (extra.get("phone", ""), extra.get("category", ""),
-                     rating, review_count, row["id"]),
+        # The phone/category/rating backfill that used to close this function
+        # is gone with the rest: it pulled those values out of `extra` on old
+        # `contacts` rows, and the split migration reads the same keys while
+        # building each business.
+
+
+# ── One-shot migration: contacts → businesses + per-channel leads ────────────
+
+def _table_exists(conn, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+
+
+def _identity_keys(row: dict) -> list:
+    """
+    Every handle we have on who this business is, best first.
+
+    A single old contact row often carries more than one -- a phone and a
+    website -- and two rows for the same clinic may each carry a different
+    one. Returning all of them lets the caller merge rows that agree on any
+    single handle, which is what stops "info@ and the owner's address at the
+    same practice" from becoming two businesses.
+    """
+    keys = []
+    phone = row.get("phone_normalized") or normalize_phone(row.get("phone") or "")
+    if phone:
+        keys.append(("phone", phone))
+
+    domain = row.get("domain") or canonical_domain(row.get("website") or "")
+    # Freemail is a mailbox provider, not a business. Keying on it is the exact
+    # bug the old schema kept having to repair.
+    if domain and not is_freemail(domain):
+        keys.append(("domain", domain))
+
+    company = normalize_company(row.get("company") or "")
+    if company:
+        keys.append(("company", company))
+    return keys
+
+
+def _split_contacts_into_channels(conn):
+    """
+    Split the old single `contacts` table into `businesses` plus the
+    per-channel lead tables, then repoint everything that referenced it.
+
+    Runs once. A database that never had `contacts` (a fresh install) and one
+    that has already been split both fall straight through.
+    """
+    if not _table_exists(conn, "contacts"):
+        return
+    if conn.execute("SELECT 1 FROM businesses LIMIT 1").fetchone():
+        logger.warning(
+            "Both `contacts` and a populated `businesses` exist -- refusing to "
+            "re-run the split. Drop `contacts` by hand once you have checked it."
+        )
+        return
+
+    old = [dict(r) for r in conn.execute("SELECT * FROM contacts")]
+    if not old:
+        conn.executescript("PRAGMA foreign_keys=OFF; DROP TABLE contacts; PRAGMA foreign_keys=ON;")
+        logger.info("Split migration: no contacts to move, dropped the empty table")
+        return
+
+    # Which old contact ids ever had calling activity. Checked against the log
+    # and campaign membership as well as the denormalized columns, because a
+    # lead can have been called under a campaign without call_status surviving.
+    called = set()
+    for tbl, col in (("call_log", "contact_id"), ("call_campaign_members", "contact_id")):
+        if _table_exists(conn, tbl):
+            cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({tbl})")]
+            if col in cols:
+                called.update(
+                    r[0] for r in conn.execute(f"SELECT DISTINCT {col} FROM {tbl}")
                 )
-                backfilled += 1
-            if backfilled:
-                logger.info("Backfilled phone/category/rating for %d contact(s)", backfilled)
-        except Exception as exc:
-            logger.warning("Phone/category/rating backfill skipped: %s", exc)
+
+    index = {}            # identity key -> business id
+    email_map = {}        # old contact id -> email_lead id
+    call_map = {}         # old contact id -> call_lead id
+    merged = 0
+
+    for row in old:
+        # Values that older rows kept in the `extra` blob rather than columns.
+        try:
+            extra = json.loads(row.get("extra") or "{}")
+        except Exception:
+            extra = {}
+        if not isinstance(extra, dict):
+            extra = {}
+
+        def _num(val, cast):
+            try:
+                return cast(val) if val not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+
+        phone = row.get("phone") or extra.get("phone", "") or ""
+        website = row.get("website") or ""
+        company = row.get("company") or ""
+        rating = row.get("rating") if row.get("rating") is not None else _num(extra.get("rating"), float)
+        reviews = row.get("review_count") if row.get("review_count") is not None else _num(extra.get("reviews"), int)
+
+        keys = _identity_keys({**row, "phone": phone, "website": website, "company": company})
+        biz_id = next((index[k] for k in keys if k in index), None)
+
+        if biz_id is None:
+            status = (row.get("status") or "").strip()
+            biz_id = conn.execute("""
+                INSERT INTO businesses(
+                    name, phone, phone_normalized, website, domain, address,
+                    category, rating, review_count, web_status, source_job_id,
+                    extra, created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                company,
+                phone,
+                row.get("phone_normalized") or normalize_phone(phone),
+                website,
+                row.get("domain") or canonical_domain(website),
+                row.get("address") or "",
+                row.get("category") or extra.get("category", "") or "",
+                rating,
+                reviews,
+                status if status in ("no_website", "form_only", "no_email") else "",
+                row.get("source_job_id"),
+                json.dumps(extra),
+                row.get("created_at") or datetime.datetime.now().isoformat(" ", "seconds"),
+            )).lastrowid
+        else:
+            merged += 1
+            # Fill blanks on the business from this row without overwriting
+            # anything already established by an earlier one.
+            conn.execute("""
+                UPDATE businesses SET
+                    phone            = COALESCE(NULLIF(phone,''), ?),
+                    phone_normalized = COALESCE(NULLIF(phone_normalized,''), ?),
+                    website          = COALESCE(NULLIF(website,''), ?),
+                    domain           = COALESCE(NULLIF(domain,''), ?),
+                    address          = COALESCE(NULLIF(address,''), ?),
+                    category         = COALESCE(NULLIF(category,''), ?),
+                    rating           = COALESCE(rating, ?),
+                    review_count     = COALESCE(review_count, ?),
+                    source_job_id    = COALESCE(source_job_id, ?)
+                WHERE id = ?
+            """, (
+                phone, row.get("phone_normalized") or normalize_phone(phone),
+                website, row.get("domain") or canonical_domain(website),
+                row.get("address") or "", row.get("category") or "",
+                rating, reviews, row.get("source_job_id"), biz_id,
+            ))
+
+        for k in keys:
+            index.setdefault(k, biz_id)
+
+        # An email address becomes an email_lead. Rows with no address were
+        # prospects; the business itself now carries that fact in web_status,
+        # so there is nothing left to represent and no empty row to carry.
+        email = (row.get("email") or "").strip().lower()
+        if email:
+            status = (row.get("status") or "active").strip()
+            if status in ("no_website", "form_only", "no_email", ""):
+                status = "active"
+            email_map[row["id"]] = conn.execute("""
+                INSERT INTO email_leads(
+                    business_id, email, first_name, last_name, status,
+                    mx_valid, soft_bounce_count, created_at
+                ) VALUES(?,?,?,?,?,?,?,?)
+            """, (
+                biz_id, email,
+                row.get("first_name") or "", row.get("last_name") or "",
+                status, row.get("mx_valid"), row.get("soft_bounce_count") or 0,
+                row.get("created_at") or datetime.datetime.now().isoformat(" ", "seconds"),
+            )).lastrowid
+            conn.execute(
+                "UPDATE businesses SET web_status='has_email' WHERE id=? AND web_status=''",
+                (biz_id,),
+            )
+
+        has_call_state = (
+            (row.get("call_status") or "") != ""
+            or (row.get("call_attempts") or 0) > 0
+            or row.get("next_call_at")
+            or row["id"] in called
+        )
+        if has_call_state:
+            existing = conn.execute(
+                "SELECT id, call_status, call_attempts, next_call_at FROM call_leads WHERE business_id=?",
+                (biz_id,),
+            ).fetchone()
+            if existing:
+                # Two old rows for one clinic, both called. Keep the larger
+                # attempt count and whichever status is actually set.
+                call_map[row["id"]] = existing["id"]
+                conn.execute("""
+                    UPDATE call_leads SET
+                        call_status   = COALESCE(NULLIF(call_status,''), ?),
+                        call_attempts = MAX(call_attempts, ?),
+                        next_call_at  = COALESCE(next_call_at, ?)
+                    WHERE id = ?
+                """, (
+                    row.get("call_status") or "",
+                    row.get("call_attempts") or 0,
+                    row.get("next_call_at"),
+                    existing["id"],
+                ))
+            else:
+                call_map[row["id"]] = conn.execute("""
+                    INSERT INTO call_leads(
+                        business_id, call_status, next_call_at, call_attempts, created_at
+                    ) VALUES(?,?,?,?,?)
+                """, (
+                    biz_id,
+                    row.get("call_status") or "",
+                    row.get("next_call_at"),
+                    row.get("call_attempts") or 0,
+                    row.get("created_at") or datetime.datetime.now().isoformat(" ", "seconds"),
+                )).lastrowid
+
+    _repoint_channel_refs(conn, email_map, call_map)
+
+    conn.executescript("PRAGMA foreign_keys=OFF; DROP TABLE contacts; PRAGMA foreign_keys=ON;")
+    logger.info(
+        "Split migration: %d contact row(s) -> %d business(es) "
+        "(%d merged), %d email lead(s), %d call lead(s)",
+        len(old), len(set(index.values())), merged, len(email_map), len(call_map),
+    )
+
+
+def _repoint_channel_refs(conn, email_map: dict, call_map: dict):
+    """
+    Rebuild the four tables that referenced contacts(id) so they point at the
+    channel table that now owns that relationship.
+
+    Rebuilt rather than renamed: SQLite stores the REFERENCES clause as text,
+    so a renamed column would still point at a `contacts` table that is about
+    to be dropped, and every later insert would fail the foreign-key check.
+
+    Each CREATE below must match the one in init_db, including columns added
+    by the ALTER loop -- a column missing here is silently dropped.
+    """
+    def rebuild(table, ddl, old_col, new_col, mapping, extra_cols):
+        if not _table_exists(conn, table):
+            return
+        cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
+        if old_col not in cols:
+            return          # already repointed
+        rows = [dict(r) for r in conn.execute(f"SELECT * FROM {table}")]
+        conn.executescript(f"""
+            PRAGMA foreign_keys=OFF;
+            DROP TABLE {table};
+            {ddl}
+            PRAGMA foreign_keys=ON;
+        """)
+        kept = dropped = 0
+        target = [new_col] + extra_cols
+        placeholders = ",".join("?" * len(target))
+        for r in rows:
+            mapped = mapping.get(r.get(old_col))
+            if mapped is None:
+                dropped += 1
+                continue
+            conn.execute(
+                f"INSERT INTO {table}({','.join(target)}) VALUES({placeholders})",
+                [mapped] + [r.get(c) for c in extra_cols],
+            )
+            kept += 1
+        if dropped:
+            # Almost always history against a prospect row that never had an
+            # address, so there is no email lead for it to belong to.
+            logger.info("Split migration: dropped %d orphaned %s row(s)", dropped, table)
+        logger.info("Split migration: repointed %d %s row(s)", kept, table)
+
+    rebuild(
+        "enrollments",
+        """CREATE TABLE enrollments (
+               id            INTEGER PRIMARY KEY AUTOINCREMENT,
+               campaign_id   INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+               email_lead_id INTEGER NOT NULL REFERENCES email_leads(id) ON DELETE CASCADE,
+               current_step  INTEGER NOT NULL DEFAULT 1,
+               status        TEXT    NOT NULL DEFAULT 'queued',
+               next_send_at  TEXT,
+               enrolled_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+               variant_label TEXT,
+               UNIQUE(campaign_id, email_lead_id)
+           );""",
+        "contact_id", "email_lead_id", email_map,
+        ["campaign_id", "current_step", "status", "next_send_at", "enrolled_at", "variant_label"],
+    )
+    rebuild(
+        "sends",
+        """CREATE TABLE sends (
+               id            INTEGER PRIMARY KEY AUTOINCREMENT,
+               campaign_id   INTEGER,
+               email_lead_id INTEGER,
+               step_num      INTEGER,
+               subject       TEXT,
+               msg_id        TEXT,
+               status        TEXT NOT NULL DEFAULT 'sent',
+               sent_at       TEXT NOT NULL DEFAULT (datetime('now')),
+               account_id    INTEGER
+           );""",
+        "contact_id", "email_lead_id", email_map,
+        ["campaign_id", "step_num", "subject", "msg_id", "status", "sent_at", "account_id"],
+    )
+    rebuild(
+        "call_log",
+        """CREATE TABLE call_log (
+               id               INTEGER PRIMARY KEY AUTOINCREMENT,
+               call_lead_id     INTEGER NOT NULL REFERENCES call_leads(id) ON DELETE CASCADE,
+               outcome          TEXT    NOT NULL,
+               notes            TEXT    NOT NULL DEFAULT '',
+               next_call_at     TEXT,
+               called_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+               call_campaign_id INTEGER DEFAULT NULL
+           );""",
+        "contact_id", "call_lead_id", call_map,
+        ["outcome", "notes", "next_call_at", "called_at", "call_campaign_id"],
+    )
+    rebuild(
+        "call_campaign_members",
+        """CREATE TABLE call_campaign_members (
+               call_campaign_id INTEGER NOT NULL REFERENCES call_campaigns(id) ON DELETE CASCADE,
+               call_lead_id     INTEGER NOT NULL REFERENCES call_leads(id) ON DELETE CASCADE,
+               added_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+               PRIMARY KEY (call_campaign_id, call_lead_id)
+           );""",
+        "contact_id", "call_lead_id", call_map,
+        ["call_campaign_id", "added_at"],
+    )
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -1017,44 +1322,46 @@ def email_rank(email: str) -> int:
     return 0
 
 
-def _has_live_enrollment(conn, contact_id: int) -> bool:
-    """True if this contact is mid-sequence and must not be suppressed."""
+def _has_live_enrollment(conn, email_lead_id: int) -> bool:
+    """True if this address is mid-sequence and must not be suppressed."""
     row = conn.execute("""
         SELECT 1 FROM enrollments
-         WHERE contact_id=?
+         WHERE email_lead_id=?
            AND status NOT IN ('completed','replied','unsubscribed','bounced')
          LIMIT 1
-    """, (contact_id,)).fetchone()
+    """, (email_lead_id,)).fetchone()
     return row is not None
 
 
-def _pick_domain_winner(conn, domain: str):
+def _pick_business_winner(conn, business_id: int):
     """
-    Decide which contact at `domain` is the sendable one, and link the rest.
+    Decide which of a business's addresses is the sendable one, and link the
+    rest to it.
 
     Two rules, in order:
-      1. A contact already mid-sequence always wins. Demoting it would strand
+      1. An address already mid-sequence always wins. Demoting it would strand
          the prospect after step 1 -- they would never receive the follow-ups,
          with no error anywhere.
       2. Otherwise the best-ranked address wins, oldest as the tiebreak.
+
+    This replaced an arbitration keyed on `domain`, which needed a freemail
+    exception because gmail.com is a mailbox provider rather than a business,
+    and every Gmail lead but one was being suppressed as a "duplicate" of a
+    business it had nothing to do with. Scoping to business_id removes the
+    guesswork: two addresses share a winner only when they genuinely belong to
+    the same business, so no domain can be mistaken for an identity.
     """
-    if not domain or is_freemail(domain):
-        # Freemail is never a business identity -- arbitrating a "winner"
-        # across gmail.com would suppress every Gmail lead but one. Guarded
-        # here as well as at the call site so legacy rows that already carry a
-        # freemail domain cannot resurrect the bug.
-        return
     rows = conn.execute("""
-        SELECT id, email FROM contacts
-         WHERE domain=? AND email IS NOT NULL AND email != ''
+        SELECT id, email FROM email_leads
+         WHERE business_id=? AND email IS NOT NULL AND email != ''
            AND status NOT IN ('deleted','unsubscribed','bounced')
          ORDER BY id ASC
-    """, (domain,)).fetchall()
+    """, (business_id,)).fetchall()
     if len(rows) < 2:
-        # Nothing to arbitrate; make sure a lone contact is not left suppressed.
+        # Nothing to arbitrate; make sure a lone address is not left suppressed.
         for row in rows:
             conn.execute(
-                "UPDATE contacts SET duplicate_of=NULL WHERE id=?", (row["id"],)
+                "UPDATE email_leads SET duplicate_of=NULL WHERE id=?", (row["id"],)
             )
         return
 
@@ -1066,163 +1373,204 @@ def _pick_domain_winner(conn, domain: str):
 
     for row in rows:
         if row["id"] == winner:
-            conn.execute("UPDATE contacts SET duplicate_of=NULL WHERE id=?", (winner,))
+            conn.execute("UPDATE email_leads SET duplicate_of=NULL WHERE id=?", (winner,))
         elif _has_live_enrollment(conn, row["id"]):
             # Already being emailed. Leave it alone rather than cutting a live
             # sequence short; the operator can unenroll it deliberately.
-            conn.execute("UPDATE contacts SET duplicate_of=NULL WHERE id=?", (row["id"],))
+            conn.execute("UPDATE email_leads SET duplicate_of=NULL WHERE id=?", (row["id"],))
         else:
             conn.execute(
-                "UPDATE contacts SET duplicate_of=? WHERE id=?", (winner, row["id"])
+                "UPDATE email_leads SET duplicate_of=? WHERE id=?", (winner, row["id"])
             )
 
 
-def upsert_contacts(rows):
-    """rows: list of dicts — email optional; required for active contacts, omit for prospects."""
+def find_or_create_business(conn, r: dict) -> int:
+    """
+    Resolve one import row to a business, creating it if genuinely new.
+
+    The lookup itself is find_existing_business -- this just adds the
+    create-if-missing step on top, so there is exactly one place that decides
+    what counts as "the same business" rather than two copies that can drift
+    apart (which is exactly how the email-domain fallback below went missing
+    from this function's very first version).
+
+    A match fills blanks but never overwrites. Whatever is already stored
+    arrived first and has usually been looked at by a human since; a later
+    scrape returning a truncated name or a redirect URL must not quietly
+    degrade it. The one exception is `address`, which Maps does genuinely
+    correct over time.
+
+    Note what this function cannot touch: every channel's state lives in its
+    own table, so re-importing a lead can never reset a call outcome, a
+    WhatsApp follow-up count, or an email enrolment. That used to be a rule
+    the import code had to remember; it is now a property of the schema.
+    """
+    phone = (r.get("phone") or "").strip()
+    website = (r.get("website") or "").strip()
+    name = (r.get("company") or r.get("name") or "").strip()
+    address = (r.get("address") or "").strip()
+    email = (r.get("email") or "").strip().lower()
+
+    row = find_existing_business(conn, email=email, phone=phone, website=website,
+                                 company=name, address=address)
+
+    phone_norm = normalize_phone(phone)
+    domain = canonical_domain(website)
+    if not domain and email and "@" in email:
+        # Same fallback find_existing_business uses for matching -- repeated
+        # here because a genuinely new business still needs a domain stored,
+        # not just matched against.
+        candidate = email.split("@")[-1]
+        if not is_freemail(candidate):
+            domain = candidate
+
+    def _num(val, cast):
+        try:
+            return cast(val) if val not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    rating = _num(r.get("rating"), float)
+    reviews = _num(r.get("review_count"), int)
+    web_status = r.get("status") if r.get("status") in ("no_website", "form_only", "no_email") else ""
+
+    if row:
+        conn.execute("""
+            UPDATE businesses SET
+                name             = COALESCE(NULLIF(name,''), ?),
+                phone            = COALESCE(NULLIF(phone,''), ?),
+                phone_normalized = COALESCE(NULLIF(phone_normalized,''), ?),
+                website          = COALESCE(NULLIF(website,''), ?),
+                domain           = COALESCE(NULLIF(domain,''), ?),
+                -- Maps does correct a listing's address, so a non-empty
+                -- incoming value wins here where it would not elsewhere.
+                address          = COALESCE(NULLIF(?,''), address),
+                city             = COALESCE(NULLIF(city,''), ?),
+                country          = COALESCE(NULLIF(country,''), ?),
+                category         = COALESCE(NULLIF(category,''), ?),
+                rating           = COALESCE(?, rating),
+                review_count     = COALESCE(?, review_count),
+                web_status       = COALESCE(NULLIF(web_status,''), ?),
+                -- First scrape that found this lead keeps it, so a business
+                -- turning up again later stays filed under the list you
+                -- originally built.
+                source_job_id    = COALESCE(source_job_id, ?)
+            WHERE id = ?
+        """, (
+            name, phone, phone_norm, website, domain, address,
+            r.get("city", ""), r.get("country", ""), r.get("category", ""),
+            rating, reviews, web_status, r.get("source_job_id") or None, row["id"],
+        ))
+        _note_alternate_name(conn, row["id"], name)
+        return row["id"]
+
+    return conn.execute("""
+        INSERT INTO businesses(
+            name, phone, phone_normalized, website, domain, address, city,
+            country, category, rating, review_count, web_status,
+            source_job_id, extra
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        name, phone, phone_norm, website, domain, address,
+        r.get("city", ""), r.get("country", ""), r.get("category", ""),
+        rating, reviews, web_status, r.get("source_job_id") or None,
+        json.dumps(r.get("extra", {}) if isinstance(r.get("extra"), dict) else {}),
+    )).lastrowid
+
+
+def upsert_businesses(rows):
+    """
+    Import scraped or pasted rows as businesses, plus an email lead per address.
+
+    rows: list of dicts. `email` is optional -- a row without one is a real
+    lead, not a failure. For a web-design agency "this clinic has no website"
+    is the strongest qualifying signal there is, and for WhatsApp or calling
+    the phone number is all that was ever needed.
+
+    Returns (accepted, business_ids) -- the count, and every business the rows
+    resolved to (creates and updates alike, in row order with duplicates from
+    repeat rows removed). The CSV/manual "add to a call campaign" flow needs
+    the ids directly: it used to guess by re-querying "whatever was created
+    most recently", which silently mismatched on a second import within the
+    same minute.
+    """
     with get_db() as conn:
-        inserted = 0
-        touched_domains = set()
+        accepted = 0
+        touched = set()
+        ordered_ids = []
 
         for r in rows:
             email = (r.get("email") or "").strip().lower()
-            website = r.get("website", "")
-            status = r.get("status", "active")
-            domain = canonical_domain(website)
-            if domain:
-                touched_domains.add(domain)
+            name = (r.get("company") or r.get("name") or "").strip()
+            # Nothing to file it under and nothing to reach it on.
+            if not any((email, name, (r.get("phone") or "").strip(), (r.get("website") or "").strip())):
+                continue
+
+            business_id = find_or_create_business(conn, r)
+            touched.add(business_id)
+            if business_id not in ordered_ids:
+                ordered_ids.append(business_id)
 
             if email and "@" in email:
-                if not domain:
-                    # Fall back to the address's own domain so contacts pasted
-                    # in without a website still participate in deduplication.
-                    #
-                    # Freemail is excluded: gmail.com identifies a mailbox
-                    # provider, not a business, and treating it as an identity
-                    # collapsed every Gmail lead into one enrollable contact.
-                    # Such rows keep an empty domain and dedupe on the exact
-                    # address instead, via the contacts_email_unique index.
-                    candidate = email.split("@")[-1]
-                    if not is_freemail(candidate):
-                        domain = candidate
-                        touched_domains.add(domain)
-                mx_valid = r.get("mx_valid")  # None = unchecked, 1 = valid, 0 = invalid
+                status = r.get("status", "active")
+                if status in ("no_website", "form_only", "no_email", ""):
+                    status = "active"
                 conn.execute("""
-                    INSERT INTO contacts(email,first_name,last_name,company,website,address,extra,status,mx_valid,domain,phone,phone_normalized,category,rating,review_count,source_job_id)
-                    VALUES(:email,:first_name,:last_name,:company,:website,:address,:extra,:status,:mx_valid,:domain,:phone,:phone_normalized,:category,:rating,:review_count,:source_job_id)
+                    INSERT INTO email_leads(
+                        business_id, email, first_name, last_name, status, mx_valid
+                    ) VALUES(:business_id,:email,:first_name,:last_name,:status,:mx_valid)
                     ON CONFLICT(email) WHERE email IS NOT NULL AND email != '' DO UPDATE SET
-                        first_name=COALESCE(NULLIF(excluded.first_name,''), contacts.first_name),
-                        last_name=COALESCE(NULLIF(excluded.last_name,''),   contacts.last_name),
-                        -- company is deliberately NOT overwritten when we
-                        -- already have one: shared addresses (a dental group's
-                        -- payments@ appearing under several practices) would
-                        -- otherwise rename the contact to whichever business
-                        -- was scraped last.
-                        company=COALESCE(NULLIF(contacts.company,''),       excluded.company),
-                        website=COALESCE(NULLIF(contacts.website,''),       excluded.website),
-                        address=COALESCE(NULLIF(excluded.address,''),       contacts.address),
-                        domain=COALESCE(NULLIF(contacts.domain,''),         excluded.domain),
-                        mx_valid=COALESCE(excluded.mx_valid,                contacts.mx_valid),
-                        phone=COALESCE(NULLIF(contacts.phone,''),           excluded.phone),
-                        phone_normalized=COALESCE(NULLIF(contacts.phone_normalized,''), excluded.phone_normalized),
-                        category=COALESCE(NULLIF(contacts.category,''),     excluded.category),
-                        rating=COALESCE(excluded.rating,                    contacts.rating),
-                        review_count=COALESCE(excluded.review_count,        contacts.review_count),
-                        -- First scrape that found this lead wins, so a business
-                        -- turning up again in a later search stays filed under
-                        -- the list you originally built.
-                        source_job_id=COALESCE(contacts.source_job_id,      excluded.source_job_id)
+                        first_name = COALESCE(NULLIF(excluded.first_name,''), email_leads.first_name),
+                        last_name  = COALESCE(NULLIF(excluded.last_name,''),  email_leads.last_name),
+                        mx_valid   = COALESCE(excluded.mx_valid,              email_leads.mx_valid)
                 """, {
-                    "email":         email,
-                    "first_name":    r.get("first_name", ""),
-                    "last_name":     r.get("last_name", ""),
-                    "company":       r.get("company", ""),
-                    "website":       website,
-                    "address":       r.get("address", ""),
-                    "extra":         json.dumps(r.get("extra", {})),
-                    "status":        status,
-                    "mx_valid":      mx_valid,
-                    "domain":        domain,
-                    "phone":         r.get("phone", ""),
-                    "phone_normalized": normalize_phone(r.get("phone", "")),
-                    "category":      r.get("category", ""),
-                    "rating":        r.get("rating") or None,
-                    "review_count":  r.get("review_count") or None,
-                    "source_job_id": r.get("source_job_id") or None,
+                    "business_id": business_id,
+                    "email":       email,
+                    "first_name":  r.get("first_name", ""),
+                    "last_name":   r.get("last_name", ""),
+                    "status":      status,
+                    "mx_valid":    r.get("mx_valid"),
                 })
-                # Record the other business this address turned up under, so
-                # the connection is not lost just because company was kept.
-                _note_alternate_company(conn, email, r.get("company", ""))
-                inserted += 1
+                conn.execute(
+                    "UPDATE businesses SET web_status='has_email' WHERE id=? AND web_status=''",
+                    (business_id,),
+                )
+            accepted += 1
 
-            elif status in ("form_only", "no_email", "no_website"):
-                # Prospect record — no email found. Match on the canonical
-                # domain, not the raw URL, or one business becomes a row per
-                # URL variant Maps happens to return.
-                #
-                # no_website rows have no domain to match on, so they dedupe on
-                # the business name instead. They are kept rather than dropped:
-                # for a web-design agency, "this business has no website" is
-                # the strongest possible qualifying signal.
-                if domain:
-                    exists = conn.execute(
-                        "SELECT id FROM contacts WHERE domain=? AND (email IS NULL OR email='')",
-                        (domain,)
-                    ).fetchone()
-                elif r.get("company"):
-                    exists = conn.execute(
-                        "SELECT id FROM contacts WHERE company=? AND (email IS NULL OR email='')",
-                        (r["company"],)
-                    ).fetchone()
-                else:
-                    continue        # nothing to identify it by; skip
+        for business_id in touched:
+            _pick_business_winner(conn, business_id)
 
-                if not exists:
-                    conn.execute("""
-                        INSERT INTO contacts(company,website,address,status,extra,domain,phone,phone_normalized,category,rating,review_count,source_job_id)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-                    """, (
-                        r.get("company", ""), website,
-                        r.get("address", ""), status,
-                        json.dumps(r.get("extra", {})), domain,
-                        r.get("phone", ""), normalize_phone(r.get("phone", "")),
-                        r.get("category", ""),
-                        r.get("rating") or None, r.get("review_count") or None,
-                        r.get("source_job_id") or None,
-                    ))
-                    inserted += 1
-
-        for domain in touched_domains:
-            _pick_domain_winner(conn, domain)
-
-        return inserted
+        return accepted, ordered_ids
 
 
-def _note_alternate_company(conn, email: str, company: str):
+def _note_alternate_name(conn, business_id: int, name: str):
     """
-    Keep a record when one address is seen under a different business name.
+    Keep a record when a business turns up under a different listing name.
 
-    Group practices share a billing address, so the same email legitimately
-    turns up under several listings. We keep the first company as the contact's
-    name; this stops the others from being silently discarded.
+    Group practices share a phone line and a building, so the same business
+    legitimately appears as "Smile Dental" and "Smile Dental - Downtown". The
+    first name stays; this stops the others from being silently discarded.
     """
-    company = (company or "").strip()
-    if not company:
+    name = (name or "").strip()
+    if not name:
         return
     row = conn.execute(
-        "SELECT id, company, extra FROM contacts WHERE email=?", (email,)
+        "SELECT name, extra FROM businesses WHERE id=?", (business_id,)
     ).fetchone()
-    if not row or row["company"] == company:
+    if not row or row["name"] == name:
         return
     try:
         extra = json.loads(row["extra"] or "{}")
     except Exception:
         extra = {}
-    seen = extra.get("also_seen_at") or []
-    if company not in seen and company != row["company"]:
-        seen.append(company)
-        extra["also_seen_at"] = seen[:10]
+    if not isinstance(extra, dict):
+        extra = {}
+    seen = extra.get("also_seen_as") or []
+    if name not in seen:
+        seen.append(name)
+        extra["also_seen_as"] = seen[:10]
         conn.execute(
-            "UPDATE contacts SET extra=? WHERE id=?", (json.dumps(extra), row["id"])
+            "UPDATE businesses SET extra=? WHERE id=?", (json.dumps(extra), business_id)
         )
 
 
@@ -1237,111 +1585,146 @@ def get_known_company_names() -> set:
     """
     with get_db() as conn:
         return {
-            r["company"] for r in conn.execute(
-                "SELECT DISTINCT company FROM contacts WHERE company != ''"
+            r["name"] for r in conn.execute(
+                "SELECT DISTINCT name FROM businesses WHERE name != ''"
             ).fetchall()
         }
 
 
-def get_contacts(limit=200, offset=0):
+def get_email_leads(limit=200, offset=0):
     with get_db() as conn:
-        return [dict(r) for r in conn.execute(
-            "SELECT * FROM contacts ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (limit, offset)
-        ).fetchall()]
+        return [dict(r) for r in conn.execute(f"""
+            SELECT {_EMAIL_LEAD_COLUMNS} {_EMAIL_LEAD_JOIN}
+             ORDER BY el.created_at DESC LIMIT ? OFFSET ?
+        """, (limit, offset)).fetchall()]
 
 
-# ── Contacts: server-side paging, filtering and the lead-list ("cabinet") view ─
+# ── Email leads: server-side paging, filtering and the lead-list view ────────
 #
-# The Contacts tab used to pull every row and filter in the browser, hard-capped
-# at 500. Past that it silently showed only the newest 500 -- which a per-scrape
+# This tab used to pull every row and filter in the browser, hard-capped at
+# 500. Past that it silently showed only the newest 500 -- which a per-scrape
 # filter would then narrow further, under-reporting a list with no warning. All
 # filtering therefore happens in SQL now, against the whole table.
 
+# Every list view returns the address joined to its business, because a bare
+# address is not something anyone can act on -- the clinic's name, phone and
+# site are what make it a lead. call_status/call_attempts come along too: the
+# Contacts table has always shown whether a lead was also called, and that
+# now lives on a different table's row instead of a column on this one.
+_EMAIL_LEAD_COLUMNS = """
+    el.id, el.business_id, el.email, el.first_name, el.last_name,
+    el.status, el.mx_valid, el.soft_bounce_count, el.duplicate_of,
+    el.created_at,
+    b.name AS company, b.website, b.domain, b.address, b.city, b.country,
+    b.phone, b.category, b.rating, b.review_count, b.source_job_id,
+    b.web_status, b.do_not_contact, b.notes AS business_notes,
+    COALESCE(cl.call_status,'') AS call_status,
+    COALESCE(cl.call_attempts,0) AS call_attempts, cl.next_call_at
+"""
+_EMAIL_LEAD_JOIN = """
+    FROM email_leads el
+    JOIN businesses  b  ON b.id  = el.business_id
+    LEFT JOIN call_leads cl ON cl.business_id = b.id
+"""
+
 # Whitelist: sort_col is interpolated into the SQL string, so it can never come
-# straight from the query string.
-_CONTACT_SORT_COLUMNS = frozenset({
-    "id", "email", "first_name", "last_name", "company", "website", "address",
-    "status", "created_at", "phone", "category", "rating", "review_count",
-    "domain", "mx_valid", "call_status", "call_attempts", "next_call_at",
-})
+# straight from the query string. Values are qualified because the view is a
+# join and `created_at` alone would be ambiguous.
+_EMAIL_LEAD_SORT_COLUMNS = {
+    "id": "el.id", "email": "el.email", "first_name": "el.first_name",
+    "last_name": "el.last_name", "status": "el.status",
+    "mx_valid": "el.mx_valid", "created_at": "el.created_at",
+    "company": "b.name", "website": "b.website", "address": "b.address",
+    "phone": "b.phone", "category": "b.category", "rating": "b.rating",
+    "review_count": "b.review_count", "domain": "b.domain",
+}
 
 # Search covers what someone would plausibly type looking for a lead.
-_CONTACT_SEARCH_COLUMNS = (
-    "email", "first_name", "last_name", "company",
-    "website", "address", "phone", "category",
+_EMAIL_LEAD_SEARCH_COLUMNS = (
+    "el.email", "el.first_name", "el.last_name", "b.name",
+    "b.website", "b.address", "b.phone", "b.category",
 )
 
 # Sentinel for "added by hand or CSV import, not by any scrape".
 SOURCE_MANUAL = "manual"
 
 
-def _contact_filters(q="", source_job_id=None, status=None, include_deleted=False,
-                     call_status=None):
-    """Build the shared WHERE clause for the contact list views."""
+def _email_lead_filters(q="", source_job_id=None, status=None, include_deleted=False,
+                        call_status=None):
+    """Build the shared WHERE clause for the email lead list views."""
     clauses, params = [], []
 
     if not include_deleted:
-        clauses.append("status != 'deleted'")
+        clauses.append("el.status != 'deleted'")
 
     if status:
-        clauses.append("status = ?")
+        clauses.append("el.status = ?")
         params.append(status)
 
-    # A call outcome was recorded on the contact but shown nowhere outside the
-    # calling queue -- and that queue hides finished leads by design, so a
-    # "not interested" contact looked identical to one never dialled.
+    # Calling state lives on the business's call lead now, so this filter is a
+    # cross-channel question: "show me addresses at clinics I have already
+    # phoned". It used to read a column on the contact itself.
     if call_status:
         if call_status == "none":
-            clauses.append("COALESCE(call_status,'') = ''")
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM call_leads cl "
+                "WHERE cl.business_id = b.id AND COALESCE(cl.call_status,'') != '')"
+            )
         elif call_status == "any":
-            clauses.append("COALESCE(call_status,'') != ''")
+            clauses.append(
+                "EXISTS (SELECT 1 FROM call_leads cl "
+                "WHERE cl.business_id = b.id AND COALESCE(cl.call_status,'') != '')"
+            )
         else:
-            clauses.append("call_status = ?")
+            clauses.append(
+                "EXISTS (SELECT 1 FROM call_leads cl "
+                "WHERE cl.business_id = b.id AND cl.call_status = ?)"
+            )
             params.append(call_status)
 
     if source_job_id is not None and source_job_id != "":
         if str(source_job_id) == SOURCE_MANUAL:
-            clauses.append("source_job_id IS NULL")
+            clauses.append("b.source_job_id IS NULL")
         else:
-            clauses.append("source_job_id = ?")
+            clauses.append("b.source_job_id = ?")
             params.append(int(source_job_id))
 
     q = (q or "").strip()
     if q:
-        like = " OR ".join(f'COALESCE("{c}",\'\') LIKE ?' for c in _CONTACT_SEARCH_COLUMNS)
+        like = " OR ".join(f"COALESCE({c},'') LIKE ?" for c in _EMAIL_LEAD_SEARCH_COLUMNS)
         clauses.append(f"({like})")
-        params.extend([f"%{q}%"] * len(_CONTACT_SEARCH_COLUMNS))
+        params.extend([f"%{q}%"] * len(_EMAIL_LEAD_SEARCH_COLUMNS))
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
 
 
-def get_contacts_page(page=1, per_page=50, q="", source_job_id=None, status=None,
-                      include_deleted=False, sort_col="", sort_dir="desc",
-                      call_status=None):
-    """One page of contacts plus the total matching the same filter."""
+def get_email_leads_page(page=1, per_page=50, q="", source_job_id=None, status=None,
+                         include_deleted=False, sort_col="", sort_dir="desc",
+                         call_status=None):
+    """One page of email leads plus the total matching the same filter."""
     page     = max(1, int(page or 1))
     per_page = max(1, min(int(per_page or 50), 500))
     offset   = (page - 1) * per_page
 
     sort_dir = "asc" if str(sort_dir).lower() == "asc" else "desc"
-    if sort_col in _CONTACT_SORT_COLUMNS:
+    if sort_col in _EMAIL_LEAD_SORT_COLUMNS:
+        col = _EMAIL_LEAD_SORT_COLUMNS[sort_col]
         # NULLs and '' sort last either way, so an empty phone column doesn't
         # push the rows you actually want to the top of an ascending sort.
-        order_by = f'NULLIF("{sort_col}", \'\') IS NULL, "{sort_col}" {sort_dir.upper()}'
+        order_by = f"NULLIF({col}, '') IS NULL, {col} {sort_dir.upper()}"
     else:
         sort_col = ""
-        order_by = "created_at DESC, id DESC"
+        order_by = "el.created_at DESC, el.id DESC"
 
-    where, params = _contact_filters(q, source_job_id, status, include_deleted, call_status)
+    where, params = _email_lead_filters(q, source_job_id, status, include_deleted, call_status)
+    join = _EMAIL_LEAD_JOIN
 
     with get_db() as conn:
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM contacts {where}", params
-        ).fetchone()[0]
+        total = conn.execute(f"SELECT COUNT(*) {join} {where}", params).fetchone()[0]
         rows = conn.execute(
-            f"SELECT * FROM contacts {where} ORDER BY {order_by} LIMIT ? OFFSET ?",
+            f"SELECT {_EMAIL_LEAD_COLUMNS} {join} {where} "
+            f"ORDER BY {order_by} LIMIT ? OFFSET ?",
             params + [per_page, offset],
         ).fetchall()
 
@@ -1356,43 +1739,47 @@ def get_contacts_page(page=1, per_page=50, q="", source_job_id=None, status=None
     }
 
 
-def get_contact_ids_matching(q="", source_job_id=None, status=None, include_deleted=False,
-                             call_status=None):
+def get_email_lead_ids_matching(q="", source_job_id=None, status=None, include_deleted=False,
+                                call_status=None):
     """
-    Every contact id matching a filter, ignoring paging.
+    Every email lead id matching a filter, ignoring paging.
 
     Backs "select all N matching" -- without it, select-all could only ever
     reach the rows on screen, so a bulk delete over a filtered list would
     silently act on one page's worth.
     """
-    where, params = _contact_filters(q, source_job_id, status, include_deleted, call_status)
+    where, params = _email_lead_filters(q, source_job_id, status, include_deleted, call_status)
     with get_db() as conn:
         return [r["id"] for r in conn.execute(
-            f"SELECT id FROM contacts {where}", params
+            f"SELECT el.id FROM email_leads el "
+            f"JOIN businesses b ON b.id = el.business_id {where}", params
         ).fetchall()]
 
 
-def get_contact_sources():
+def get_lead_sources():
     """
-    The lead lists: one entry per scrape that produced contacts, newest first,
-    plus a 'manual' bucket for hand-added and CSV-imported rows.
+    The lead lists: one entry per scrape that produced businesses, newest
+    first, plus a 'manual' bucket for hand-added and CSV-imported rows.
 
-    LEFT JOIN, not a foreign key -- a contact whose scrape_jobs row has gone
+    Counts businesses rather than addresses: a scrape of 40 clinics that
+    happened to find three addresses at one of them found 40 leads, and
+    reporting 42 would misdescribe the list.
+
+    LEFT JOIN, not a foreign key -- a business whose scrape_jobs row has gone
     still counts, it just shows as an unknown source rather than vanishing
     from the filter.
     """
     with get_db() as conn:
         rows = conn.execute("""
-            SELECT c.source_job_id           AS job_id,
+            SELECT b.source_job_id           AS job_id,
                    j.niche                   AS niche,
                    j.city                    AS city,
                    j.created_at              AS scraped_at,
                    COUNT(*)                  AS count
-              FROM contacts c
-              LEFT JOIN scrape_jobs j ON j.id = c.source_job_id
-             WHERE c.status != 'deleted'
-             GROUP BY c.source_job_id
-             ORDER BY (c.source_job_id IS NULL), c.source_job_id DESC
+              FROM businesses b
+              LEFT JOIN scrape_jobs j ON j.id = b.source_job_id
+             GROUP BY b.source_job_id
+             ORDER BY (b.source_job_id IS NULL), b.source_job_id DESC
         """).fetchall()
 
     out = []
@@ -1412,18 +1799,157 @@ def get_contact_sources():
     return out
 
 
-def get_contact(contact_id: int):
+def get_email_lead(email_lead_id: int):
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM contacts WHERE id=?", (contact_id,)).fetchone()
+        row = conn.execute(f"""
+            SELECT {_EMAIL_LEAD_COLUMNS} {_EMAIL_LEAD_JOIN}
+             WHERE el.id=?
+        """, (email_lead_id,)).fetchone()
         return dict(row) if row else None
 
 
-def get_contact_by_email(email_addr: str):
+def get_email_lead_by_email(email_addr: str):
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM contacts WHERE email=?", (email_addr.lower(),)
-        ).fetchone()
+        row = conn.execute(f"""
+            SELECT {_EMAIL_LEAD_COLUMNS} {_EMAIL_LEAD_JOIN}
+             WHERE el.email=?
+        """, (email_addr.lower(),)).fetchone()
         return dict(row) if row else None
+
+
+def get_business(business_id: int):
+    """A business plus which channels it is already being worked on.
+
+    The per-channel flags are what the cross-channel duplicate warning reads:
+    adding a clinic to WhatsApp when it is mid-sequence on email is a decision
+    the operator should make deliberately, not discover afterwards.
+    """
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM businesses WHERE id=?", (business_id,)).fetchone()
+        if not row:
+            return None
+        out = dict(row)
+        out["channels"] = _business_channels(conn, business_id)
+        return out
+
+
+def _business_channels(conn, business_id: int) -> dict:
+    """Which channels this business already exists on."""
+    return get_channel_presence(conn, [business_id]).get(
+        business_id, {"email": False, "call": False, "whatsapp": False}
+    )
+
+
+def get_channel_presence(conn, business_ids: list) -> dict:
+    """
+    Which of email / call / whatsapp each of these businesses already has a
+    row on. {business_id: {"email": bool, "call": bool, "whatsapp": bool}}
+
+    Batched rather than one query per business: this backs the cross-channel
+    duplicate check at import time, where the whole point is not to run N+1
+    queries against a 200-row CSV.
+    """
+    ids = list({int(b) for b in business_ids})
+    out = {b: {"email": False, "call": False, "whatsapp": False} for b in ids}
+    if not ids:
+        return out
+    placeholders = ",".join("?" * len(ids))
+    for bid, in conn.execute(
+        f"SELECT DISTINCT business_id FROM email_leads "
+        f"WHERE business_id IN ({placeholders}) AND status != 'deleted'", ids,
+    ):
+        out[bid]["email"] = True
+    for bid, in conn.execute(
+        f"SELECT DISTINCT business_id FROM call_leads WHERE business_id IN ({placeholders})", ids,
+    ):
+        out[bid]["call"] = True
+    for bid, in conn.execute(
+        f"SELECT DISTINCT business_id FROM wa_leads WHERE business_id IN ({placeholders})", ids,
+    ):
+        out[bid]["whatsapp"] = True
+    return out
+
+
+_CHANNEL_LABELS = {"email": "Email", "call": "Calling", "whatsapp": "WhatsApp"}
+
+
+def find_cross_channel_conflicts(rows: list, channel: str) -> list:
+    """
+    Which of these import rows resolve to a business already active on a
+    DIFFERENT channel than the one they're about to be added to.
+
+    Read-only -- this never creates or attaches anything, so it is safe to
+    call before the operator has decided whether to proceed. A row whose
+    business doesn't exist yet, or already exists only on `channel` itself
+    (a normal re-import), is not a conflict.
+
+    Returns a list of {row, business_id, business_name, channels} -- `row` is
+    the original dict, `channels` the OTHER channels already present, in the
+    stable order email/call/whatsapp regardless of lookup order, and labelled
+    for direct display.
+    """
+    if not rows:
+        return []
+    with get_db() as conn:
+        resolved = []   # (row, business_row) for rows that matched something
+        for r in rows:
+            existing = find_existing_business(
+                conn,
+                email=(r.get("email") or ""),
+                phone=(r.get("phone") or ""),
+                website=(r.get("website") or ""),
+                company=(r.get("company") or r.get("name") or ""),
+                address=(r.get("address") or ""),
+            )
+            if existing:
+                resolved.append((r, existing))
+
+        if not resolved:
+            return []
+        presence = get_channel_presence(conn, [b["id"] for _, b in resolved])
+
+    conflicts = []
+    for r, biz in resolved:
+        other = [c for c in ("email", "call", "whatsapp")
+                 if c != channel and presence[biz["id"]][c]]
+        if other:
+            conflicts.append({
+                "row": r,
+                "business_id": biz["id"],
+                "business_name": biz["name"],
+                "channels": other,
+                "channel_labels": [_CHANNEL_LABELS[c] for c in other],
+            })
+    return conflicts
+
+
+def channel_conflicts_for_businesses(business_ids: list, channel: str) -> list:
+    """
+    Which of these businesses already have a presence on a channel other than
+    `channel`. Same idea as find_cross_channel_conflicts, for a caller that
+    already has resolved business ids rather than raw import rows -- adding
+    to a call campaign, for instance, where the picker already deals in
+    business ids.
+    """
+    business_ids = list({int(b) for b in business_ids})
+    if not business_ids:
+        return []
+    placeholders = ",".join("?" * len(business_ids))
+    with get_db() as conn:
+        presence = get_channel_presence(conn, business_ids)
+        names = {r["id"]: r["name"] for r in conn.execute(
+            f"SELECT id, name FROM businesses WHERE id IN ({placeholders})", business_ids,
+        )}
+    out = []
+    for bid in business_ids:
+        other = [c for c in ("email", "call", "whatsapp")
+                 if c != channel and presence.get(bid, {}).get(c)]
+        if other:
+            out.append({
+                "business_id": bid, "business_name": names.get(bid, ""),
+                "channels": other, "channel_labels": [_CHANNEL_LABELS[c] for c in other],
+            })
+    return out
 
 
 def delete_campaign(campaign_id: int):
@@ -1432,65 +1958,111 @@ def delete_campaign(campaign_id: int):
         conn.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
 
 
-def delete_contacts(ids: list):
+def delete_email_leads(ids: list):
     if not ids:
         return
     placeholders = ','.join('?' for _ in ids)
     with get_db() as conn:
-        conn.execute(f"DELETE FROM contacts WHERE id IN ({placeholders})", ids)
+        conn.execute(f"DELETE FROM email_leads WHERE id IN ({placeholders})", ids)
 
 
-def create_contact(email: str, first_name='', last_name='', company='',
-                   website='', address='', status='active'):
+def create_email_lead(email: str, first_name='', last_name='', company='',
+                      website='', address='', status='active'):
+    """
+    Add one address by hand, resolving it to a business the same way an import
+    would -- so typing in an address for a clinic already on the list attaches
+    it to that clinic instead of creating a second one.
+    """
     email = email.strip().lower()
     if not email or '@' not in email:
         return None, 'Invalid email address'
     try:
         with get_db() as conn:
+            business_id = find_or_create_business(conn, {
+                "company": company, "website": website, "address": address,
+            })
             cur = conn.execute(
-                "INSERT INTO contacts(email,first_name,last_name,company,website,address,status) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (email, first_name, last_name, company, website, address, status)
+                "INSERT INTO email_leads(business_id,email,first_name,last_name,status) "
+                "VALUES(?,?,?,?,?)",
+                (business_id, email, first_name, last_name, status)
             )
+            conn.execute(
+                "UPDATE businesses SET web_status='has_email' WHERE id=? AND web_status=''",
+                (business_id,),
+            )
+            _pick_business_winner(conn, business_id)
             return cur.lastrowid, None
     except sqlite3.IntegrityError:
-        return None, 'A contact with that email already exists'
+        return None, 'A lead with that email already exists'
 
 
-def update_contact(contact_id: int, fields: dict):
-    allowed = {'email', 'first_name', 'last_name', 'company', 'website', 'address', 'status'}
-    updates = {k: v for k, v in fields.items() if k in allowed}
-    if not updates:
+def update_email_lead(email_lead_id: int, fields: dict):
+    """
+    Edit one address, and the identity fields of the business behind it.
+
+    Split by destination: `company`, `website` and `address` describe the
+    business and are shared with every other channel, so writing them to the
+    address row would leave the calling and WhatsApp views showing stale
+    details for the same clinic.
+    """
+    lead_cols = {'email', 'first_name', 'last_name', 'status'}
+    biz_cols  = {'company': 'name', 'website': 'website', 'address': 'address'}
+
+    lead_updates = {k: v for k, v in fields.items() if k in lead_cols}
+    biz_updates  = {biz_cols[k]: v for k, v in fields.items() if k in biz_cols}
+    if not lead_updates and not biz_updates:
         return True, None
-    if 'email' in updates:
-        updates['email'] = updates['email'].strip().lower()
-    set_clause = ', '.join(f'{k}=?' for k in updates)
+    if 'email' in lead_updates:
+        lead_updates['email'] = lead_updates['email'].strip().lower()
+
     try:
         with get_db() as conn:
-            conn.execute(
-                f'UPDATE contacts SET {set_clause} WHERE id=?',
-                (*updates.values(), contact_id)
-            )
+            if lead_updates:
+                set_clause = ', '.join(f'{k}=?' for k in lead_updates)
+                conn.execute(
+                    f'UPDATE email_leads SET {set_clause} WHERE id=?',
+                    (*lead_updates.values(), email_lead_id)
+                )
+            if biz_updates:
+                if 'website' in biz_updates:
+                    biz_updates['domain'] = canonical_domain(biz_updates['website'])
+                set_clause = ', '.join(f'{k}=?' for k in biz_updates)
+                conn.execute(
+                    f'UPDATE businesses SET {set_clause} '
+                    f'WHERE id=(SELECT business_id FROM email_leads WHERE id=?)',
+                    (*biz_updates.values(), email_lead_id)
+                )
         return True, None
     except sqlite3.IntegrityError:
-        return False, 'A contact with that email already exists'
+        return False, 'A lead with that email already exists'
 
 
-def delete_contact(contact_id: int):
+def delete_email_lead(email_lead_id: int):
     with get_db() as conn:
-        conn.execute("UPDATE contacts SET status='deleted' WHERE id=?", (contact_id,))
+        conn.execute("UPDATE email_leads SET status='deleted' WHERE id=?", (email_lead_id,))
 
 
 def unsubscribe_contact(email):
-    """Mark a contact unsubscribed and propagate to ALL their enrollments
+    """
+    Mark an address unsubscribed and propagate to ALL its enrollments
     regardless of current status (a paused or replied enrollment must also
-    stop sending if the contact opts out later)."""
+    stop sending if they opt out later).
+
+    An unsubscribe is also recorded on the business, which suppresses the
+    clinic on calling and WhatsApp too. Someone who asked to be left alone
+    did not mean "by email only", and the old schema had no way to express
+    that.
+    """
     email_lc = email.lower()
     with get_db() as conn:
-        conn.execute("UPDATE contacts SET status='unsubscribed' WHERE email=?", (email_lc,))
+        conn.execute("UPDATE email_leads SET status='unsubscribed' WHERE email=?", (email_lc,))
+        conn.execute("""
+            UPDATE businesses SET do_not_contact=1
+             WHERE id=(SELECT business_id FROM email_leads WHERE email=?)
+        """, (email_lc,))
         conn.execute("""
             UPDATE enrollments SET status='unsubscribed'
-            WHERE contact_id=(SELECT id FROM contacts WHERE email=?)
+            WHERE email_lead_id=(SELECT id FROM email_leads WHERE email=?)
               AND status NOT IN ('unsubscribed','bounced','completed','replied')
         """, (email_lc,))
 
@@ -1498,55 +2070,56 @@ def unsubscribe_contact(email):
 def get_unsubscribed_contacts():
     with get_db() as conn:
         return [dict(r) for r in conn.execute("""
-            SELECT email, first_name, last_name, company, created_at
-            FROM contacts
-            WHERE status = 'unsubscribed'
-            ORDER BY created_at DESC
+            SELECT el.email, el.first_name, el.last_name,
+                   b.name AS company, el.created_at
+              FROM email_leads el JOIN businesses b ON b.id = el.business_id
+             WHERE el.status = 'unsubscribed'
+             ORDER BY el.created_at DESC
         """).fetchall()]
 
 
 def get_invalid_mx_contacts():
     with get_db() as conn:
         return [dict(r) for r in conn.execute("""
-            SELECT email, company, website, address, created_at
-            FROM contacts
-            WHERE mx_valid = 0
-            ORDER BY created_at DESC
+            SELECT el.email, b.name AS company, b.website, b.address, el.created_at
+              FROM email_leads el JOIN businesses b ON b.id = el.business_id
+             WHERE el.mx_valid = 0
+             ORDER BY el.created_at DESC
         """).fetchall()]
 
 
 def mark_bounced(email):
     with get_db() as conn:
-        conn.execute("UPDATE contacts SET status='bounced' WHERE email=?", (email.lower(),))
+        conn.execute("UPDATE email_leads SET status='bounced' WHERE email=?", (email.lower(),))
         conn.execute("""
             UPDATE enrollments SET status='bounced'
-            WHERE contact_id=(SELECT id FROM contacts WHERE email=?)
+            WHERE email_lead_id=(SELECT id FROM email_leads WHERE email=?)
               AND status='queued'
         """, (email.lower(),))
 
 
 def increment_soft_bounce(email: str, threshold: int = 3):
     """
-    Increment soft-bounce counter for a contact.
+    Increment soft-bounce counter for an address.
     Once the counter hits threshold, treat it as a hard bounce.
     Everything runs in one transaction to avoid deadlocks.
     """
     email = email.lower()
     with get_db() as conn:
         conn.execute(
-            "UPDATE contacts SET soft_bounce_count = soft_bounce_count + 1 WHERE email=?",
+            "UPDATE email_leads SET soft_bounce_count = soft_bounce_count + 1 WHERE email=?",
             (email,)
         )
         row = conn.execute(
-            "SELECT soft_bounce_count FROM contacts WHERE email=?", (email,)
+            "SELECT soft_bounce_count FROM email_leads WHERE email=?", (email,)
         ).fetchone()
         count = row["soft_bounce_count"] if row else 0
 
         if count >= threshold:
-            conn.execute("UPDATE contacts SET status='bounced' WHERE email=?", (email,))
+            conn.execute("UPDATE email_leads SET status='bounced' WHERE email=?", (email,))
             conn.execute("""
                 UPDATE enrollments SET status='bounced'
-                WHERE contact_id=(SELECT id FROM contacts WHERE email=?)
+                WHERE email_lead_id=(SELECT id FROM email_leads WHERE email=?)
                   AND status='queued'
             """, (email,))
             conn.execute(
@@ -1688,8 +2261,8 @@ def assign_missing_variants(campaign_id: int) -> int:
                AND e.status = 'queued'
                AND NOT EXISTS (
                      SELECT 1 FROM sends s
-                      WHERE s.campaign_id = e.campaign_id
-                        AND s.contact_id  = e.contact_id
+                      WHERE s.campaign_id   = e.campaign_id
+                        AND s.email_lead_id = e.email_lead_id
                )
         """, (campaign_id,)).fetchall()
 
@@ -1746,27 +2319,34 @@ def get_variable_coverage(campaign_id: int = None):
 
     Returns rows of {key, label, filled, total, scope}.
     """
+    # Which table each variable actually comes from. Names the operator types
+    # in a template do not change, but half of them describe the business and
+    # half the person at it, and the join has to know which is which.
+    _VAR_SOURCE = {
+        "first_name": "el", "last_name": "el", "email": "el",
+        "company": "b", "phone": "b", "website": "b", "category": "b",
+        "rating": "b", "review_count": "b", "address": "b",
+    }
+    _VAR_COLUMN = {"company": "name"}
+
+    join = ("FROM email_leads el JOIN businesses b ON b.id = el.business_id")
     scope = "campaign"
     where = """
-        WHERE c.id IN (SELECT contact_id FROM enrollments WHERE campaign_id = ?)
+        WHERE el.id IN (SELECT email_lead_id FROM enrollments WHERE campaign_id = ?)
     """
     params = [campaign_id]
 
     with get_db() as conn:
         if campaign_id is not None:
-            total = conn.execute(
-                f"SELECT COUNT(*) FROM contacts c {where}", params
-            ).fetchone()[0]
+            total = conn.execute(f"SELECT COUNT(*) {join} {where}", params).fetchone()[0]
         else:
             total = 0
 
         if not total:
             scope  = "all"
-            where  = "WHERE c.status NOT IN ('deleted','unsubscribed','bounced')"
+            where  = "WHERE el.status NOT IN ('deleted','unsubscribed','bounced')"
             params = []
-            total  = conn.execute(
-                f"SELECT COUNT(*) FROM contacts c {where}", params
-            ).fetchone()[0]
+            total  = conn.execute(f"SELECT COUNT(*) {join} {where}", params).fetchone()[0]
 
         if not total:
             return {"scope": scope, "total": 0, "variables": [
@@ -1779,16 +2359,18 @@ def get_variable_coverage(campaign_id: int = None):
         pieces = []
         for key, _ in TEMPLATE_VARIABLES:
             if key == "full_name":
-                expr = ("(COALESCE(NULLIF(TRIM(c.first_name),''),"
-                        " NULLIF(TRIM(c.last_name),'')) IS NOT NULL)")
-            elif key in ("rating", "review_count"):
-                expr = f"(c.{key} IS NOT NULL)"
+                expr = ("(COALESCE(NULLIF(TRIM(el.first_name),''),"
+                        " NULLIF(TRIM(el.last_name),'')) IS NOT NULL)")
             else:
-                expr = f"(NULLIF(TRIM(COALESCE(c.{key},'')),'') IS NOT NULL)"
+                col = f"{_VAR_SOURCE[key]}.{_VAR_COLUMN.get(key, key)}"
+                if key in ("rating", "review_count"):
+                    expr = f"({col} IS NOT NULL)"
+                else:
+                    expr = f"(NULLIF(TRIM(COALESCE({col},'')),'') IS NOT NULL)"
             pieces.append(f"SUM(CASE WHEN {expr} THEN 1 ELSE 0 END) AS {key}")
 
         row = conn.execute(
-            f"SELECT {', '.join(pieces)} FROM contacts c {where}", params
+            f"SELECT {', '.join(pieces)} {join} {where}", params
         ).fetchone()
 
     return {
@@ -1812,7 +2394,7 @@ def get_variant_stats(campaign_id: int):
                 COUNT(DISTINCT CASE WHEN e.status='replied'  THEN e.id END) as replied,
                 COUNT(DISTINCT CASE WHEN e.status='bounced'  THEN e.id END) as bounced
             FROM enrollments e
-            LEFT JOIN sends s ON s.campaign_id=e.campaign_id AND s.contact_id=e.contact_id
+            LEFT JOIN sends s ON s.campaign_id=e.campaign_id AND s.email_lead_id=e.email_lead_id
             WHERE e.campaign_id=?
             GROUP BY e.variant_label
             ORDER BY e.variant_label
@@ -1826,10 +2408,10 @@ def get_campaign_contact_report(campaign_id: int):
         rows = conn.execute("""
             SELECT
                 e.id AS enroll_id,
-                c.email,
-                c.first_name,
-                c.last_name,
-                c.company,
+                el.email,
+                el.first_name,
+                el.last_name,
+                b.name AS company,
                 e.variant_label,
                 e.status,
                 e.current_step,
@@ -1837,10 +2419,11 @@ def get_campaign_contact_report(campaign_id: int):
                 e.enrolled_at,
                 COUNT(s.id) AS steps_sent
             FROM enrollments e
-            JOIN contacts c ON c.id = e.contact_id
+            JOIN email_leads el ON el.id = e.email_lead_id
+            JOIN businesses  b  ON b.id  = el.business_id
             LEFT JOIN sends s
-                   ON s.campaign_id = e.campaign_id
-                  AND s.contact_id  = e.contact_id
+                   ON s.campaign_id   = e.campaign_id
+                  AND s.email_lead_id = e.email_lead_id
             WHERE e.campaign_id = ?
             GROUP BY e.id
             ORDER BY e.enrolled_at DESC
@@ -1848,13 +2431,13 @@ def get_campaign_contact_report(campaign_id: int):
         return [dict(r) for r in rows]
 
 
-def enroll_contacts_bulk(campaign_id, contact_ids):
+def enroll_contacts_bulk(campaign_id, email_lead_ids):
     """
-    Enroll contacts, skipping any that would produce a duplicate approach.
+    Enroll addresses, skipping any that would produce a duplicate approach.
 
     Returns (enrolled, skipped) where skipped explains why. The UNIQUE
-    constraint only stops re-enrolling in the SAME campaign; nothing stopped a
-    contact sitting in two campaigns at once and receiving two different cold
+    constraint only stops re-enrolling in the SAME campaign; nothing stopped an
+    address sitting in two campaigns at once and receiving two different cold
     pitches in overlapping windows, which reads as spam to the recipient and
     undoes the deliverability discipline the rest of the system maintains.
     """
@@ -1867,22 +2450,32 @@ def enroll_contacts_bulk(campaign_id, contact_ids):
     if len(variants) < 2:
         variants = []
 
-    one_per_domain = get_settings().get("one_sequence_per_domain", "0") == "1"
+    one_per_business = get_settings().get("one_sequence_per_domain", "0") == "1"
 
     with get_db() as conn:
         enrolled = 0
-        skipped = {"other_campaign": 0, "duplicate_address": 0, "same_domain": 0}
+        skipped = {"other_campaign": 0, "duplicate_address": 0,
+                   "same_domain": 0, "do_not_contact": 0}
 
-        for cid in contact_ids:
+        for lead_id in email_lead_ids:
             try:
-                row = conn.execute(
-                    "SELECT id, domain, duplicate_of FROM contacts WHERE id=?", (cid,)
-                ).fetchone()
+                row = conn.execute("""
+                    SELECT el.id, el.business_id, el.duplicate_of, b.do_not_contact
+                      FROM email_leads el JOIN businesses b ON b.id = el.business_id
+                     WHERE el.id=?
+                """, (lead_id,)).fetchone()
                 if not row:
                     continue
 
+                # Opted out on any channel. Checked here rather than trusted to
+                # the address's own status, because the request may have come
+                # in over WhatsApp or on a call.
+                if row["do_not_contact"]:
+                    skipped["do_not_contact"] += 1
+                    continue
+
                 # Suppressed as a duplicate address at a business we already
-                # have a better contact for.
+                # have a better address for.
                 if row["duplicate_of"] is not None:
                     skipped["duplicate_address"] += 1
                     continue
@@ -1890,40 +2483,41 @@ def enroll_contacts_bulk(campaign_id, contact_ids):
                 # Already being worked by another campaign.
                 busy = conn.execute("""
                     SELECT 1 FROM enrollments
-                     WHERE contact_id=? AND campaign_id != ?
+                     WHERE email_lead_id=? AND campaign_id != ?
                        AND status NOT IN ('completed','replied','unsubscribed','bounced')
                      LIMIT 1
-                """, (cid, campaign_id)).fetchone()
+                """, (lead_id, campaign_id)).fetchone()
                 if busy:
                     skipped["other_campaign"] += 1
                     continue
 
-                # Optional stricter rule: one live sequence per business, not
-                # per address, for operators who would rather under-contact.
-                # Freemail is exempt: "one per domain" across gmail.com would
-                # mean one Gmail lead in flight at a time, across the whole
-                # database.
-                if one_per_domain and row["domain"] and not is_freemail(row["domain"]):
-                    same_domain = conn.execute("""
+                # Optional stricter rule: one live sequence per business rather
+                # than per address, for operators who would rather
+                # under-contact. This used to compare `domain` strings and
+                # needed a freemail exemption to avoid treating gmail.com as
+                # one enormous business; comparing business_id needs no such
+                # exception because it is the identity, not a proxy for it.
+                if one_per_business:
+                    same_business = conn.execute("""
                         SELECT 1 FROM enrollments e
-                          JOIN contacts c ON c.id = e.contact_id
-                         WHERE c.domain=? AND e.contact_id != ?
+                          JOIN email_leads el ON el.id = e.email_lead_id
+                         WHERE el.business_id=? AND e.email_lead_id != ?
                            AND e.status NOT IN ('completed','replied','unsubscribed','bounced')
                          LIMIT 1
-                    """, (row["domain"], cid)).fetchone()
-                    if same_domain:
+                    """, (row["business_id"], lead_id)).fetchone()
+                    if same_business:
                         skipped["same_domain"] += 1
                         continue
 
                 variant_label = _pick_variant(variants) if variants else None
                 cur = conn.execute("""
                     INSERT OR IGNORE INTO enrollments
-                        (campaign_id,contact_id,current_step,status,next_send_at,variant_label)
+                        (campaign_id,email_lead_id,current_step,status,next_send_at,variant_label)
                     VALUES(?,?,1,'queued',?,?)
-                """, (campaign_id, cid, now, variant_label))
+                """, (campaign_id, lead_id, now, variant_label))
                 enrolled += cur.rowcount
             except Exception as e:
-                logger.warning(f"Failed to enroll contact {cid}: {e}")
+                logger.warning(f"Failed to enroll email lead {lead_id}: {e}")
 
         return enrolled, skipped
 
@@ -1936,11 +2530,13 @@ def unenroll_contact(enroll_id: int):
 def get_campaign_contacts(campaign_id):
     with get_db() as conn:
         return [dict(r) for r in conn.execute("""
-            SELECT c.email, c.first_name, c.last_name, c.company, c.status as contact_status,
+            SELECT el.email, el.first_name, el.last_name, b.name AS company,
+                   el.status as contact_status,
                    e.id as enroll_id, e.current_step, e.status, e.next_send_at, e.enrolled_at,
                    e.variant_label
-            FROM contacts c
-            JOIN enrollments e ON e.contact_id=c.id
+            FROM email_leads el
+            JOIN businesses  b ON b.id = el.business_id
+            JOIN enrollments e ON e.email_lead_id = el.id
             WHERE e.campaign_id=?
             ORDER BY e.enrolled_at DESC
         """, (campaign_id,)).fetchall()]
@@ -1950,20 +2546,25 @@ def get_due_enrollments(campaign_id, limit=20):
     now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as conn:
         return [dict(r) for r in conn.execute("""
-            SELECT e.id as enroll_id, e.campaign_id, e.contact_id,
+            SELECT e.id as enroll_id, e.campaign_id, e.email_lead_id,
                    e.current_step, e.next_send_at, e.variant_label,
-                   c.email, c.first_name, c.last_name, c.company, c.extra,
+                   el.email, el.first_name, el.last_name,
+                   b.name AS company, b.extra,
                    -- Available as {{phone}}, {{category}} and so on. These
                    -- used to ride along inside `extra`; promoting them to real
                    -- columns emptied that blob, so leaving them out here would
                    -- silently retire template variables that already worked.
-                   c.phone, c.category, c.rating, c.review_count,
-                   c.website, c.address
+                   b.phone, b.category, b.rating, b.review_count,
+                   b.website, b.address
             FROM enrollments e
-            JOIN contacts c ON c.id=e.contact_id
+            JOIN email_leads el ON el.id = e.email_lead_id
+            JOIN businesses  b  ON b.id  = el.business_id
             WHERE e.campaign_id=?
               AND e.status='queued'
-              AND c.status='active'
+              AND el.status='active'
+              -- An opt-out on any channel stops the send here, not just an
+              -- unsubscribe on this address.
+              AND b.do_not_contact = 0
               AND (e.next_send_at IS NULL OR e.next_send_at <= ?)
             ORDER BY e.next_send_at ASC NULLS FIRST
             LIMIT ?
@@ -1983,8 +2584,8 @@ def complete_enrollment(enroll_id):
         conn.execute("UPDATE enrollments SET status='completed' WHERE id=?", (enroll_id,))
 
 
-def mark_enrollment_replied(campaign_id, contact_id):
-    """Mark a (campaign, contact) enrollment as replied.
+def mark_enrollment_replied(campaign_id, email_lead_id):
+    """Mark a (campaign, address) enrollment as replied.
 
     Updates rows in ANY non-terminal state — including 'completed' (last step
     already sent) and 'paused' — so a reply that arrives after the sequence
@@ -1999,9 +2600,9 @@ def mark_enrollment_replied(campaign_id, contact_id):
         cur = conn.execute("""
             UPDATE enrollments
                SET status='replied'
-             WHERE campaign_id=? AND contact_id=?
+             WHERE campaign_id=? AND email_lead_id=?
                AND status NOT IN ('replied','bounced','unsubscribed')
-        """, (campaign_id, contact_id))
+        """, (campaign_id, email_lead_id))
         return cur.rowcount
 
 
@@ -2122,13 +2723,13 @@ def get_next_account_for_campaign(campaign_id: int):
         return dict(accounts[(idx + 1) % len(ids)])
 
 
-def log_send(campaign_id, contact_id, step_num, subject, msg_id, account_id=None):
+def log_send(campaign_id, email_lead_id, step_num, subject, msg_id, account_id=None):
     today = datetime.date.today().isoformat()
     with get_db() as conn:
         conn.execute("""
-            INSERT INTO sends(campaign_id,contact_id,step_num,subject,msg_id,account_id)
+            INSERT INTO sends(campaign_id,email_lead_id,step_num,subject,msg_id,account_id)
             VALUES(?,?,?,?,?,?)
-        """, (campaign_id, contact_id, step_num, subject, msg_id, account_id))
+        """, (campaign_id, email_lead_id, step_num, subject, msg_id, account_id))
         conn.execute("""
             INSERT INTO daily_counts(date,count) VALUES(?,1)
             ON CONFLICT(date) DO UPDATE SET count=count+1
@@ -2144,36 +2745,59 @@ def get_today_count():
         return row["count"] if row else 0
 
 
-def find_existing_business(conn, phone="", website="", company="", address="",
+def find_existing_business(conn, email="", phone="", website="", company="", address="",
                            exclude_id=None):
     """
-    Find a contact already representing this business. Returns a row or None.
+    Find the business row matching these details. Returns a row or None.
+    Read-only -- never creates a row; find_or_create_business wraps this with
+    the create-if-missing step.
 
-    Three keys, strongest first, because no single field covers the list:
+    Four keys, strongest first, because no single field covers the list:
 
-      1. Normalized phone -- the right key for calling. Two rows that dial the
+      1. An address already on file -- more authoritative than re-deriving
+         identity from whatever website or company name this row happens to
+         declare. Without this, the same address reappearing under a
+         different claimed company (a shared billing inbox, a re-scrape with
+         a typo'd site) would resolve to a second, wrong business.
+      2. Normalized phone -- the right key for calling. Two rows that dial the
          same number are one conversation, whoever they claim to be.
-      2. Canonical domain -- the right key for email, and already how contacts
-         with a website are deduped.
-      3. Normalized company AND locality -- last resort, for the no-website
+      3. Canonical domain -- the right key for email, falling back to the
+         email's own domain when no separate website is given (a business
+         pasted in as just "name, email"). Freemail is excluded either way:
+         gmail.com identifies a mailbox provider, not a business, and treating
+         it as an identity would collapse every Gmail lead into one.
+      4. Normalized company AND locality -- last resort, for the no-website
          leads that have neither of the above. Never company alone: that would
          merge "Main Street Dental" in St John's with the one in Toronto.
     """
+    email = (email or "").strip().lower()
+    if email and "@" in email:
+        row = conn.execute("""
+            SELECT b.* FROM businesses b JOIN email_leads el ON el.business_id=b.id
+             WHERE el.email=? AND (? IS NULL OR b.id != ?) LIMIT 1
+        """, (email, exclude_id, exclude_id or -1)).fetchone()
+        if row:
+            return row
+
     phone_key = normalize_phone(phone)
     if phone_key:
         row = conn.execute(
-            "SELECT * FROM contacts WHERE phone_normalized=? AND phone_normalized!='' "
-            "AND status != 'deleted' AND (? IS NULL OR id != ?) LIMIT 1",
+            "SELECT * FROM businesses WHERE phone_normalized=? AND phone_normalized!='' "
+            "AND (? IS NULL OR id != ?) LIMIT 1",
             (phone_key, exclude_id, exclude_id or -1),
         ).fetchone()
         if row:
             return row
 
     domain = canonical_domain(website)
+    if not domain and email and "@" in email:
+        candidate = email.split("@")[-1]
+        if not is_freemail(candidate):
+            domain = candidate
     if domain and not is_freemail(domain):
         row = conn.execute(
-            "SELECT * FROM contacts WHERE domain=? AND domain!='' "
-            "AND status != 'deleted' AND (? IS NULL OR id != ?) LIMIT 1",
+            "SELECT * FROM businesses WHERE domain=? AND domain!='' "
+            "AND (? IS NULL OR id != ?) LIMIT 1",
             (domain, exclude_id, exclude_id or -1),
         ).fetchone()
         if row:
@@ -2183,17 +2807,16 @@ def find_existing_business(conn, phone="", website="", company="", address="",
     place    = _locality_key(address)
     if name_key and place:
         for row in conn.execute(
-            "SELECT * FROM contacts WHERE company!='' AND status != 'deleted' "
-            "AND (? IS NULL OR id != ?)",
+            "SELECT * FROM businesses WHERE name!='' AND (? IS NULL OR id != ?)",
             (exclude_id, exclude_id or -1),
         ).fetchall():
-            if (normalize_company(row["company"]) == name_key
+            if (normalize_company(row["name"]) == name_key
                     and _locality_key(row["address"]) == place):
                 return row
     return None
 
 
-def get_touch_history(contact_id: int) -> dict:
+def get_touch_history(business_id: int) -> dict:
     """
     How this business has already been contacted, across every channel.
 
@@ -2202,27 +2825,45 @@ def get_touch_history(contact_id: int) -> dict:
     decides whether to dial. A previously-emailed lead with no reply is still
     worth a call; one that already said no is not -- so this reports rather
     than hides.
+
+    Now genuinely cross-channel: it reports WhatsApp alongside email, which
+    the old contact-scoped version could not see at all.
     """
     with get_db() as conn:
-        emails = conn.execute(
-            "SELECT COUNT(*) AS n, MAX(sent_at) AS last FROM sends WHERE contact_id=?",
-            (contact_id,),
-        ).fetchone()
+        emails = conn.execute("""
+            SELECT COUNT(*) AS n, MAX(s.sent_at) AS last
+              FROM sends s JOIN email_leads el ON el.id = s.email_lead_id
+             WHERE el.business_id = ?
+        """, (business_id,)).fetchone()
         enrolled = conn.execute("""
             SELECT c.name AS campaign, e.status
-              FROM enrollments e JOIN campaigns c ON c.id = e.campaign_id
-             WHERE e.contact_id = ?
+              FROM enrollments e
+              JOIN campaigns   c  ON c.id  = e.campaign_id
+              JOIN email_leads el ON el.id = e.email_lead_id
+             WHERE el.business_id = ?
              ORDER BY e.enrolled_at DESC
-        """, (contact_id,)).fetchall()
+        """, (business_id,)).fetchall()
+        wa = conn.execute("""
+            SELECT COUNT(*) AS n, MAX(l.sent_at) AS last
+              FROM wa_log l JOIN wa_leads w ON w.id = l.wa_lead_id
+             WHERE w.business_id = ?
+        """, (business_id,)).fetchone()
+        wa_replied = conn.execute(
+            "SELECT COALESCE(MAX(replied),0) FROM wa_leads WHERE business_id=?",
+            (business_id,),
+        ).fetchone()[0]
 
     return {
         "emails_sent":   emails["n"] or 0,
         "last_email_at": emails["last"],
         "campaigns":     [dict(r) for r in enrolled],
+        "wa_sent":       wa["n"] or 0,
+        "last_wa_at":    wa["last"],
         # Terminal states mean the prospect has already answered -- surfaced so
         # the call list can warn rather than silently re-work them.
-        "closed":        any(r["status"] in ("replied", "unsubscribed", "bounced")
-                             for r in enrolled),
+        "closed":        bool(wa_replied) or any(
+            r["status"] in ("replied", "unsubscribed", "bounced") for r in enrolled
+        ),
     }
 
 
@@ -2244,21 +2885,21 @@ def get_campaign_today_count(campaign_id):
         return row[0] if row else 0
 
 
-def has_sent_step(campaign_id, contact_id, step_num) -> bool:
+def has_sent_step(campaign_id, email_lead_id, step_num) -> bool:
     """
-    Has this exact step already gone to this contact?
+    Has this exact step already gone to this address?
 
     Sending is three separate writes -- deliver over SMTP, log the send,
     advance the enrollment -- and a restart between the first and the last
-    leaves the enrollment still queued on a step the contact has already
+    leaves the enrollment still queued on a step the recipient has already
     received. Without this check the scheduler simply sends it again. That
     window is small, but a deploy lands in it eventually, and the cost is a
     duplicate cold email to a prospect.
     """
     with get_db() as conn:
         row = conn.execute(
-            "SELECT 1 FROM sends WHERE campaign_id=? AND contact_id=? AND step_num=? LIMIT 1",
-            (campaign_id, contact_id, step_num),
+            "SELECT 1 FROM sends WHERE campaign_id=? AND email_lead_id=? AND step_num=? LIMIT 1",
+            (campaign_id, email_lead_id, step_num),
         ).fetchone()
         return row is not None
 
@@ -2486,29 +3127,56 @@ def delete_call_campaign(cid: int):
         conn.execute("DELETE FROM call_campaigns WHERE id=?", (cid,))
 
 
-def add_to_call_campaign(cid: int, contact_ids) -> int:
-    """Add contacts, ignoring any already in this campaign. Returns how many were new."""
+def add_to_call_campaign(cid: int, business_ids) -> int:
+    """
+    Add businesses to a call campaign, ignoring any already in it.
+
+    Takes business ids rather than call-lead ids because that is what the
+    operator is choosing from -- a clinic that has never been dialled has no
+    call lead yet, and requiring one before it could be added would make the
+    never-called leads the only ones you could not put in a campaign.
+    """
     added = 0
     with get_db() as conn:
-        for contact_id in contact_ids:
+        for business_id in business_ids:
+            call_lead_id = get_or_create_call_lead(conn, int(business_id))
             cur = conn.execute("""
-                INSERT OR IGNORE INTO call_campaign_members(call_campaign_id, contact_id)
+                INSERT OR IGNORE INTO call_campaign_members(call_campaign_id, call_lead_id)
                 VALUES(?,?)
-            """, (cid, int(contact_id)))
+            """, (cid, call_lead_id))
             added += cur.rowcount
     return added
 
 
-def remove_from_call_campaign(cid: int, contact_ids) -> int:
+def remove_from_call_campaign(cid: int, business_ids) -> int:
     with get_db() as conn:
         removed = 0
-        for contact_id in contact_ids:
-            cur = conn.execute(
-                "DELETE FROM call_campaign_members WHERE call_campaign_id=? AND contact_id=?",
-                (cid, int(contact_id)),
-            )
+        for business_id in business_ids:
+            cur = conn.execute("""
+                DELETE FROM call_campaign_members
+                 WHERE call_campaign_id=?
+                   AND call_lead_id IN (SELECT id FROM call_leads WHERE business_id=?)
+            """, (cid, int(business_id)))
             removed += cur.rowcount
         return removed
+
+
+def get_or_create_call_lead(conn, business_id: int) -> int:
+    """
+    The call lead for a business, created on first use.
+
+    Calling a clinic for the first time is what brings it onto the calling
+    list; there is no separate import step, and a business can be worked on
+    email or WhatsApp without ever appearing here.
+    """
+    row = conn.execute(
+        "SELECT id FROM call_leads WHERE business_id=?", (business_id,)
+    ).fetchone()
+    if row:
+        return row["id"]
+    return conn.execute(
+        "INSERT INTO call_leads(business_id) VALUES(?)", (business_id,)
+    ).lastrowid
 
 
 def get_call_campaigns():
@@ -2529,17 +3197,18 @@ def get_call_campaigns():
             row = conn.execute(f"""
                 SELECT
                   COUNT(*)                                                        AS total,
-                  SUM(CASE WHEN COALESCE(ct.call_status,'') = '' THEN 1 ELSE 0 END) AS uncalled,
-                  SUM(CASE WHEN ct.call_status IN ({placeholders}) THEN 1 ELSE 0 END) AS closed,
-                  SUM(CASE WHEN ct.call_status = 'booked' THEN 1 ELSE 0 END)      AS booked,
-                  SUM(CASE WHEN ct.call_status = 'not_interested' THEN 1 ELSE 0 END) AS not_interested,
-                  SUM(CASE WHEN ct.next_call_at IS NOT NULL
-                            AND datetime(ct.next_call_at) <= datetime('now')
-                            AND ct.call_status NOT IN ({placeholders})
+                  SUM(CASE WHEN COALESCE(cl.call_status,'') = '' THEN 1 ELSE 0 END) AS uncalled,
+                  SUM(CASE WHEN cl.call_status IN ({placeholders}) THEN 1 ELSE 0 END) AS closed,
+                  SUM(CASE WHEN cl.call_status = 'booked' THEN 1 ELSE 0 END)      AS booked,
+                  SUM(CASE WHEN cl.call_status = 'not_interested' THEN 1 ELSE 0 END) AS not_interested,
+                  SUM(CASE WHEN cl.next_call_at IS NOT NULL
+                            AND datetime(cl.next_call_at) <= datetime('now')
+                            AND cl.call_status NOT IN ({placeholders})
                            THEN 1 ELSE 0 END)                                     AS due
                   FROM call_campaign_members m
-                  JOIN contacts ct ON ct.id = m.contact_id
-                 WHERE m.call_campaign_id = ? AND ct.status != 'deleted'
+                  JOIN call_leads cl ON cl.id = m.call_lead_id
+                  JOIN businesses b  ON b.id  = cl.business_id
+                 WHERE m.call_campaign_id = ?
             """, (*terminal, *terminal, c["id"])).fetchone()
 
             c.update({k: (row[k] or 0) for k in
@@ -2549,10 +3218,10 @@ def get_call_campaigns():
     return campaigns
 
 
-def log_call(contact_id: int, outcome: str, notes: str = "", next_call_at: str = None,
+def log_call(call_lead_id: int, outcome: str, notes: str = "", next_call_at: str = None,
              call_campaign_id: int = None) -> dict:
     """
-    Record a call attempt and move the contact's calling state forward.
+    Record a call attempt and move the lead's calling state forward.
 
     Terminal outcomes also stop any live email sequence. Telling someone "not
     interested" on the phone and then having the scheduler send them a cheerful
@@ -2579,38 +3248,104 @@ def log_call(contact_id: int, outcome: str, notes: str = "", next_call_at: str =
 
     with get_db() as conn:
         conn.execute("""
-            INSERT INTO call_log(contact_id, outcome, notes, next_call_at, call_campaign_id)
+            INSERT INTO call_log(call_lead_id, outcome, notes, next_call_at, call_campaign_id)
             VALUES(?,?,?,?,?)
-        """, (contact_id, outcome, notes or "", next_call_at or None,
+        """, (call_lead_id, outcome, notes or "", next_call_at or None,
               int(call_campaign_id) if call_campaign_id else None))
 
         # Retirement from the queue comes from call_status being terminal, not
         # from clearing the date, so keeping a booked meeting's time cannot put
         # the lead back in tomorrow's list.
         conn.execute("""
-            UPDATE contacts
+            UPDATE call_leads
                SET call_status   = ?,
                    next_call_at  = ?,
                    call_attempts = call_attempts + 1
              WHERE id = ?
-        """, (outcome, (next_call_at or None) if keeps_date else None, contact_id))
+        """, (outcome, (next_call_at or None) if keeps_date else None, call_lead_id))
 
         if stops_email:
             conn.execute("""
                 UPDATE enrollments SET status='completed'
-                 WHERE contact_id = ?
+                 WHERE email_lead_id IN (
+                        SELECT el.id FROM email_leads el
+                         WHERE el.business_id = (SELECT business_id FROM call_leads WHERE id=?)
+                       )
                    AND status NOT IN ('completed','replied','unsubscribed','bounced')
-            """, (contact_id,))
+            """, (call_lead_id,))
 
-        # "Do not call" is a request about contact, not about the phone. It has
-        # to suppress email too, or honouring it is only half true.
+        # "Do not call" is a request about contact, not about the phone. Set on
+        # the business so it suppresses email and WhatsApp too -- honouring it
+        # on one channel only is not honouring it.
         if outcome == "do_not_call":
-            conn.execute(
-                "UPDATE contacts SET status='unsubscribed' WHERE id=? AND status != 'deleted'",
-                (contact_id,),
-            )
+            conn.execute("""
+                UPDATE businesses SET do_not_contact=1
+                 WHERE id = (SELECT business_id FROM call_leads WHERE id=?)
+            """, (call_lead_id,))
 
     return {"outcome": outcome, "terminal": is_terminal, "stopped_email": stops_email}
+
+
+# A business plus its calling state, shaped to match what the old `contacts`
+# row looked like to the calling UI: `company` for the name, `status` for what
+# the scraper found (web_status), the rest passed through. Every calling view
+# reads through this so the frontend needed no changes for the identity split.
+_CALL_LEAD_COLUMNS = """
+    b.id, b.name AS company, b.phone, b.phone_normalized, b.website, b.domain,
+    b.address, b.city, b.country, b.category, b.rating, b.review_count,
+    b.web_status AS status, b.source_job_id, b.do_not_contact,
+    b.notes AS business_notes, b.created_at,
+    cl.id AS call_lead_id, COALESCE(cl.call_status,'') AS call_status,
+    cl.next_call_at, COALESCE(cl.call_attempts,0) AS call_attempts
+"""
+_CALL_LEAD_JOIN = "FROM businesses b LEFT JOIN call_leads cl ON cl.business_id = b.id"
+
+
+def get_call_lead_view(business_id: int):
+    """One business plus its calling state, or None. Backs the call detail card."""
+    with get_db() as conn:
+        row = conn.execute(
+            f"SELECT {_CALL_LEAD_COLUMNS} {_CALL_LEAD_JOIN} WHERE b.id=?", (business_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def search_businesses(q="", status=None, call_status=None, limit=100):
+    """
+    Businesses matching a filter, for the "add existing leads" pickers (call
+    campaigns today; WhatsApp will use the same query).
+
+    Separate from the email-lead search: this looks at businesses directly, so
+    a clinic the scraper found with no email at all is still findable here,
+    which is the entire point of the calling "from contacts" tab.
+    """
+    where, params = ["1=1"], []
+    if status:
+        where.append("b.web_status = ?")
+        params.append(status)
+    if call_status == "none":
+        where.append("COALESCE(cl.call_status,'') = ''")
+    elif call_status == "any":
+        where.append("COALESCE(cl.call_status,'') != ''")
+    elif call_status:
+        where.append("cl.call_status = ?")
+        params.append(call_status)
+    q = (q or "").strip()
+    if q:
+        where.append("(b.name LIKE ? OR b.phone LIKE ? OR b.website LIKE ? OR b.address LIKE ?)")
+        params.extend([f"%{q}%"] * 4)
+
+    params.append(int(limit))
+    with get_db() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) {_CALL_LEAD_JOIN} WHERE {' AND '.join(where)}", params[:-1]
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT {_CALL_LEAD_COLUMNS} {_CALL_LEAD_JOIN} "
+            f"WHERE {' AND '.join(where)} ORDER BY b.created_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return {"rows": [dict(r) for r in rows], "total": total}
 
 
 def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_website=False,
@@ -2623,71 +3358,74 @@ def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_websit
       upcoming -- callbacks scheduled beyond today
       all      -- everything still callable
 
-    Terminal outcomes and unsubscribed contacts are excluded everywhere: a
+    Terminal outcomes and opted-out businesses are excluded everywhere: a
     finished lead should never reappear in a queue, whichever bucket is open.
+
+    Selects from businesses rather than call_leads, LEFT JOINing the calling
+    state. A clinic that has never been dialled has no call_leads row yet --
+    one is created the moment a call is logged -- and drawing only from that
+    table would make the never-called leads, which are the whole point of the
+    "new" bucket, invisible.
     """
     terminal = terminal_outcome_keys() or ["__none__"]
     placeholders = ",".join("?" * len(terminal))
 
+    cols = _CALL_LEAD_COLUMNS
+    join = _CALL_LEAD_JOIN
+
     where = [
-        f"(c.call_status = '' OR c.call_status NOT IN ({placeholders}))",
-        "c.status NOT IN ('deleted','unsubscribed')",
-        "COALESCE(c.phone,'') != ''",
+        f"(COALESCE(cl.call_status,'') = '' OR cl.call_status NOT IN ({placeholders}))",
+        "b.do_not_contact = 0",
+        "COALESCE(b.phone,'') != ''",
     ]
     params = list(terminal)
+
+    def _apply_common(where, params):
+        if source_job_id:
+            where.append("b.source_job_id = ?")
+            params.append(int(source_job_id))
+        if only_no_website:
+            where.append("b.web_status = 'no_website'")
+        if call_campaign_id:
+            where.append(
+                "cl.id IN (SELECT call_lead_id FROM call_campaign_members "
+                "WHERE call_campaign_id = ?)"
+            )
+            params.append(int(call_campaign_id))
 
     # "worked" is the opposite of every other bucket: it exists precisely to
     # show the leads the others hide, so a lead closed out by mistake can be
     # found and reopened instead of disappearing.
     if bucket == "worked":
-        where = [
-            f"c.call_status IN ({placeholders})",
-            "c.status != 'deleted'",
-        ]
+        where = [f"cl.call_status IN ({placeholders})"]
         params = list(terminal)
-        if source_job_id:
-            where.append("c.source_job_id = ?")
-            params.append(int(source_job_id))
-        if only_no_website:
-            where.append("c.status = 'no_website'")
-        if call_campaign_id:
-            where.append("c.id IN (SELECT contact_id FROM call_campaign_members "
-                         "WHERE call_campaign_id = ?)")
-            params.append(int(call_campaign_id))
+        _apply_common(where, params)
         params.append(int(limit))
         with get_db() as conn:
             return [dict(r) for r in conn.execute(f"""
-                SELECT c.* FROM contacts c
+                SELECT {cols} {join}
                  WHERE {' AND '.join(where)}
-                 ORDER BY c.id DESC LIMIT ?
+                 ORDER BY b.id DESC LIMIT ?
             """, params).fetchall()]
 
     if bucket == "today":
-        where.append("c.next_call_at IS NOT NULL AND datetime(c.next_call_at) <= datetime('now')")
-        order = "c.next_call_at ASC"
+        where.append("cl.next_call_at IS NOT NULL AND datetime(cl.next_call_at) <= datetime('now')")
+        order = "cl.next_call_at ASC"
     elif bucket == "new":
-        where.append("c.call_status = ''")
-        order = "c.created_at DESC"
+        where.append("COALESCE(cl.call_status,'') = ''")
+        order = "b.created_at DESC"
     elif bucket == "upcoming":
-        where.append("c.next_call_at IS NOT NULL AND datetime(c.next_call_at) > datetime('now')")
-        order = "c.next_call_at ASC"
+        where.append("cl.next_call_at IS NOT NULL AND datetime(cl.next_call_at) > datetime('now')")
+        order = "cl.next_call_at ASC"
     else:
-        order = "c.next_call_at IS NULL, c.next_call_at ASC, c.created_at DESC"
+        order = "cl.next_call_at IS NULL, cl.next_call_at ASC, b.created_at DESC"
 
-    if source_job_id:
-        where.append("c.source_job_id = ?")
-        params.append(int(source_job_id))
-    if only_no_website:
-        where.append("c.status = 'no_website'")
-    if call_campaign_id:
-        where.append("c.id IN (SELECT contact_id FROM call_campaign_members "
-                     "WHERE call_campaign_id = ?)")
-        params.append(int(call_campaign_id))
+    _apply_common(where, params)
 
     params.append(int(limit))
     with get_db() as conn:
         rows = conn.execute(f"""
-            SELECT c.* FROM contacts c
+            SELECT {cols} {join}
              WHERE {' AND '.join(where)}
              ORDER BY {order}
              LIMIT ?
@@ -2705,20 +3443,20 @@ def get_call_queue_counts(source_job_id=None, only_no_website=False, call_campai
     }
 
 
-def reopen_call_lead(contact_id: int) -> bool:
+def reopen_call_lead(call_lead_id: int) -> bool:
     """
     Put a closed-out lead back in the queue.
 
     Marking the wrong row terminal during a calling session is easy, and
     without this the only remedy is editing the database by hand. The call
     history is left intact -- what happened still happened, this only says the
-    lead is workable again. An unsubscribe is deliberately not undone here:
-    that was a request from the prospect, not a misclick.
+    lead is workable again. A do-not-contact flag is deliberately not undone
+    here: that was a request from the prospect, not a misclick.
     """
     with get_db() as conn:
         cur = conn.execute(
-            "UPDATE contacts SET call_status='', next_call_at=NULL WHERE id=?",
-            (contact_id,),
+            "UPDATE call_leads SET call_status='', next_call_at=NULL WHERE id=?",
+            (call_lead_id,),
         )
         return cur.rowcount > 0
 
@@ -2734,24 +3472,24 @@ def get_call_summary(call_campaign_id=None) -> dict:
 
     scope, scope_params = "", []
     if call_campaign_id:
-        scope = ("AND c.id IN (SELECT contact_id FROM call_campaign_members "
+        scope = ("AND cl.id IN (SELECT call_lead_id FROM call_campaign_members "
                  "WHERE call_campaign_id = ?)")
         scope_params = [int(call_campaign_id)]
 
     with get_db() as conn:
         row = conn.execute(f"""
             SELECT
-              COUNT(*)                                                        AS leads,
-              SUM(CASE WHEN c.call_status = 'booked' THEN 1 ELSE 0 END)       AS booked,
-              SUM(CASE WHEN c.call_status = 'not_interested' THEN 1 ELSE 0 END) AS not_interested,
-              SUM(CASE WHEN c.next_call_at IS NOT NULL
-                        AND datetime(c.next_call_at) <= datetime('now')
-                        AND c.call_status NOT IN ({tph}) THEN 1 ELSE 0 END)   AS due
-              FROM contacts c
-             WHERE c.status != 'deleted' {scope}
+              COUNT(*)                                                          AS leads,
+              SUM(CASE WHEN cl.call_status = 'booked' THEN 1 ELSE 0 END)        AS booked,
+              SUM(CASE WHEN cl.call_status = 'not_interested' THEN 1 ELSE 0 END) AS not_interested,
+              SUM(CASE WHEN cl.next_call_at IS NOT NULL
+                        AND datetime(cl.next_call_at) <= datetime('now')
+                        AND cl.call_status NOT IN ({tph}) THEN 1 ELSE 0 END)    AS due
+              FROM businesses b LEFT JOIN call_leads cl ON cl.business_id = b.id
+             WHERE b.do_not_contact = 0 AND COALESCE(b.phone,'') != '' {scope}
         """, (*terminal, *scope_params)).fetchone()
 
-        # Calls, not leads: one contact rung four times is four calls, and that
+        # Calls, not leads: one clinic rung four times is four calls, and that
         # is the number that reflects a day's work.
         call_scope, call_params = "", []
         if call_campaign_id:
@@ -2777,12 +3515,15 @@ def get_call_summary(call_campaign_id=None) -> dict:
     }
 
 
-def get_call_history(contact_id: int):
+def get_call_history(business_id: int):
+    """Every call to this business, newest first, across all its call leads."""
     with get_db() as conn:
-        return [dict(r) for r in conn.execute(
-            "SELECT * FROM call_log WHERE contact_id=? ORDER BY called_at DESC, id DESC",
-            (contact_id,),
-        ).fetchall()]
+        return [dict(r) for r in conn.execute("""
+            SELECT l.* FROM call_log l
+              JOIN call_leads cl ON cl.id = l.call_lead_id
+             WHERE cl.business_id=?
+             ORDER BY l.called_at DESC, l.id DESC
+        """, (business_id,)).fetchall()]
 
 
 def get_active_call_script() -> dict:
@@ -2840,7 +3581,7 @@ def get_stats(campaign_id=None):
             completed = cnt("enrollments", "AND status='completed'")
             queued    = cnt("enrollments", "AND status='queued'")
             sent_to   = conn.execute(
-                "SELECT COUNT(DISTINCT contact_id) FROM sends WHERE campaign_id=?",
+                "SELECT COUNT(DISTINCT email_lead_id) FROM sends WHERE campaign_id=?",
                 (campaign_id,)
             ).fetchone()[0]
         else:
@@ -2851,7 +3592,7 @@ def get_stats(campaign_id=None):
             completed = conn.execute("SELECT COUNT(*) FROM enrollments WHERE status='completed'").fetchone()[0]
             queued    = conn.execute("SELECT COUNT(*) FROM enrollments WHERE status='queued'").fetchone()[0]
             sent_to   = conn.execute(
-                "SELECT COUNT(DISTINCT contact_id) FROM sends"
+                "SELECT COUNT(DISTINCT email_lead_id) FROM sends"
             ).fetchone()[0]
 
         # reply_rate = % of people we emailed who replied (industry-standard definition)

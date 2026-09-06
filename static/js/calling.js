@@ -157,7 +157,9 @@ async function _aclFetch() {
   if (status) p.set('status', status);
   if (document.getElementById('acl-uncalled').checked) p.set('call_status', 'none');
 
-  const data = await api('/api/contacts?' + p.toString());
+  // Businesses, not email leads: a clinic the scraper found with no email at
+  // all is exactly the kind of lead this tab exists to surface.
+  const data = await api('/api/businesses/search?' + p.toString());
   _aclRows = (data && data.rows) || [];
   _aclRenderTable(data ? data.total : 0);
 }
@@ -195,13 +197,33 @@ function aclClearSelection() {
   _aclRenderTable(_aclRows.length);
 }
 
+// Adds businesses to the open campaign, holding for confirmation any that
+// are already active on another channel (see confirmChannelConflicts).
+// Shared by all three tabs so the confirm-before-proceeding prompt behaves
+// identically regardless of how the business ids were gathered.
+async function _addCallCampaignMembers(businessIds) {
+  if (!businessIds.length) return { added: 0, already_present: 0 };
+  const first = await api(`/api/call-campaigns/${_callCampaignId}/members`, 'POST',
+                          { contact_ids: businessIds });
+  if (!first || first.error) return first;
+  const final = await confirmChannelConflicts(first, () =>
+    api(`/api/call-campaigns/${_callCampaignId}/members`, 'POST', {
+      contact_ids: first.conflicts.map(c => c.business_id), confirm_conflicts: true,
+    })
+  );
+  if (final === first) return first;
+  return {
+    added: (first.added || 0) + (final.added || 0),
+    already_present: first.already_present || 0,
+  };
+}
+
 async function submitAddLeads() {
   if (!_callCampaignId) return;
 
   if (_aclTab === 'existing') {
     if (!_aclSelected.size) { toast('Select at least one contact', 'err'); return; }
-    const res = await api(`/api/call-campaigns/${_callCampaignId}/members`, 'POST',
-                          { contact_ids: [..._aclSelected] });
+    const res = await _addCallCampaignMembers([..._aclSelected]);
     if (!res || res.error) { toast((res && res.error) || 'Could not add them', 'err'); return; }
     const dupes = res.already_present ? ` (${res.already_present} already in it)` : '';
     toast(`Added ${res.added} lead${res.added === 1 ? '' : 's'}${dupes}`);
@@ -219,14 +241,12 @@ async function submitAddLeads() {
       .filter(r => r.company);
     if (!rows.length) { toast('Nothing to add — one business per line', 'err'); return; }
 
-    const imported = await api('/api/contacts/import', 'POST', { rows });
+    const imported = await _importForCalling(rows);
     if (!imported || imported.error) {
       toast((imported && imported.error) || 'Could not add those', 'err');
       return;
     }
-    const ids = await _aclResolveIds(rows);
-    const res = await api(`/api/call-campaigns/${_callCampaignId}/members`, 'POST',
-                          { contact_ids: ids });
+    const res = await _addCallCampaignMembers(imported.business_ids || []);
     toast(`Added ${(res && res.added) || 0} lead${((res && res.added) || 0) === 1 ? '' : 's'}`);
 
   } else {
@@ -238,18 +258,13 @@ async function submitAddLeads() {
       method: 'POST', credentials: 'same-origin',
       headers: { 'X-CSRF-Token': await _getCsrfToken() }, body: fd,
     });
-    const imported = await r.json().catch(() => ({}));
+    let imported = await r.json().catch(() => ({}));
     if (!r.ok || imported.error) {
       toast(imported.error || 'CSV import failed', 'err');
       return;
     }
-    // The importer does not report which rows it created, so pull the newest
-    // contacts and add those — imperfect if you import twice in a minute, but
-    // the alternative is a second endpoint for a rare case.
-    const recent = await api(`/api/contacts?per_page=${Math.max(imported.inserted || 0, 1)}`);
-    const ids = ((recent && recent.rows) || []).map(c => c.id);
-    const res = await api(`/api/call-campaigns/${_callCampaignId}/members`, 'POST',
-                          { contact_ids: ids });
+    imported = await _resolveImportConflicts(imported);
+    const res = await _addCallCampaignMembers(imported.business_ids || []);
     toast(`Imported ${imported.inserted || 0}, added ${(res && res.added) || 0} to the campaign`);
   }
 
@@ -258,15 +273,27 @@ async function submitAddLeads() {
   loadCallQueue();
 }
 
-// Match freshly-added rows back to their ids so they can join the campaign.
-async function _aclResolveIds(rows) {
-  const ids = [];
-  for (const r of rows) {
-    const found = await api('/api/contacts?per_page=5&q=' + encodeURIComponent(r.company));
-    const hit = ((found && found.rows) || []).find(c => c.company === r.company);
-    if (hit) ids.push(hit.id);
-  }
-  return ids;
+// A CSV or pasted line for calling can still carry an email column, which
+// goes through the same email-channel check as the Contacts importer. Held
+// rows are confirmed the same way, then folded back into one business id
+// list so the campaign-add step sees every business that ended up imported.
+async function _importForCalling(rows) {
+  const first = await api('/api/contacts/import', 'POST', { rows });
+  if (!first || first.error) return first;
+  return _resolveImportConflicts(first);
+}
+
+async function _resolveImportConflicts(first) {
+  const final = await confirmChannelConflicts(first, () =>
+    api('/api/contacts/import', 'POST', {
+      rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
+    })
+  );
+  if (final === first) return first;
+  return {
+    inserted: (first.inserted || 0) + (final.inserted || 0),
+    business_ids: [...(first.business_ids || []), ...(final.business_ids || [])],
+  };
 }
 
 async function loadCallSources() {

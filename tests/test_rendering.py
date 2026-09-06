@@ -110,12 +110,14 @@ def main():
 
     print("\n6. THE SEND QUERY ACTUALLY SUPPLIES THEM")
     # Rendering can only use what get_due_enrollments selects, so assert the
-    # column list rather than trusting the two to stay in step.
+    # column list rather than trusting the two to stay in step. first_name and
+    # last_name come off the address (email_leads); the rest describe the
+    # business the address belongs to.
     import inspect
     import db as db_mod
     src = inspect.getsource(db_mod.get_due_enrollments)
-    for col in ("c.first_name", "c.last_name", "c.company", "c.extra",
-                "c.phone", "c.category", "c.rating", "c.review_count"):
+    for col in ("el.first_name", "el.last_name", "b.name AS company", "b.extra",
+                "b.phone", "b.category", "b.rating", "b.review_count"):
         check(f"the due-send query selects {col}", col in src)
 
     print("\n7. THE UI ACTUALLY SHOWS THE VARIABLE NAMES")
@@ -145,14 +147,14 @@ def main():
     db2.init_db()
     try:
         # A scraped list: company and phone for everyone, never a first name.
-        db2.upsert_contacts([
+        db2.upsert_businesses([
             {"email": f"s{i}@scraped{i}.ca", "company": f"Scraped {i}",
              "website": f"https://scraped{i}.ca", "phone": f"555-000{i}"}
             for i in range(8)
         ])
         # Hand-added contacts that do have names -- these are what make the
         # global number look healthier than any single campaign really is.
-        db2.upsert_contacts([
+        db2.upsert_businesses([
             {"email": "a@named.ca", "first_name": "Ada", "last_name": "L",
              "company": "Named Co", "website": "https://named.ca"},
             {"email": "b@named2.ca", "first_name": "Bo", "last_name": "K",
@@ -177,7 +179,7 @@ def main():
         db2.upsert_step(cid, 1, "s", "b", 0)
         with db2.get_db() as conn:
             scraped_ids = [r["id"] for r in conn.execute(
-                "SELECT id FROM contacts WHERE email LIKE 's%@scraped%'").fetchall()]
+                "SELECT id FROM email_leads WHERE email LIKE 's%@scraped%'").fetchall()]
         db2.enroll_contacts_bulk(cid, scraped_ids)
 
         camp = db2.get_variable_coverage(cid)
@@ -195,10 +197,16 @@ def main():
               f"{fallback['scope']}/{fallback['total']}")
 
         # Advertising a variable the send query never fetches would put a name
-        # in the panel that always renders as nothing.
+        # in the panel that always renders as nothing. first_name/last_name
+        # come off the address (el.), everything else off the business (b.) --
+        # "company" is aliased from b.name rather than a raw b.company column,
+        # so it is added explicitly, the same way full_name is (also derived,
+        # never a column of its own).
         import re as _re2
         send_src  = inspect.getsource(db2.get_due_enrollments)
-        selected  = set(_re2.findall(r"\bc\.([a-z_]+)", send_src)) | {"full_name"}
+        selected  = (set(_re2.findall(r"\bel\.([a-z_]+)", send_src))
+                     | set(_re2.findall(r"\bb\.([a-z_]+)", send_src))
+                     | {"full_name", "company"})
         advertised = {k for k, _ in db2.TEMPLATE_VARIABLES}
         missing   = advertised - selected
         check("every advertised variable is one the send query supplies",

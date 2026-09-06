@@ -135,13 +135,13 @@ def _html_to_text(html: str) -> str:
     return txt.strip()
 
 
-def _make_message_id(campaign_id, contact_id, step_num, from_email="outreach@example.com") -> str:
+def _make_message_id(campaign_id, email_lead_id, step_num, from_email="outreach@example.com") -> str:
     # Use a cryptographically random token to make collisions effectively
     # impossible even at high send rates. Domain must be the sender's domain
     # so receiving MTAs accept the Message-ID as well-formed.
     unique = secrets.token_urlsafe(16)
     domain = from_email.split("@")[-1] if "@" in from_email else "shoutreach.local"
-    return f"<{campaign_id}.{contact_id}.{step_num}.{unique}@{domain}>"
+    return f"<{campaign_id}.{email_lead_id}.{step_num}.{unique}@{domain}>"
 
 
 def _make_unsub_token(email: str) -> str:
@@ -374,7 +374,7 @@ def send_email(
         from_email = cfg.get("smtp_from_email", "")
         msg_id = _make_message_id(
             campaign_id,
-            contact["contact_id"] if "contact_id" in contact else 0,
+            contact["email_lead_id"] if "email_lead_id" in contact else 0,
             step_num,
             from_email,
         )
@@ -403,7 +403,7 @@ def send_email(
         srv.quit()
 
         db.log_send(
-            campaign_id, contact.get("contact_id", 0), step_num, subject, msg_id,
+            campaign_id, contact.get("email_lead_id", 0), step_num, subject, msg_id,
             account_id=account["id"] if account else None,
         )
         db.add_log(f"✉ Sent step {step_num} → {contact['email']} | {subject}")
@@ -465,7 +465,7 @@ def _scan_inbox_for_replies(host: str, user: str, pwd: str):
         _, data = M.search(None, f'(SINCE "{since}")')
         ids = data[0].split()[-50:]
 
-        # Build msg_id → (campaign_id, contact_id) map from the last 30 days
+        # Build msg_id → (campaign_id, email_lead_id) map from the last 30 days
         # of sends. Looking up the enrollment via the threading header is
         # strictly more accurate than matching on the reply's From address —
         # a reply forwarded by a delegate, sent from an alias, or routed
@@ -473,9 +473,9 @@ def _scan_inbox_for_replies(host: str, user: str, pwd: str):
         msg_id_since = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
         with db.get_db() as conn:
             msg_id_to_enroll = {
-                row["msg_id"].strip("<>").lower(): (row["campaign_id"], row["contact_id"])
+                row["msg_id"].strip("<>").lower(): (row["campaign_id"], row["email_lead_id"])
                 for row in conn.execute(
-                    "SELECT msg_id, campaign_id, contact_id FROM sends "
+                    "SELECT msg_id, campaign_id, email_lead_id FROM sends "
                     "WHERE msg_id IS NOT NULL AND sent_at >= ?",
                     (msg_id_since,),
                 ).fetchall()
@@ -521,13 +521,13 @@ def _scan_inbox_for_replies(host: str, user: str, pwd: str):
                 continue
 
             # A single reply can reference multiple of our messages (the whole
-            # thread chain). Dedupe to (campaign_id, contact_id) pairs.
-            for cid, contact_id in set(matched):
-                updated = db.mark_enrollment_replied(cid, contact_id)
+            # thread chain). Dedupe to (campaign_id, email_lead_id) pairs.
+            for cid, email_lead_id in set(matched):
+                updated = db.mark_enrollment_replied(cid, email_lead_id)
                 if updated:
                     db.add_log(
                         f"↩ Reply detected from {from_email} (campaign {cid}, "
-                        f"contact {contact_id}) — sequence stopped",
+                        f"lead {email_lead_id}) — sequence stopped",
                         "INFO",
                     )
 

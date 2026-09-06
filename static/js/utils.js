@@ -25,6 +25,30 @@ function toast(msg, type = 'ok') {
 function openModal(id)  { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
+// ── Cross-channel duplicate confirmation ────────────────────────────────────
+//
+// A business already active on another channel gets held back by the server
+// rather than silently attached to a new one -- adding a clinic to calling
+// when it's mid-sequence on email should be a decision the operator makes on
+// purpose. `res.conflicts` is what the server sends back describing what it
+// held out; this turns that into one confirmation and, if accepted, redoes
+// the call with confirm_conflicts so the server knows not to hold them back
+// again. Used by both the Contacts importer and the call-campaign add-leads
+// flow, and will be WhatsApp's third user once that import exists.
+async function confirmChannelConflicts(res, resend) {
+  if (!res || !res.conflicts || !res.conflicts.length) return res;
+  const lines = res.conflicts.slice(0, 8).map(c =>
+    `  ${c.business_name || 'Unnamed business'} — already on ${c.channels.join(', ')}`
+  ).join('\n');
+  const more = res.conflicts.length > 8 ? `\n  …and ${res.conflicts.length - 8} more` : '';
+  const ok = confirm(
+    `${res.conflicts.length} of these are already on another channel:\n\n${lines}${more}\n\n` +
+    `Add them here too?`
+  );
+  if (!ok) return res;
+  return resend();
+}
+
 // ── CSRF token bootstrap ──────────────────────────────────────────────────────
 let _csrfToken = null;
 let _csrfPromise = null;

@@ -122,7 +122,7 @@ def process_queue():
                 # leaves the enrollment queued on a step the contact already
                 # received. Recover by advancing rather than sending again --
                 # the send is recorded, so the sequence just resumes.
-                if db.has_sent_step(cid, enrollment["contact_id"], step_num):
+                if db.has_sent_step(cid, enrollment["email_lead_id"], step_num):
                     db.add_log(
                         f"↷ Step {step_num} was already sent to {enrollment['email']} — "
                         f"advancing without re-sending",
@@ -133,7 +133,7 @@ def process_queue():
 
                 # ── Send the email ───────────────────────────────────────────
                 contact = dict(enrollment)
-                contact["contact_id"] = enrollment["contact_id"]
+                contact["email_lead_id"] = enrollment["email_lead_id"]
 
                 # Pick subject/body: use variant if the enrollment has one
                 subject_tpl = step["subject"]
