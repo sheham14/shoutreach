@@ -345,6 +345,8 @@ def init_db():
             -- fixed schema would decide that for them.
             CREATE TABLE IF NOT EXISTS call_scripts (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                -- A script is the operator's own pitch, so each has their own.
+                owner_id   INTEGER NOT NULL DEFAULT 0,
                 name       TEXT    NOT NULL DEFAULT 'Default script',
                 sections   TEXT    NOT NULL DEFAULT '[]',
                 is_active  INTEGER NOT NULL DEFAULT 0,
@@ -364,6 +366,15 @@ def init_db():
             -- carry one, this only marks the ones that make no sense without.
             CREATE TABLE IF NOT EXISTS call_outcome_types (
                 key           TEXT PRIMARY KEY,
+                -- 0 for the built-ins, which everyone shares because the code
+                -- special-cases two of them. A custom outcome belongs to the
+                -- operator who invented it: the vocabulary someone works in
+                -- says what they are working on, and one person archiving an
+                -- outcome should not remove it from the other's dialler.
+                --
+                -- `key` stays globally unique even so -- call_log rows point
+                -- at it, and history has to stay readable whoever looks.
+                owner_id      INTEGER NOT NULL DEFAULT 0,
                 label         TEXT    NOT NULL,
                 is_terminal   INTEGER NOT NULL DEFAULT 0,
                 stops_email   INTEGER NOT NULL DEFAULT 0,
@@ -450,6 +461,8 @@ def init_db():
             # know better.
             "ALTER TABLE wa_leads ADD COLUMN paraphrased INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE wa_log   ADD COLUMN paraphrased INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE call_scripts       ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE call_outcome_types ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -703,10 +716,19 @@ def _backfill_owner_ids(conn):
           AND (SELECT b.owner_id FROM businesses b WHERE b.id = email_leads.business_id) != ?
     """, (OWNER_UNASSIGNED, OWNER_UNASSIGNED))
 
-    for table in ("businesses", "email_leads", "campaigns", "call_campaigns", "scrape_jobs"):
+    for table in ("businesses", "email_leads", "campaigns", "call_campaigns",
+                  "scrape_jobs", "call_scripts"):
         conn.execute(
             f"UPDATE {table} SET owner_id=? WHERE owner_id=?", (owner, OWNER_UNASSIGNED)
         )
+
+    # Built-in outcomes stay unowned on purpose -- they are the shared
+    # vocabulary every operator dials against, and two of them are special-cased
+    # in code. Only the ones somebody invented get handed over.
+    conn.execute(
+        "UPDATE call_outcome_types SET owner_id=? WHERE owner_id=? AND is_builtin=0",
+        (owner, OWNER_UNASSIGNED),
+    )
 
 
 # ── One-shot migration: contacts → businesses + per-channel leads ────────────
@@ -3353,12 +3375,22 @@ def _seed_call_outcomes(conn):
         """, (key, label, int(term), int(stops), int(needs_date), tone, order))
 
 
-def get_call_outcomes(include_archived=False):
-    """Every outcome the operator can pick, keyed for lookup."""
-    where = "" if include_archived else "WHERE archived = 0"
+def get_call_outcomes(include_archived=False, owner_id=None):
+    """
+    Every outcome this operator can pick: the shared built-ins plus their own.
+
+    Another operator's custom outcomes are not offered and not listed -- what
+    someone has invented a name for is a fair description of what they are
+    working on.
+    """
+    clauses = ["(is_builtin = 1 OR owner_id = ?)"]
+    if not include_archived:
+        clauses.append("archived = 0")
     with get_db() as conn:
         rows = conn.execute(
-            f"SELECT * FROM call_outcome_types {where} ORDER BY sort_order, label"
+            f"SELECT * FROM call_outcome_types WHERE {' AND '.join(clauses)} "
+            "ORDER BY sort_order, label",
+            (_resolve_owner_id(conn, owner_id),),
         ).fetchall()
     return {r["key"]: dict(r) for r in rows}
 
@@ -3372,7 +3404,15 @@ def get_call_outcome(key: str):
         return dict(row) if row else None
 
 
-def terminal_outcome_keys():
+def terminal_outcome_keys(owner_id=None):
+    """
+    Which outcomes close a lead, for this operator.
+
+    Deliberately includes every owner's terminal outcomes, not just this one's:
+    these keys are matched against call_status values already written to rows,
+    and a lead closed under an outcome this operator cannot see is still
+    closed. Filtering here would resurrect it into their queue.
+    """
     with get_db() as conn:
         return [r["key"] for r in conn.execute(
             "SELECT key FROM call_outcome_types WHERE is_terminal = 1"
@@ -3385,7 +3425,7 @@ def _slugify_outcome(label: str) -> str:
 
 
 def create_call_outcome(label, is_terminal=False, stops_email=False,
-                        requires_date=False, tone="neutral") -> str:
+                        requires_date=False, tone="neutral", owner_id=None) -> str:
     """
     Add an outcome. Returns its key.
 
@@ -3404,15 +3444,16 @@ def create_call_outcome(label, is_terminal=False, stops_email=False,
         conn.execute("""
             INSERT INTO call_outcome_types
                 (key, label, is_terminal, stops_email, requires_date, tone,
-                 sort_order, is_builtin)
-            VALUES(?,?,?,?,?,?,?,0)
+                 sort_order, is_builtin, owner_id)
+            VALUES(?,?,?,?,?,?,?,0,?)
         """, (key, (label or "").strip()[:60] or key, int(bool(is_terminal)),
               int(bool(stops_email)), int(bool(requires_date)),
-              tone if tone in ("neutral", "good", "bad", "info") else "neutral", nxt))
+              tone if tone in ("neutral", "good", "bad", "info") else "neutral", nxt,
+              _resolve_owner_id(conn, owner_id)))
         return key
 
 
-def update_call_outcome(key: str, **fields):
+def update_call_outcome(key: str, owner_id=None, **fields):
     """
     Edit an outcome. The key is never editable.
 
@@ -3422,6 +3463,11 @@ def update_call_outcome(key: str, **fields):
     """
     row = get_call_outcome(key)
     if not row:
+        return False
+    # Somebody else's custom outcome is not yours to relabel or archive.
+    # Built-ins are shared, so editing those stays an admin decision, gated at
+    # the route rather than here.
+    if not row["is_builtin"] and row["owner_id"] != _owner_or_default(owner_id):
         return False
     allowed = {"label", "tone", "sort_order"}
     if not row["is_builtin"]:
@@ -3436,7 +3482,7 @@ def update_call_outcome(key: str, **fields):
     return True
 
 
-def delete_call_outcome(key: str):
+def delete_call_outcome(key: str, owner_id=None):
     """
     Remove a custom outcome, or archive it if calls already used it.
 
@@ -3446,6 +3492,8 @@ def delete_call_outcome(key: str):
     """
     row = get_call_outcome(key)
     if not row or row["is_builtin"]:
+        return "refused"
+    if row["owner_id"] != _owner_or_default(owner_id):
         return "refused"
     with get_db() as conn:
         used = conn.execute(
@@ -3581,8 +3629,8 @@ def get_call_campaigns(owner_id=None):
                   FROM call_campaign_members m
                   JOIN call_leads cl ON cl.id = m.call_lead_id
                   JOIN businesses b  ON b.id  = cl.business_id
-                 WHERE m.call_campaign_id = ?
-            """, (*terminal, *terminal, c["id"])).fetchone()
+                 WHERE m.call_campaign_id = ? AND b.owner_id = ?
+            """, (*terminal, *terminal, c["id"], c["owner_id"])).fetchone()
 
             c.update({k: (row[k] or 0) for k in
                       ("total", "uncalled", "closed", "booked", "not_interested", "due")})
@@ -3674,11 +3722,12 @@ _CALL_LEAD_COLUMNS = """
 _CALL_LEAD_JOIN = "FROM businesses b LEFT JOIN call_leads cl ON cl.business_id = b.id"
 
 
-def get_call_lead_view(business_id: int):
+def get_call_lead_view(business_id: int, owner_id=None):
     """One business plus its calling state, or None. Backs the call detail card."""
     with get_db() as conn:
         row = conn.execute(
-            f"SELECT {_CALL_LEAD_COLUMNS} {_CALL_LEAD_JOIN} WHERE b.id=?", (business_id,)
+            f"SELECT {_CALL_LEAD_COLUMNS} {_CALL_LEAD_JOIN} WHERE b.id=? AND b.owner_id=?",
+            (business_id, _resolve_owner_id(conn, owner_id)),
         ).fetchone()
         return dict(row) if row else None
 
@@ -3895,33 +3944,43 @@ def get_call_summary(call_campaign_id=None, owner_id=None) -> dict:
     }
 
 
-def get_call_history(business_id: int):
+def get_call_history(business_id: int, owner_id=None):
     """Every call to this business, newest first, across all its call leads."""
     with get_db() as conn:
         return [dict(r) for r in conn.execute("""
             SELECT l.* FROM call_log l
               JOIN call_leads cl ON cl.id = l.call_lead_id
-             WHERE cl.business_id=?
+              JOIN businesses b  ON b.id  = cl.business_id
+             WHERE cl.business_id=? AND b.owner_id=?
              ORDER BY l.called_at DESC, l.id DESC
-        """, (business_id,)).fetchall()]
+        """, (business_id, _resolve_owner_id(conn, owner_id))).fetchall()]
 
 
-def get_active_call_script() -> dict:
+def get_active_call_script(owner_id=None) -> dict:
     """
-    The script shown beside the dialler, creating an empty one on first use.
+    This operator's script, creating an empty one on first use.
+
+    One per operator: a script is the words someone says on the phone in their
+    own voice, and the other person's pitch is neither useful to them nor
+    theirs to read. A new operator gets the blank section headings rather than
+    an inherited copy -- unlike the WhatsApp templates, where starting from
+    working copy helps, a half-remembered script in someone else's voice is
+    worse than an empty one.
 
     Seeded with section headings and no content: the words are the operator's,
     and inventing a script for them would put language in their mouth that
     they have to notice and delete mid-call.
     """
     with get_db() as conn:
+        owner_id = _resolve_owner_id(conn, owner_id)
         row = conn.execute(
-            "SELECT * FROM call_scripts WHERE is_active=1 ORDER BY id LIMIT 1"
+            "SELECT * FROM call_scripts WHERE is_active=1 AND owner_id=? ORDER BY id LIMIT 1",
+            (owner_id,),
         ).fetchone()
         if not row:
             cur = conn.execute(
-                "INSERT INTO call_scripts(name, sections, is_active) VALUES(?,?,1)",
-                ("Default script", json.dumps(_DEFAULT_SCRIPT_SECTIONS)),
+                "INSERT INTO call_scripts(name, sections, is_active, owner_id) VALUES(?,?,1,?)",
+                ("Default script", json.dumps(_DEFAULT_SCRIPT_SECTIONS), owner_id),
             )
             row = conn.execute(
                 "SELECT * FROM call_scripts WHERE id=?", (cur.lastrowid,)
@@ -3935,13 +3994,14 @@ def get_active_call_script() -> dict:
     return out
 
 
-def save_call_script(script_id: int, name: str, sections: list):
+def save_call_script(script_id: int, name: str, sections: list, owner_id=None):
     with get_db() as conn:
         conn.execute("""
             UPDATE call_scripts
                SET name=?, sections=?, updated_at=datetime('now')
-             WHERE id=?
-        """, (name or "Default script", json.dumps(sections or []), script_id))
+             WHERE id=? AND owner_id=?
+        """, (name or "Default script", json.dumps(sections or []), script_id,
+              _resolve_owner_id(conn, owner_id)))
 
 
 # ── WhatsApp ──────────────────────────────────────────────────────────────────

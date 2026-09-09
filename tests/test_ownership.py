@@ -509,6 +509,57 @@ def test_routes_enforce_the_wall(work):
     check("and the other operator still has working copy of their own",
           bool(theirs["gap"] and theirs["gap"][0].strip()), f"got {theirs['gap']}")
 
+    # ── Calling ──────────────────────────────────────────────────────────────
+    print("\n14. THE CALLING SECTION SHOWS NOTHING OF THE OTHER OPERATOR")
+
+    saved = ca.put("/api/call-script", headers=hdr, json={
+        "name": "Alice's pitch",
+        "sections": [{"title": "Opening", "body": "Alice's secret opener"}],
+    })
+    check("an operator can write their own call script without being an admin",
+          saved.status_code == 200, f"got {saved.status_code} {saved.get_json()}")
+
+    my_script = ca.get("/api/call-script").get_json()
+    their_script = cb.get("/api/call-script").get_json()
+    check("they get their own script back",
+          json.dumps(my_script).count("Alice's secret opener") == 1, str(my_script)[:160])
+    check("the other operator's script does not contain a word of it",
+          "Alice" not in json.dumps(their_script), str(their_script)[:160])
+    check("and starts blank rather than inheriting a pitch in someone else's voice",
+          all(not s["body"] for s in their_script["sections"]), str(their_script)[:160])
+
+    made = ca.post("/api/call-outcomes", headers=hdr,
+                   json={"label": "Sent Alice's proposal"}).get_json()
+    check("an operator can invent their own outcome", bool((made or {}).get("key")), str(made))
+
+    mine_out = {o["label"] for o in ca.get("/api/call-outcomes").get_json()}
+    theirs_out = {o["label"] for o in cb.get("/api/call-outcomes").get_json()}
+    check("it appears in their own dialler", "Sent Alice's proposal" in mine_out)
+    check("but not in the other operator's", "Sent Alice's proposal" not in theirs_out,
+          f"got {sorted(theirs_out)}")
+    check("while the shared built-ins still reach both",
+          "Not interested" in mine_out and "Not interested" in theirs_out,
+          f"mine={sorted(mine_out)} theirs={sorted(theirs_out)}")
+
+    stolen = cb.delete(f"/api/call-outcomes/{made['key']}", headers=hdr)
+    check("and the other operator cannot delete it out from under them",
+          stolen.status_code == 400, f"got {stolen.status_code}")
+    check("so it survives", "Sent Alice's proposal" in
+          {o["label"] for o in ca.get("/api/call-outcomes").get_json()})
+
+    b_business = b_business_id(db_mod, b)
+    probes = [
+        ("read another's call detail", ca.get(f"/api/calls/contact/{b_business}")),
+        ("download their calendar invite", ca.get(f"/api/calls/{b_business}/ics")),
+        ("reopen their closed lead", ca.post(f"/api/calls/{b_business}/reopen", headers=hdr)),
+    ]
+    for label, resp in probes:
+        check(f"cannot {label}", resp.status_code == 404, f"got {resp.status_code}")
+
+    queue = ca.get("/api/calls/queue?bucket=all").get_json()
+    check("and the call queue never mentions their business",
+          "Bob" not in json.dumps(queue.get("leads", [])), str(queue)[:160])
+
 
 def b_business_id(db_mod, owner):
     """The business id behind that operator's only lead."""

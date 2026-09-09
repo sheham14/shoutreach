@@ -1832,7 +1832,7 @@ def api_call_queue():
              "terminal": bool(o["is_terminal"]), "stops_email": bool(o["stops_email"]),
              "wants_next_call": bool(o["requires_date"]),
              "tone": o["tone"], "builtin": bool(o["is_builtin"])}
-            for o in db.get_call_outcomes().values()
+            for o in db.get_call_outcomes(owner_id=me()).values()
         ],
         "attempt_limit": db.CALL_ATTEMPT_LIMIT,
     })
@@ -1841,11 +1841,11 @@ def api_call_queue():
 @app.route("/api/call-outcomes", methods=["GET"])
 @login_required
 def api_list_call_outcomes():
-    return jsonify(list(db.get_call_outcomes(include_archived=True).values()))
+    return jsonify(list(db.get_call_outcomes(include_archived=True, owner_id=me()).values()))
 
 
 @app.route("/api/call-outcomes", methods=["POST"])
-@admin_required
+@login_required
 def api_create_call_outcome():
     d = request.json or {}
     label = (d.get("label") or "").strip()
@@ -1857,24 +1857,31 @@ def api_create_call_outcome():
         stops_email=d.get("stops_email"),
         requires_date=d.get("requires_date"),
         tone=d.get("tone", "neutral"),
+        owner_id=me(),
     )
     return jsonify({"ok": True, "key": key})
 
 
 @app.route("/api/call-outcomes/<key>", methods=["PATCH"])
-@admin_required
+@login_required
 def api_update_call_outcome(key):
-    if not db.update_call_outcome(key, **(request.json or {})):
+    # Built-ins are shared vocabulary, so editing one is still an admin call.
+    # Your own custom outcomes are yours.
+    existing = db.get_call_outcome(key)
+    if existing and existing["is_builtin"] and not session.get("is_admin"):
+        return jsonify({"ok": False, "error": "Built-in outcomes are shared — ask an admin"}), 403
+    if not db.update_call_outcome(key, owner_id=me(), **(request.json or {})):
         return jsonify({"ok": False, "error": "Nothing to update, or unknown outcome"}), 400
     return jsonify({"ok": True})
 
 
 @app.route("/api/call-outcomes/<key>", methods=["DELETE"])
-@admin_required
+@login_required
 def api_delete_call_outcome(key):
-    result = db.delete_call_outcome(key)
+    result = db.delete_call_outcome(key, owner_id=me())
     if result == "refused":
-        return jsonify({"ok": False, "error": "Built-in outcomes cannot be removed"}), 400
+        return jsonify({"ok": False,
+                        "error": "Built-in outcomes cannot be removed"}), 400
     # Archived rather than deleted when calls already used it, so old history
     # still resolves to a readable label.
     return jsonify({"ok": True, "result": result})
@@ -1993,7 +2000,7 @@ def api_reopen_call_lead(cid):
     queue rows hand back as `.id` — the operator picks a clinic, not a row in
     a table they never see.
     """
-    lead = db.get_call_lead_view(cid)
+    lead = db.get_call_lead_view(cid, owner_id=me())
     if not lead or not lead.get("call_lead_id") or not db.reopen_call_lead(lead["call_lead_id"]):
         return jsonify({"ok": False, "error": "Not found"}), 404
     db.add_log(f"☎ Reopened {lead.get('company') or cid} for calling")
@@ -2020,7 +2027,9 @@ def api_log_call():
     require_owned("business", business_id)
 
     outcome = (d.get("outcome") or "").strip()
-    spec = db.get_call_outcome(outcome)
+    # Looked up in the caller's own vocabulary rather than globally, so a
+    # custom outcome belonging to the other operator can't be logged against.
+    spec = db.get_call_outcomes(include_archived=True, owner_id=me()).get(outcome)
     if not spec:
         return jsonify({"ok": False, "error": f"Unknown outcome '{outcome}'"}), 400
 
@@ -2055,12 +2064,12 @@ def api_log_call():
 @owned("business", "cid")
 def api_call_contact(cid):
     """cid is the business id — see api_log_call."""
-    contact = db.get_call_lead_view(cid)
+    contact = db.get_call_lead_view(cid, owner_id=me())
     if not contact:
         return jsonify({"error": "Not found"}), 404
     return jsonify({
         "contact": contact,
-        "history": db.get_call_history(cid),
+        "history": db.get_call_history(cid, owner_id=me()),
         "touch":   db.get_touch_history(cid),
     })
 
@@ -2068,14 +2077,19 @@ def api_call_contact(cid):
 @app.route("/api/call-script", methods=["GET"])
 @login_required
 def api_get_call_script():
-    return jsonify(db.get_active_call_script())
+    return jsonify(db.get_active_call_script(owner_id=me()))
 
 
 @app.route("/api/call-script", methods=["PUT"])
-@admin_required
+@login_required
 def api_save_call_script():
+    """
+    Not admin-only: this is the operator's own pitch, in their own words, and
+    needing the rights to change global sending rules in order to edit what you
+    say on the phone was backwards.
+    """
     d = request.json or {}
-    script = db.get_active_call_script()
+    script = db.get_active_call_script(owner_id=me())
     sections = d.get("sections")
     if not isinstance(sections, list):
         return jsonify({"ok": False, "error": "sections must be a list"}), 400
@@ -2083,7 +2097,8 @@ def api_save_call_script():
         {"title": str(s.get("title", ""))[:120], "body": str(s.get("body", ""))}
         for s in sections if isinstance(s, dict)
     ]
-    db.save_call_script(script["id"], d.get("name") or script["name"], clean)
+    db.save_call_script(script["id"], d.get("name") or script["name"], clean,
+                        owner_id=me())
     return jsonify({"ok": True})
 
 
@@ -2099,7 +2114,7 @@ def api_call_ics(cid):
     alive, and the in-app queue already covers callbacks. Real sync is only
     worth building if two-way updates start to matter.
     """
-    contact = db.get_call_lead_view(cid)
+    contact = db.get_call_lead_view(cid, owner_id=me())
     if not contact or not contact.get("next_call_at"):
         return jsonify({"error": "No scheduled time for this contact"}), 404
 
