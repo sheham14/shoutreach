@@ -46,6 +46,7 @@ def init_db():
 
             CREATE TABLE IF NOT EXISTS campaigns (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id         INTEGER NOT NULL DEFAULT 0,
                 name             TEXT    NOT NULL,
                 status           TEXT    NOT NULL DEFAULT 'draft',
                 daily_limit      INTEGER NOT NULL DEFAULT 30,
@@ -81,6 +82,19 @@ def init_db():
             -- practices sharing one address.
             CREATE TABLE IF NOT EXISTS businesses (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                -- Which operator this row belongs to. Two people working the
+                -- same clinic get two rows, not a shared one: they should not
+                -- see each other's notes, call outcomes or reply history.
+                -- Overlap is surfaced at import time instead -- see
+                -- find_cross_owner_matches.
+                --
+                -- No REFERENCES clause on purpose. SQLite cannot ALTER TABLE
+                -- ADD a column that is both NOT NULL and a foreign key: the
+                -- first requires a non-null default, the second forbids one.
+                -- Existing databases get this column by ALTER, so ownership is
+                -- enforced in this module (see _resolve_owner_id, delete_user)
+                -- rather than by the engine.
+                owner_id         INTEGER NOT NULL DEFAULT 0,
                 name             TEXT    NOT NULL DEFAULT '',
                 phone            TEXT    NOT NULL DEFAULT '',
                 phone_normalized TEXT    NOT NULL DEFAULT '',
@@ -116,11 +130,19 @@ def init_db():
             -- one clinic, only email the best" is expressed now.
             --
             -- email is nullable and uniqueness comes from the partial index
-            -- email_leads_email_unique below, not a table constraint, so
+            -- email_leads_owner_email_unique below, not a table constraint, so
             -- prospect rows with no address found yet are allowed to repeat.
             CREATE TABLE IF NOT EXISTS email_leads (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
                 business_id       INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+                -- Denormalized from businesses.owner_id, which is otherwise
+                -- reachable by join. It has to be a real column here because
+                -- the import upserts through ON CONFLICT(owner_id, email), and
+                -- a conflict target can only name columns of this table.
+                -- Without it the index stays globally unique on email, and one
+                -- operator importing an address another already holds silently
+                -- overwrites the other's row instead of creating their own.
+                owner_id          INTEGER NOT NULL DEFAULT 0,
                 email             TEXT    DEFAULT NULL,
                 first_name        TEXT    NOT NULL DEFAULT '',
                 last_name         TEXT    NOT NULL DEFAULT '',
@@ -270,6 +292,11 @@ def init_db():
             -- for CAPTCHA solving, which a headless VM cannot provide.
             CREATE TABLE IF NOT EXISTS scrape_jobs (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                -- Set from the session of whoever queues the job. The worker
+                -- authenticates by API key and has no session of its own, so
+                -- this is the only thing that can tell the import who the
+                -- leads it pushes back belong to.
+                owner_id     INTEGER NOT NULL DEFAULT 0,
                 niche        TEXT    NOT NULL,
                 city         TEXT    NOT NULL,
                 max_results  INTEGER NOT NULL DEFAULT 50,
@@ -340,6 +367,7 @@ def init_db():
 
             CREATE TABLE IF NOT EXISTS call_campaigns (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id   INTEGER NOT NULL DEFAULT 0,
                 name       TEXT    NOT NULL,
                 notes      TEXT    NOT NULL DEFAULT '',
                 status     TEXT    NOT NULL DEFAULT 'active',
@@ -395,6 +423,16 @@ def init_db():
             # Doha" is a country fact the operator should not have to restate
             # at import time.
             "ALTER TABLE scrape_jobs ADD COLUMN country TEXT NOT NULL DEFAULT ''",
+            # Per-operator ownership. DEFAULT 0 means "unassigned": it is not a
+            # valid user id, so a row that somehow escapes the backfill below
+            # simply stops matching any owner's filter rather than silently
+            # showing up in the wrong person's list. See businesses.owner_id
+            # for why none of these carry a REFERENCES clause.
+            "ALTER TABLE businesses      ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE email_leads     ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE campaigns       ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE call_campaigns  ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scrape_jobs     ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -412,9 +450,19 @@ def init_db():
             logger.exception("Contact split migration failed: %s", exc)
             raise
 
+        # Hand every pre-multi-user row to its rightful owner. Runs after the
+        # split above, which creates businesses/email_leads rows of its own.
+        _backfill_owner_ids(conn)
+
+        # Uniqueness is per owner, not global. The old global index is dropped
+        # rather than left in place: while it exists, a second operator
+        # importing an address the first already holds does not get their own
+        # row, it silently edits the first operator's one through the
+        # ON CONFLICT clause in upsert_businesses.
+        conn.execute("DROP INDEX IF EXISTS email_leads_email_unique")
         conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS email_leads_email_unique
-            ON email_leads(email) WHERE email IS NOT NULL AND email != ''
+            CREATE UNIQUE INDEX IF NOT EXISTS email_leads_owner_email_unique
+            ON email_leads(owner_id, email) WHERE email IS NOT NULL AND email != ''
         """)
 
         # Hot-path indexes — used by the scheduler / reply-detection loops.
@@ -502,6 +550,84 @@ def init_db():
         # is gone with the rest: it pulled those values out of `extra` on old
         # `contacts` rows, and the split migration reads the same keys while
         # building each business.
+
+
+# ── Ownership ─────────────────────────────────────────────────────────────────
+#
+# Leads, campaigns and scrape jobs belong to one operator each. The wall is
+# real rows, not a filtered view: two people working the same clinic hold two
+# separate businesses rows. Overlap between them is reported at import time
+# (find_cross_owner_matches) and never merged.
+#
+# Deliberately NOT owner-scoped, and it must stay that way:
+#   unsubscribe_contact / mark_bounced / increment_soft_bounce
+# Suppression is a promise made to the person on the other end, not to one
+# operator's copy of them. Those functions match on the address across every
+# owner, because everyone here sends from the same accounts and the same
+# domain -- a "stop emailing me" that only stopped half the senders would
+# still be a CASL/CAN-SPAM breach, and would look identical to spam from the
+# recipient's side.
+
+OWNER_UNASSIGNED = 0
+
+
+def _default_owner_id(conn) -> int:
+    """The account that inherits everything predating multi-user support."""
+    row = conn.execute(
+        "SELECT id FROM users ORDER BY is_admin DESC, id ASC LIMIT 1"
+    ).fetchone()
+    return row["id"] if row else OWNER_UNASSIGNED
+
+
+def _resolve_owner_id(conn, owner_id=None) -> int:
+    """
+    Settle which operator a write belongs to.
+
+    An explicit id always wins. Falling back is only safe while the answer is
+    unambiguous, so this raises once a second account exists rather than
+    guessing: a caller that forgot to pass an owner would otherwise file one
+    person's leads under the other, silently, and only in production -- the
+    exact failure the wall exists to prevent. Tests and single-operator
+    installs never see it.
+    """
+    if owner_id:
+        return int(owner_id)
+    users = conn.execute("SELECT id FROM users ORDER BY id").fetchall()
+    if len(users) > 1:
+        raise ValueError(
+            "owner_id is required: this database has more than one user, so "
+            "there is no safe default owner for this write"
+        )
+    return users[0]["id"] if users else OWNER_UNASSIGNED
+
+
+def _backfill_owner_ids(conn):
+    """
+    Assign every ownerless row to the founding account.
+
+    Idempotent: only touches rows still sitting at OWNER_UNASSIGNED, which no
+    real user id can equal. On a database with no users yet (a fresh install
+    before first-run setup) there is nobody to assign to, so rows stay
+    unassigned and are picked up the next time init_db runs.
+    """
+    owner = _default_owner_id(conn)
+    if owner == OWNER_UNASSIGNED:
+        return
+
+    # email_leads follows its business rather than the default, so a database
+    # that somehow already holds several owners' rows stays consistent.
+    conn.execute("""
+        UPDATE email_leads SET owner_id = (
+            SELECT b.owner_id FROM businesses b WHERE b.id = email_leads.business_id
+        )
+        WHERE owner_id = ?
+          AND (SELECT b.owner_id FROM businesses b WHERE b.id = email_leads.business_id) != ?
+    """, (OWNER_UNASSIGNED, OWNER_UNASSIGNED))
+
+    for table in ("businesses", "email_leads", "campaigns", "call_campaigns", "scrape_jobs"):
+        conn.execute(
+            f"UPDATE {table} SET owner_id=? WHERE owner_id=?", (owner, OWNER_UNASSIGNED)
+        )
 
 
 # ── One-shot migration: contacts → businesses + per-channel leads ────────────
@@ -906,12 +1032,13 @@ SCRAPE_ACTIVE_STATUSES = ("queued", "claimed", "running", "captcha")
 WORKER_STALE_SECONDS = 45
 
 
-def create_scrape_job(niche, city, max_results=50, auto_import=True) -> int:
+def create_scrape_job(niche, city, max_results=50, auto_import=True, owner_id=None) -> int:
     with get_db() as conn:
         cur = conn.execute("""
-            INSERT INTO scrape_jobs(niche, city, max_results, auto_import, logs)
-            VALUES(?,?,?,?,'[]')
-        """, (niche, city, int(max_results), 1 if auto_import else 0))
+            INSERT INTO scrape_jobs(niche, city, max_results, auto_import, logs, owner_id)
+            VALUES(?,?,?,?,'[]',?)
+        """, (niche, city, int(max_results), 1 if auto_import else 0,
+              _resolve_owner_id(conn, owner_id)))
         return cur.lastrowid
 
 
@@ -1100,13 +1227,14 @@ def get_campaign(cid):
 
 def create_campaign(name, daily_limit=30, start_hour=9, end_hour=17,
                     min_delay=45, max_delay=120, timezone=None, variables='{}',
-                    send_days='0,1,2,3,4'):
+                    send_days='0,1,2,3,4', owner_id=None):
     with get_db() as conn:
         cur = conn.execute(
             "INSERT INTO campaigns(name,daily_limit,send_start_hour,send_end_hour,"
-            "min_delay_secs,max_delay_secs,timezone,variables,send_days) VALUES(?,?,?,?,?,?,?,?,?)",
+            "min_delay_secs,max_delay_secs,timezone,variables,send_days,owner_id) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
             (name, daily_limit, start_hour, end_hour, min_delay, max_delay,
-             timezone, variables, send_days)
+             timezone, variables, send_days, _resolve_owner_id(conn, owner_id))
         )
         return cur.lastrowid
 
@@ -1384,7 +1512,7 @@ def _pick_business_winner(conn, business_id: int):
             )
 
 
-def find_or_create_business(conn, r: dict) -> int:
+def find_or_create_business(conn, r: dict, owner_id=None) -> int:
     """
     Resolve one import row to a business, creating it if genuinely new.
 
@@ -1411,8 +1539,9 @@ def find_or_create_business(conn, r: dict) -> int:
     address = (r.get("address") or "").strip()
     email = (r.get("email") or "").strip().lower()
 
+    owner_id = _resolve_owner_id(conn, owner_id)
     row = find_existing_business(conn, email=email, phone=phone, website=website,
-                                 company=name, address=address)
+                                 company=name, address=address, owner_id=owner_id)
 
     phone_norm = normalize_phone(phone)
     domain = canonical_domain(website)
@@ -1466,19 +1595,19 @@ def find_or_create_business(conn, r: dict) -> int:
 
     return conn.execute("""
         INSERT INTO businesses(
-            name, phone, phone_normalized, website, domain, address, city,
+            owner_id, name, phone, phone_normalized, website, domain, address, city,
             country, category, rating, review_count, web_status,
             source_job_id, extra
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
-        name, phone, phone_norm, website, domain, address,
+        owner_id, name, phone, phone_norm, website, domain, address,
         r.get("city", ""), r.get("country", ""), r.get("category", ""),
         rating, reviews, web_status, r.get("source_job_id") or None,
         json.dumps(r.get("extra", {}) if isinstance(r.get("extra"), dict) else {}),
     )).lastrowid
 
 
-def upsert_businesses(rows):
+def upsert_businesses(rows, owner_id=None):
     """
     Import scraped or pasted rows as businesses, plus an email lead per address.
 
@@ -1498,6 +1627,7 @@ def upsert_businesses(rows):
         accepted = 0
         touched = set()
         ordered_ids = []
+        owner_id = _resolve_owner_id(conn, owner_id)
 
         for r in rows:
             email = (r.get("email") or "").strip().lower()
@@ -1506,7 +1636,7 @@ def upsert_businesses(rows):
             if not any((email, name, (r.get("phone") or "").strip(), (r.get("website") or "").strip())):
                 continue
 
-            business_id = find_or_create_business(conn, r)
+            business_id = find_or_create_business(conn, r, owner_id=owner_id)
             touched.add(business_id)
             if business_id not in ordered_ids:
                 ordered_ids.append(business_id)
@@ -1517,14 +1647,15 @@ def upsert_businesses(rows):
                     status = "active"
                 conn.execute("""
                     INSERT INTO email_leads(
-                        business_id, email, first_name, last_name, status, mx_valid
-                    ) VALUES(:business_id,:email,:first_name,:last_name,:status,:mx_valid)
-                    ON CONFLICT(email) WHERE email IS NOT NULL AND email != '' DO UPDATE SET
+                        business_id, owner_id, email, first_name, last_name, status, mx_valid
+                    ) VALUES(:business_id,:owner_id,:email,:first_name,:last_name,:status,:mx_valid)
+                    ON CONFLICT(owner_id, email) WHERE email IS NOT NULL AND email != '' DO UPDATE SET
                         first_name = COALESCE(NULLIF(excluded.first_name,''), email_leads.first_name),
                         last_name  = COALESCE(NULLIF(excluded.last_name,''),  email_leads.last_name),
                         mx_valid   = COALESCE(excluded.mx_valid,              email_leads.mx_valid)
                 """, {
                     "business_id": business_id,
+                    "owner_id":    owner_id,
                     "email":       email,
                     "first_name":  r.get("first_name", ""),
                     "last_name":   r.get("last_name", ""),
@@ -1873,7 +2004,7 @@ def get_channel_presence(conn, business_ids: list) -> dict:
 _CHANNEL_LABELS = {"email": "Email", "call": "Calling", "whatsapp": "WhatsApp"}
 
 
-def find_cross_channel_conflicts(rows: list, channel: str) -> list:
+def find_cross_channel_conflicts(rows: list, channel: str, owner_id=None) -> list:
     """
     Which of these import rows resolve to a business already active on a
     DIFFERENT channel than the one they're about to be added to.
@@ -1891,6 +2022,7 @@ def find_cross_channel_conflicts(rows: list, channel: str) -> list:
     if not rows:
         return []
     with get_db() as conn:
+        owner_id = _resolve_owner_id(conn, owner_id)
         resolved = []   # (row, business_row) for rows that matched something
         for r in rows:
             existing = find_existing_business(
@@ -1900,6 +2032,7 @@ def find_cross_channel_conflicts(rows: list, channel: str) -> list:
                 website=(r.get("website") or ""),
                 company=(r.get("company") or r.get("name") or ""),
                 address=(r.get("address") or ""),
+                owner_id=owner_id,
             )
             if existing:
                 resolved.append((r, existing))
@@ -1923,7 +2056,7 @@ def find_cross_channel_conflicts(rows: list, channel: str) -> list:
     return conflicts
 
 
-def channel_conflicts_for_businesses(business_ids: list, channel: str) -> list:
+def channel_conflicts_for_businesses(business_ids: list, channel: str, owner_id=None) -> list:
     """
     Which of these businesses already have a presence on a channel other than
     `channel`. Same idea as find_cross_channel_conflicts, for a caller that
@@ -1936,19 +2069,80 @@ def channel_conflicts_for_businesses(business_ids: list, channel: str) -> list:
         return []
     placeholders = ",".join("?" * len(business_ids))
     with get_db() as conn:
+        owner_id = _resolve_owner_id(conn, owner_id)
         presence = get_channel_presence(conn, business_ids)
         names = {r["id"]: r["name"] for r in conn.execute(
-            f"SELECT id, name FROM businesses WHERE id IN ({placeholders})", business_ids,
+            f"SELECT id, name FROM businesses WHERE id IN ({placeholders}) AND owner_id=?",
+            (*business_ids, owner_id),
         )}
     out = []
     for bid in business_ids:
+        # A business this operator doesn't own is not theirs to be told about,
+        # even to the extent of "it exists and is on Calling".
+        if bid not in names:
+            continue
         other = [c for c in ("email", "call", "whatsapp")
                  if c != channel and presence.get(bid, {}).get(c)]
         if other:
             out.append({
-                "business_id": bid, "business_name": names.get(bid, ""),
+                "business_id": bid, "business_name": names[bid],
                 "channels": other, "channel_labels": [_CHANNEL_LABELS[c] for c in other],
             })
+    return out
+
+
+def find_cross_owner_matches(rows: list, owner_id=None) -> list:
+    """
+    Which of these import rows look like a business somebody ELSE is already
+    working. Purely advisory: nothing is merged, nothing is blocked, and the
+    importing operator still gets their own row if they go ahead.
+
+    Deliberately thin on detail -- the business name, which channels it is
+    being worked on, and when it was added. Not the phone number, not the
+    address on file, not any notes or call outcomes. The point is to let two
+    people notice they are about to work the same clinic, not to give either
+    one a window into the other's list.
+
+    Matching is the same identity resolution the import itself uses, so it
+    inherits the same limits: two rows for one real business that share no
+    phone, domain, email or name+locality will not be spotted. That makes this
+    a heads-up, never a guarantee of no overlap.
+    """
+    if not rows:
+        return []
+    with get_db() as conn:
+        owner_id = _resolve_owner_id(conn, owner_id)
+        resolved = []
+        for r in rows:
+            other = find_existing_business(
+                conn,
+                email=(r.get("email") or ""),
+                phone=(r.get("phone") or ""),
+                website=(r.get("website") or ""),
+                company=(r.get("company") or r.get("name") or ""),
+                address=(r.get("address") or ""),
+                exclude_owner_id=owner_id,
+            )
+            if other:
+                resolved.append((r, other))
+
+        if not resolved:
+            return []
+        presence = get_channel_presence(conn, [b["id"] for _, b in resolved])
+        owners = {u["id"]: u["username"] for u in conn.execute("SELECT id, username FROM users")}
+
+    out = []
+    for r, biz in resolved:
+        channels = [c for c in ("email", "call", "whatsapp") if presence[biz["id"]][c]]
+        out.append({
+            "row": r,
+            "business_name": biz["name"],
+            "owner_id": biz["owner_id"],
+            "owner_name": owners.get(biz["owner_id"], "another user"),
+            "channels": channels,
+            "channel_labels": [_CHANNEL_LABELS[c] for c in channels],
+            "since": (biz["created_at"] or "")[:10],
+        })
     return out
 
 
@@ -1967,7 +2161,7 @@ def delete_email_leads(ids: list):
 
 
 def create_email_lead(email: str, first_name='', last_name='', company='',
-                      website='', address='', status='active'):
+                      website='', address='', status='active', owner_id=None):
     """
     Add one address by hand, resolving it to a business the same way an import
     would -- so typing in an address for a clinic already on the list attaches
@@ -1978,13 +2172,14 @@ def create_email_lead(email: str, first_name='', last_name='', company='',
         return None, 'Invalid email address'
     try:
         with get_db() as conn:
+            owner_id = _resolve_owner_id(conn, owner_id)
             business_id = find_or_create_business(conn, {
                 "company": company, "website": website, "address": address,
-            })
+            }, owner_id=owner_id)
             cur = conn.execute(
-                "INSERT INTO email_leads(business_id,email,first_name,last_name,status) "
-                "VALUES(?,?,?,?,?)",
-                (business_id, email, first_name, last_name, status)
+                "INSERT INTO email_leads(business_id,owner_id,email,first_name,last_name,status) "
+                "VALUES(?,?,?,?,?,?)",
+                (business_id, owner_id, email, first_name, last_name, status)
             )
             conn.execute(
                 "UPDATE businesses SET web_status='has_email' WHERE id=? AND web_status=''",
@@ -2056,13 +2251,17 @@ def unsubscribe_contact(email):
     email_lc = email.lower()
     with get_db() as conn:
         conn.execute("UPDATE email_leads SET status='unsubscribed' WHERE email=?", (email_lc,))
+        # IN, not =. An address can now exist once per operator, and a scalar
+        # subquery would silently pick whichever row it saw first -- stopping
+        # one person's campaign while the other kept mailing someone who had
+        # just asked to be left alone, over the same shared accounts.
         conn.execute("""
             UPDATE businesses SET do_not_contact=1
-             WHERE id=(SELECT business_id FROM email_leads WHERE email=?)
+             WHERE id IN (SELECT business_id FROM email_leads WHERE email=?)
         """, (email_lc,))
         conn.execute("""
             UPDATE enrollments SET status='unsubscribed'
-            WHERE email_lead_id=(SELECT id FROM email_leads WHERE email=?)
+            WHERE email_lead_id IN (SELECT id FROM email_leads WHERE email=?)
               AND status NOT IN ('unsubscribed','bounced','completed','replied')
         """, (email_lc,))
 
@@ -2091,9 +2290,11 @@ def get_invalid_mx_contacts():
 def mark_bounced(email):
     with get_db() as conn:
         conn.execute("UPDATE email_leads SET status='bounced' WHERE email=?", (email.lower(),))
+        # IN, not = -- see unsubscribe_contact. A dead address is dead for
+        # everyone who holds it.
         conn.execute("""
             UPDATE enrollments SET status='bounced'
-            WHERE email_lead_id=(SELECT id FROM email_leads WHERE email=?)
+            WHERE email_lead_id IN (SELECT id FROM email_leads WHERE email=?)
               AND status='queued'
         """, (email.lower(),))
 
@@ -2119,7 +2320,7 @@ def increment_soft_bounce(email: str, threshold: int = 3):
             conn.execute("UPDATE email_leads SET status='bounced' WHERE email=?", (email,))
             conn.execute("""
                 UPDATE enrollments SET status='bounced'
-                WHERE email_lead_id=(SELECT id FROM email_leads WHERE email=?)
+                WHERE email_lead_id IN (SELECT id FROM email_leads WHERE email=?)
                   AND status='queued'
             """, (email,))
             conn.execute(
@@ -2746,11 +2947,17 @@ def get_today_count():
 
 
 def find_existing_business(conn, email="", phone="", website="", company="", address="",
-                           exclude_id=None):
+                           exclude_id=None, owner_id=None, exclude_owner_id=None):
     """
     Find the business row matching these details. Returns a row or None.
     Read-only -- never creates a row; find_or_create_business wraps this with
     the create-if-missing step.
+
+    Searches one operator's rows at a time. Pass `owner_id` to search that
+    operator's own list (the import path: resolve, then merge or create).
+    Pass `exclude_owner_id` to search everyone else's instead, which is how
+    cross-owner overlap is spotted -- that mode is strictly a lookup, and no
+    caller may write to what it returns.
 
     Four keys, strongest first, because no single field covers the list:
 
@@ -2770,12 +2977,18 @@ def find_existing_business(conn, email="", phone="", website="", company="", add
          leads that have neither of the above. Never company alone: that would
          merge "Main Street Dental" in St John's with the one in Toronto.
     """
+    if exclude_owner_id is not None:
+        owner_op, owner_arg = "!=", int(exclude_owner_id)
+    else:
+        owner_op, owner_arg = "=", _resolve_owner_id(conn, owner_id)
+
     email = (email or "").strip().lower()
     if email and "@" in email:
-        row = conn.execute("""
+        row = conn.execute(f"""
             SELECT b.* FROM businesses b JOIN email_leads el ON el.business_id=b.id
-             WHERE el.email=? AND (? IS NULL OR b.id != ?) LIMIT 1
-        """, (email, exclude_id, exclude_id or -1)).fetchone()
+             WHERE el.email=? AND b.owner_id {owner_op} ?
+               AND (? IS NULL OR b.id != ?) LIMIT 1
+        """, (email, owner_arg, exclude_id, exclude_id or -1)).fetchone()
         if row:
             return row
 
@@ -2783,8 +2996,8 @@ def find_existing_business(conn, email="", phone="", website="", company="", add
     if phone_key:
         row = conn.execute(
             "SELECT * FROM businesses WHERE phone_normalized=? AND phone_normalized!='' "
-            "AND (? IS NULL OR id != ?) LIMIT 1",
-            (phone_key, exclude_id, exclude_id or -1),
+            f"AND owner_id {owner_op} ? AND (? IS NULL OR id != ?) LIMIT 1",
+            (phone_key, owner_arg, exclude_id, exclude_id or -1),
         ).fetchone()
         if row:
             return row
@@ -2797,8 +3010,8 @@ def find_existing_business(conn, email="", phone="", website="", company="", add
     if domain and not is_freemail(domain):
         row = conn.execute(
             "SELECT * FROM businesses WHERE domain=? AND domain!='' "
-            "AND (? IS NULL OR id != ?) LIMIT 1",
-            (domain, exclude_id, exclude_id or -1),
+            f"AND owner_id {owner_op} ? AND (? IS NULL OR id != ?) LIMIT 1",
+            (domain, owner_arg, exclude_id, exclude_id or -1),
         ).fetchone()
         if row:
             return row
@@ -2807,8 +3020,9 @@ def find_existing_business(conn, email="", phone="", website="", company="", add
     place    = _locality_key(address)
     if name_key and place:
         for row in conn.execute(
-            "SELECT * FROM businesses WHERE name!='' AND (? IS NULL OR id != ?)",
-            (exclude_id, exclude_id or -1),
+            f"SELECT * FROM businesses WHERE name!='' AND owner_id {owner_op} ? "
+            "AND (? IS NULL OR id != ?)",
+            (owner_arg, exclude_id, exclude_id or -1),
         ).fetchall():
             if (normalize_company(row["name"]) == name_key
                     and _locality_key(row["address"]) == place):
@@ -3100,11 +3314,12 @@ _DEFAULT_SCRIPT_SECTIONS = [
 ]
 
 
-def create_call_campaign(name: str, notes: str = "") -> int:
+def create_call_campaign(name: str, notes: str = "", owner_id=None) -> int:
     with get_db() as conn:
         cur = conn.execute(
-            "INSERT INTO call_campaigns(name, notes) VALUES(?,?)",
-            (name.strip() or "Untitled call campaign", notes or ""),
+            "INSERT INTO call_campaigns(name, notes, owner_id) VALUES(?,?,?)",
+            (name.strip() or "Untitled call campaign", notes or "",
+             _resolve_owner_id(conn, owner_id)),
         )
         return cur.lastrowid
 
@@ -3704,7 +3919,7 @@ def _render_wa_template(template: str, business: dict, signal_detail: str) -> st
             .replace("{{signal_detail}}", signal_detail or ""))
 
 
-def upsert_wa_leads(rows: list, default_country: str = "") -> tuple:
+def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None) -> tuple:
     """
     Import WhatsApp leads: resolve/create the business the same way any
     channel's import does (find_or_create_business, so a clinic already
@@ -3721,6 +3936,7 @@ def upsert_wa_leads(rows: list, default_country: str = "") -> tuple:
         accepted = 0
         touched = set()
         ordered_ids = []
+        owner_id = _resolve_owner_id(conn, owner_id)
 
         for r in rows:
             name = (r.get("company") or r.get("name") or "").strip()
@@ -3730,7 +3946,7 @@ def upsert_wa_leads(rows: list, default_country: str = "") -> tuple:
             if not any((email, name, phone, website)):
                 continue
 
-            business_id = find_or_create_business(conn, r)
+            business_id = find_or_create_business(conn, r, owner_id=owner_id)
             touched.add(business_id)
             if business_id not in ordered_ids:
                 ordered_ids.append(business_id)
@@ -3740,14 +3956,14 @@ def upsert_wa_leads(rows: list, default_country: str = "") -> tuple:
                 if status in ("no_website", "form_only", "no_email", ""):
                     status = "active"
                 conn.execute("""
-                    INSERT INTO email_leads(business_id, email, first_name, last_name, status, mx_valid)
-                    VALUES(:business_id,:email,:first_name,:last_name,:status,:mx_valid)
-                    ON CONFLICT(email) WHERE email IS NOT NULL AND email != '' DO UPDATE SET
+                    INSERT INTO email_leads(business_id, owner_id, email, first_name, last_name, status, mx_valid)
+                    VALUES(:business_id,:owner_id,:email,:first_name,:last_name,:status,:mx_valid)
+                    ON CONFLICT(owner_id, email) WHERE email IS NOT NULL AND email != '' DO UPDATE SET
                         first_name = COALESCE(NULLIF(excluded.first_name,''), email_leads.first_name),
                         last_name  = COALESCE(NULLIF(excluded.last_name,''),  email_leads.last_name),
                         mx_valid   = COALESCE(excluded.mx_valid,              email_leads.mx_valid)
                 """, {
-                    "business_id": business_id, "email": email,
+                    "business_id": business_id, "owner_id": owner_id, "email": email,
                     "first_name": r.get("first_name", ""), "last_name": r.get("last_name", ""),
                     "status": status, "mx_valid": r.get("mx_valid"),
                 })
@@ -4174,9 +4390,39 @@ def list_users():
         ).fetchall()]
 
 
-def delete_user(uid: int):
+def owned_row_counts(uid: int) -> dict:
+    """What this user still owns, by table. Empty dict means nothing."""
+    counts = {}
+    with get_db() as conn:
+        for table, label in (("businesses", "leads"), ("campaigns", "campaigns"),
+                             ("call_campaigns", "call campaigns"),
+                             ("scrape_jobs", "scrape jobs")):
+            n = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE owner_id=?", (uid,)
+            ).fetchone()[0]
+            if n:
+                counts[label] = n
+    return counts
+
+
+def delete_user(uid: int) -> tuple:
+    """
+    Remove a user, but never their work. Returns (ok, error).
+
+    Deleting an operator who still owns leads would either orphan those rows
+    where nobody can reach them, or silently hand someone else's outreach --
+    replies, call outcomes, unsubscribes -- to whoever looks next. Both are
+    worse than refusing, so the rows have to be dealt with first.
+    """
+    owned = owned_row_counts(uid)
+    if owned:
+        detail = ", ".join(f"{n} {label}" for label, n in owned.items())
+        return False, (f"This user still owns {detail}. Reassign or delete "
+                       f"that data first - deleting the account would leave "
+                       f"it unreachable.")
     with get_db() as conn:
         conn.execute("DELETE FROM users WHERE id=?", (uid,))
+    return True, None
 
 
 def change_password(uid: int, new_password: str):

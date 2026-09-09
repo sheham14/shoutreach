@@ -739,7 +739,9 @@ def api_create_user():
 def api_delete_user(uid):
     if uid == session["user_id"]:
         return jsonify({"error": "Cannot delete your own account"}), 400
-    db.delete_user(uid)
+    ok, err = db.delete_user(uid)
+    if not ok:
+        return jsonify({"error": err}), 409
     return jsonify({"ok": True})
 
 
