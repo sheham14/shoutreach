@@ -506,6 +506,9 @@ function mergeImportResults(first, final) {
     inserted:   (first.inserted || 0) + (final.inserted || 0),
     invalid_mx: (first.invalid_mx || 0) + (final.invalid_mx || 0),
     conflicts:  [],
+    // Only the first call runs the cross-owner check; the resend is the
+    // operator confirming rows they have already been told about.
+    overlaps:   first.overlaps || [],
   };
 }
 
@@ -516,6 +519,7 @@ function reportImport(data) {
   toast(`Imported ${data.inserted} contacts ✓${inv}${held}`);
   closeModal('modal-import');
   loadContacts();
+  notifyCrossOwnerOverlap(data);
 }
 
 // ── Add / Edit ────────────────────────────────────────────────────────────────

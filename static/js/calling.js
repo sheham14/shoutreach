@@ -248,6 +248,7 @@ async function submitAddLeads() {
     }
     const res = await _addCallCampaignMembers(imported.business_ids || []);
     toast(`Added ${(res && res.added) || 0} lead${((res && res.added) || 0) === 1 ? '' : 's'}`);
+    notifyCrossOwnerOverlap(imported);
 
   } else {
     const file = document.getElementById('acl-csv').files[0];
@@ -266,6 +267,7 @@ async function submitAddLeads() {
     imported = await _resolveImportConflicts(imported);
     const res = await _addCallCampaignMembers(imported.business_ids || []);
     toast(`Imported ${imported.inserted || 0}, added ${(res && res.added) || 0} to the campaign`);
+    notifyCrossOwnerOverlap(imported);
   }
 
   closeModal('modal-add-call-leads');
@@ -293,6 +295,7 @@ async function _resolveImportConflicts(first) {
   return {
     inserted: (first.inserted || 0) + (final.inserted || 0),
     business_ids: [...(first.business_ids || []), ...(final.business_ids || [])],
+    overlaps: first.overlaps || [],
   };
 }
 

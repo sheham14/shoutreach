@@ -80,6 +80,29 @@ async function confirmChannelConflicts(res, resend) {
   return resend();
 }
 
+// Somebody else is already working one of these businesses.
+//
+// Deliberately not a confirm(): the other operator's list is walled off, not
+// authoritative over yours, so this never blocks an import and never offers to
+// merge anything. It fires after the rows have already landed, purely so two
+// people don't turn up at the same clinic a week apart without knowing.
+function notifyCrossOwnerOverlap(res) {
+  const found = (res && res.overlaps) || [];
+  if (!found.length) return;
+  const lines = found.slice(0, 8).map(m => {
+    const where = (m.channel_labels || []).join(', ') || 'their list';
+    const since = m.since ? `, added ${m.since}` : '';
+    return `  ${m.business_name || 'Unnamed business'} — ${m.owner_name} has this on ${where}${since}`;
+  }).join('\n');
+  const more = found.length > 8 ? `\n  …and ${found.length - 8} more` : '';
+  alert(
+    `Heads up: ${found.length} of these ${found.length === 1 ? 'is' : 'are'} ` +
+    `already on someone else's list.\n\n${lines}${more}\n\n` +
+    `They have been added to yours anyway — nothing was merged or shared. ` +
+    `This is only so you don't both approach the same business.`
+  );
+}
+
 // ── CSRF token bootstrap ──────────────────────────────────────────────────────
 let _csrfToken = null;
 let _csrfPromise = null;

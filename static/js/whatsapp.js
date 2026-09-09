@@ -408,4 +408,5 @@ async function _finishWaImport(first, country) {
   closeModal('modal-import-wa');
   await refreshWaCounts();
   loadWaBucket();
+  notifyCrossOwnerOverlap(first);
 }
