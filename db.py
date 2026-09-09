@@ -190,7 +190,15 @@ def init_db():
                 signal_detail    TEXT    NOT NULL DEFAULT '',
                 signal_confirmed INTEGER NOT NULL DEFAULT 0,
                 draft_message    TEXT    NOT NULL DEFAULT '',
+                -- Which A/B arm of the template this lead was drafted from
+                -- ('A', 'B', ...), or '' when that template has only one arm.
+                -- A label rather than an index: arms can be deleted, and a
+                -- number would silently re-point old leads at different copy.
                 template_variant TEXT    NOT NULL DEFAULT '',
+                -- Whether the AI variety pass rewrote it. Kept apart from the
+                -- arm because a paraphrase is a different message: folding the
+                -- two together would credit an arm for copy it didn't write.
+                paraphrased      INTEGER NOT NULL DEFAULT 0,
                 sent_date        TEXT    DEFAULT NULL,
                 replied          INTEGER NOT NULL DEFAULT 0,
                 followup_count   INTEGER NOT NULL DEFAULT 0,
@@ -217,6 +225,7 @@ def init_db():
                 kind             TEXT    NOT NULL DEFAULT 'opener',
                 message          TEXT    NOT NULL DEFAULT '',
                 template_variant TEXT    NOT NULL DEFAULT '',
+                paraphrased      INTEGER NOT NULL DEFAULT 0,
                 sent_at          TEXT    NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -433,6 +442,14 @@ def init_db():
             "ALTER TABLE campaigns       ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE call_campaigns  ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE scrape_jobs     ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
+            # template_variant used to record whether the AI paraphrase ran.
+            # It now records which A/B arm was used, so the paraphrase fact
+            # needs somewhere of its own. Existing rows report 0: their real
+            # value is in template_variant, which the stats view reads as an
+            # arm named 'paraphrased' or 'template' rather than pretending to
+            # know better.
+            "ALTER TABLE wa_leads ADD COLUMN paraphrased INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE wa_log   ADD COLUMN paraphrased INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -4042,23 +4059,166 @@ _WA_TEMPLATE_SETTINGS_KEYS = {
     "followup": ("wa_template_followup", _DEFAULT_WA_TEMPLATE_FOLLOWUP),
 }
 
+WA_FOLLOWUP_DAYS_KEY = "wa_followup_days"
+WA_DEFAULT_FOLLOWUP_DAYS = 3
+WA_MAX_ARMS = 4
 
-def get_wa_templates() -> dict:
-    """The three editable templates, seeded with real starting copy on first read."""
+# A/B arms are labelled, not numbered, because the label is what gets written
+# onto every lead and every log row. Renumbering after deleting an arm would
+# silently re-attribute history to the wrong copy.
+WA_ARM_LABELS = ("A", "B", "C", "D")
+
+
+def _wa_owner_key(base: str, owner_id: int) -> str:
+    """
+    Per-operator settings key.
+
+    Suffixed rather than given its own table: these are three strings and a
+    number per person, and the fallback below means nothing has to be migrated.
+    """
+    return f"{base}:{int(owner_id)}"
+
+
+def _wa_setting(settings: dict, base: str, owner_id: int, default):
+    """
+    This operator's value, falling back to the shared one, then the default.
+
+    The shared key is what every install had before templates were per-person.
+    Falling back to it means the existing customised copy carries over for the
+    operator who wrote it, and a second operator starts from that same copy
+    rather than from factory text -- a better starting point than the default,
+    and it costs nothing to abandon by saving their own.
+    """
+    own = settings.get(_wa_owner_key(base, owner_id))
+    if own not in (None, ""):
+        return own
+    shared = settings.get(base)
+    return shared if shared not in (None, "") else default
+
+
+def _wa_arms(raw, default: str) -> list:
+    """
+    Normalise a stored template into its list of arms.
+
+    Stored as JSON when there is more than one arm and as a bare string when
+    there is one, so a single-arm template is byte-identical to what the
+    pre-A/B version wrote and downgrading loses nothing.
+    """
+    if isinstance(raw, str) and raw.strip().startswith("["):
+        try:
+            parsed = json.loads(raw)
+            arms = [a for a in parsed if isinstance(a, str) and a.strip()]
+            if arms:
+                return arms[:WA_MAX_ARMS]
+        except (ValueError, TypeError):
+            pass
+    if isinstance(raw, str) and raw.strip():
+        return [raw]
+    return [default]
+
+
+def get_wa_templates(owner_id=None) -> dict:
+    """
+    This operator's templates, each as a list of A/B arms, plus their follow-up
+    interval. A single-arm list is the no-testing case and is the default.
+    """
     settings = get_settings()
-    return {
-        key: settings.get(setting_key, default)
+    owner_id = _owner_or_default(owner_id)
+    out = {
+        key: _wa_arms(_wa_setting(settings, setting_key, owner_id, default), default)
         for key, (setting_key, default) in _WA_TEMPLATE_SETTINGS_KEYS.items()
     }
+    out["followup_days"] = get_wa_followup_days(owner_id, settings)
+    return out
 
 
-def save_wa_templates(templates: dict):
+def get_wa_followup_days(owner_id=None, settings=None) -> int:
+    settings = get_settings() if settings is None else settings
+    raw = _wa_setting(settings, WA_FOLLOWUP_DAYS_KEY,
+                      _owner_or_default(owner_id), WA_DEFAULT_FOLLOWUP_DAYS)
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return WA_DEFAULT_FOLLOWUP_DAYS
+
+
+def save_wa_templates(templates: dict, owner_id=None, followup_days=None):
+    """Write this operator's own copy. Never touches the shared fallback."""
+    owner_id = _owner_or_default(owner_id)
     updates = {}
     for key, (setting_key, _default) in _WA_TEMPLATE_SETTINGS_KEYS.items():
-        if key in templates:
-            updates[setting_key] = templates[key]
+        if key not in templates:
+            continue
+        value = templates[key]
+        arms = [value] if isinstance(value, str) else [
+            a for a in (value or []) if isinstance(a, str) and a.strip()
+        ]
+        arms = arms[:WA_MAX_ARMS]
+        if not arms:
+            continue
+        updates[_wa_owner_key(setting_key, owner_id)] = (
+            arms[0] if len(arms) == 1 else json.dumps(arms)
+        )
+    if followup_days is not None:
+        try:
+            updates[_wa_owner_key(WA_FOLLOWUP_DAYS_KEY, owner_id)] = str(
+                max(1, int(followup_days))
+            )
+        except (TypeError, ValueError):
+            pass
     if updates:
         save_settings(updates)
+
+
+def pick_wa_arm(arms: list, position: int) -> tuple:
+    """
+    Which arm this lead gets. Returns (label, text).
+
+    Cycled by position rather than chosen at random: on the batch sizes this
+    runs at -- often a handful of leads -- random assignment routinely deals
+    every lead to one arm, and a test with nothing in the other side answers
+    nothing.
+    """
+    if not arms:
+        return "", ""
+    idx = position % len(arms)
+    label = WA_ARM_LABELS[idx] if len(arms) > 1 else ""
+    return label, arms[idx]
+
+
+def get_wa_variant_stats(owner_id=None) -> list:
+    """
+    Reply rate per template arm -- the entire point of running a test.
+
+    Counts leads, not messages: a lead that got an opener and three follow-ups
+    is one prospect who did or didn't reply, and counting each send separately
+    would make a long cadence look like a persuasive template. Paraphrased and
+    plain are reported apart, because an AI rewrite is a different message and
+    folding it in would confound the arm it was rewritten from.
+    """
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT COALESCE(NULLIF(w.template_variant,''),'-') AS arm,
+                   w.paraphrased                               AS paraphrased,
+                   COUNT(*)                                    AS sent,
+                   SUM(w.replied)                              AS replied
+              FROM wa_leads w JOIN businesses b ON b.id = w.business_id
+             WHERE b.owner_id = ? AND w.sent_date IS NOT NULL
+             GROUP BY arm, w.paraphrased
+             ORDER BY arm
+        """, (_resolve_owner_id(conn, owner_id),)).fetchall()
+    out = []
+    for r in rows:
+        sent = r["sent"] or 0
+        replied = r["replied"] or 0
+        out.append({
+            "arm": r["arm"],
+            "paraphrased": bool(r["paraphrased"]),
+            "sent": sent,
+            "replied": replied,
+            "reply_rate": round(replied / sent * 100, 1) if sent else 0.0,
+        })
+    return out
 
 
 def _render_wa_template(template: str, business: dict, signal_detail: str) -> str:
@@ -4155,7 +4315,7 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None) -> tup
 _WA_LEAD_COLUMNS = """
     w.id, w.business_id, w.wa_number, w.country, w.number_type, w.wa_status,
     w.signal_type, w.signal_detail, w.signal_confirmed, w.draft_message,
-    w.template_variant, w.sent_date, w.replied, w.followup_count, w.paused,
+    w.template_variant, w.paraphrased, w.sent_date, w.replied, w.followup_count, w.paused,
     w.moved_to, w.notes, w.created_at,
     b.name AS company, b.website, b.address, b.city, b.phone, b.category,
     b.rating, b.review_count, b.do_not_contact
@@ -4262,12 +4422,14 @@ def get_wa_leads_ready_to_draft(limit: int = 200, owner_id=None) -> list:
         return [dict(r) for r in rows]
 
 
-def save_wa_draft(wa_lead_id: int, message: str, template_variant: str = ""):
+def save_wa_draft(wa_lead_id: int, message: str, template_variant: str = "",
+                  paraphrased: bool = False):
     with get_db() as conn:
         conn.execute("""
-            UPDATE wa_leads SET draft_message=?, template_variant=?, wa_status='drafted'
+            UPDATE wa_leads SET draft_message=?, template_variant=?, paraphrased=?,
+                                wa_status='drafted'
              WHERE id=?
-        """, (message, template_variant, wa_lead_id))
+        """, (message, template_variant, 1 if paraphrased else 0, wa_lead_id))
 
 
 def update_wa_message(wa_lead_id: int, message: str):
@@ -4276,7 +4438,8 @@ def update_wa_message(wa_lead_id: int, message: str):
         conn.execute("UPDATE wa_leads SET draft_message=? WHERE id=?", (message, wa_lead_id))
 
 
-def mark_wa_sent(wa_lead_id: int, message: str, kind: str = "opener", template_variant: str = ""):
+def mark_wa_sent(wa_lead_id: int, message: str, kind: str = "opener",
+                 template_variant: str = "", paraphrased: bool = False):
     """
     Records that the operator clicked Open in WhatsApp -- an approximation,
     not delivery confirmation; see wa_log's comment in init_db. Follow-ups
@@ -4285,9 +4448,9 @@ def mark_wa_sent(wa_lead_id: int, message: str, kind: str = "opener", template_v
     """
     with get_db() as conn:
         conn.execute("""
-            INSERT INTO wa_log(wa_lead_id, kind, message, template_variant)
-            VALUES(?,?,?,?)
-        """, (wa_lead_id, kind, message, template_variant))
+            INSERT INTO wa_log(wa_lead_id, kind, message, template_variant, paraphrased)
+            VALUES(?,?,?,?,?)
+        """, (wa_lead_id, kind, message, template_variant, 1 if paraphrased else 0))
         if kind == "followup":
             conn.execute("""
                 UPDATE wa_leads SET

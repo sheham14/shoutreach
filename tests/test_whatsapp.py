@@ -365,15 +365,78 @@ def test_templates(db, client, token):
     templates = db.get_wa_templates()
     check("all three templates exist out of the box",
           all(k in templates for k in ("gap", "no_gap", "followup")))
-    check("they are not empty placeholders", all(templates[k].strip() for k in templates))
+    check("each is a list of A/B arms", all(
+        isinstance(templates[k], list) and templates[k]
+        for k in ("gap", "no_gap", "followup")))
+    check("they are not empty placeholders", all(
+        arm.strip() for k in ("gap", "no_gap", "followup") for arm in templates[k]))
+    check("and one arm is the default, so nothing is being tested yet",
+          all(len(templates[k]) == 1 for k in ("gap", "no_gap", "followup")))
 
     s, body = api(client, token, "put", "/api/wa/templates",
                  json={"templates": {"gap": "New gap template {{business_name}}"}})
     check("saving succeeds", s == 200, str(body))
     s, body = api(client, token, "get", "/api/wa/templates")
-    check("the change round-trips", body["gap"] == "New gap template {{business_name}}", str(body))
+    check("the change round-trips", body["gap"] == ["New gap template {{business_name}}"],
+          str(body))
     check("the other templates are untouched by a partial save",
           body["no_gap"] == templates["no_gap"], str(body))
+
+    s, body = api(client, token, "put", "/api/wa/templates",
+                 json={"templates": {"gap": ["Arm A {{business_name}}", "Arm B {{business_name}}"]},
+                       "followup_days": 5})
+    check("a second arm saves", s == 200, str(body))
+    s, body = api(client, token, "get", "/api/wa/templates")
+    check("both arms come back", body["gap"] == ["Arm A {{business_name}}", "Arm B {{business_name}}"],
+          str(body))
+    check("the follow-up interval saves alongside them", body["followup_days"] == 5, str(body))
+
+    s, body = api(client, token, "put", "/api/wa/templates",
+                 json={"templates": {"gap": []}})
+    check("a template cannot be emptied", s == 400, f"{s} {body}")
+
+
+def test_ab_arms(db, client, token):
+    print("\n17. A/B ARMS ARE DEALT OUT AND MEASURED")
+    api(client, token, "put", "/api/wa/templates",
+        json={"templates": {"gap": ["Arm A for {{business_name}}",
+                                    "Arm B for {{business_name}}"]}})
+
+    db.upsert_wa_leads([{"company": f"AB Clinic {i}", "phone": f"05011122{i:02d}"}
+                        for i in range(4)], default_country="AE")
+    for lead in db.get_wa_leads(status=""):
+        db.confirm_wa_signal(lead["id"], "gap_found", "no booking link")
+
+    s, body = api(client, token, "post", "/api/wa/draft-batch", json={"limit": 50})
+    check("the batch drafts", s == 200 and body["drafted"] >= 4, str(body))
+    check("it reports which arms it used", set(body.get("arms") or []) == {"A", "B"}, str(body))
+
+    drafted = [l for l in db.get_wa_leads(status="drafted")
+               if (l["company"] or "").startswith("AB Clinic")]
+    labels = [l["template_variant"] for l in drafted]
+    check("every lead carries an arm label", all(l in ("A", "B") for l in labels), f"{labels}")
+    check("and the arms are dealt evenly rather than at random",
+          labels.count("A") == labels.count("B"), f"{labels}")
+    check("the message a lead got matches the arm it was given", all(
+        ("Arm A" in l["draft_message"]) == (l["template_variant"] == "A") for l in drafted))
+
+    # A follow-up must not switch a lead to the other arm mid-conversation.
+    lead_b = next(l for l in drafted if l["template_variant"] == "B")
+    api(client, token, "post", f"/api/wa/leads/{lead_b['id']}/sent", json={"kind": "opener"})
+    db.correct_wa_sent_date(lead_b["id"], "2020-01-01 09:00:00")
+    s, body = api(client, token, "get", "/api/wa/followups-due")
+    rows = body if isinstance(body, list) else (body or {}).get("due", [])
+    due = [d for d in rows if d["id"] == lead_b["id"]]
+    check("the lead is due a follow-up", len(due) == 1, str(body)[:160])
+    check("and its follow-up draft comes from its own arm, not the other one",
+          due and "{{business_name}}" not in due[0]["followup_draft"],
+          str(due)[:160])
+
+    db.mark_wa_replied(lead_b["id"], True)
+    stats = db.get_wa_variant_stats()
+    arm_b = [s for s in stats if s["arm"] == "B"]
+    check("the stats attribute the reply to the arm that earned it",
+          len(arm_b) == 1 and arm_b[0]["replied"] == 1, f"{stats}")
 
 
 def test_import_and_cross_channel(db, client, token):
@@ -418,7 +481,7 @@ def test_import_and_cross_channel(db, client, token):
 
 
 def test_http_auth(app_mod):
-    print("\n17. THE ROUTES ARE ADMIN-ONLY")
+    print("\n18. THE ROUTES NEED A LOGIN")
     anon = app_mod.app.test_client()
     for path in ("/api/wa/leads", "/api/wa/summary", "/api/wa/followups-due",
                  "/api/wa/templates"):
@@ -440,6 +503,7 @@ def main():
         test_move_lead(db, client, token)
         test_templates(db, client, token)
         test_import_and_cross_channel(db, client, token)
+        test_ab_arms(db, client, token)
         test_http_auth(app_mod)
     finally:
         shutil.rmtree(work, ignore_errors=True)

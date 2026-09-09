@@ -488,6 +488,27 @@ def test_routes_enforce_the_wall(work):
     check("variable coverage counts only your own contacts",
           (cover or {}).get("total") == 1, f"got total={(cover or {}).get('total')}")
 
+    # ── WhatsApp templates are personal ──────────────────────────────────────
+    print("\n13. EACH OPERATOR WRITES THEIR OWN MESSAGES")
+    saved = ca.put("/api/wa/templates", headers=hdr, json={
+        "templates": {"gap": ["Alice's own opener for {{business_name}}"]},
+        "followup_days": 9,
+    })
+    check("an operator can save their own templates without being an admin",
+          saved.status_code == 200, f"got {saved.status_code} {saved.get_json()}")
+
+    mine = ca.get("/api/wa/templates").get_json()
+    theirs = cb.get("/api/wa/templates").get_json()
+    check("their own copy is what they get back",
+          mine["gap"] == ["Alice's own opener for {{business_name}}"], f"got {mine['gap']}")
+    check("the other operator does not see it", "Alice" not in json.dumps(theirs["gap"]),
+          f"got {theirs['gap']}")
+    check("nor inherits their follow-up interval",
+          mine["followup_days"] == 9 and theirs["followup_days"] != 9,
+          f"mine={mine['followup_days']} theirs={theirs['followup_days']}")
+    check("and the other operator still has working copy of their own",
+          bool(theirs["gap"] and theirs["gap"][0].strip()), f"got {theirs['gap']}")
+
 
 def b_business_id(db_mod, owner):
     """The business id behind that operator's only lead."""

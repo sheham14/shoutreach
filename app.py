@@ -2141,7 +2141,17 @@ def api_call_ics(cid):
 # here ever needs this app to reach WhatsApp on its own, stop and flag it
 # rather than build it; see docs/WhatsApp Module Handover.md.
 
-_WA_DEFAULT_FOLLOWUP_DAYS = 3
+def _wa_arm_position(lead) -> int:
+    """
+    Which A/B arm this lead already belongs to, as an index.
+
+    Follow-ups look this up rather than re-cycling, so a lead stays with the
+    arm its opener came from. Anything unrecognised -- a lead drafted before
+    A/B existed, or one whose arm has since been deleted -- falls to the first
+    arm, which is the closest thing to "the template" there is.
+    """
+    label = (lead.get("template_variant") or "").strip()
+    return db.WA_ARM_LABELS.index(label) if label in db.WA_ARM_LABELS else 0
 
 
 @app.route("/api/wa/import", methods=["POST"])
@@ -2217,14 +2227,18 @@ def api_wa_summary():
 @app.route("/api/wa/followups-due", methods=["GET"])
 @login_required
 def api_wa_followups_due():
-    days = int(db.get_settings().get("wa_followup_days", _WA_DEFAULT_FOLLOWUP_DAYS))
+    days = db.get_wa_followup_days(me())
     due = db.get_wa_followups_due(days=days, owner_id=me())
     # The follow-up template only ever needs the business name, so it's
     # rendered here rather than asking the frontend to duplicate
     # db._render_wa_template's placeholder logic.
-    template = db.get_wa_templates()["followup"]
+    # The follow-up keeps the arm the opener was drafted from, so a lead is
+    # worked by one voice the whole way through and the arm's reply rate
+    # measures a conversation rather than a mixture.
+    followup_arms = db.get_wa_templates(owner_id=me())["followup"]
     for lead in due:
-        lead["followup_draft"] = db._render_wa_template(template, {"name": lead["company"]}, "")
+        _label, text = db.pick_wa_arm(followup_arms, _wa_arm_position(lead))
+        lead["followup_draft"] = db._render_wa_template(text, {"name": lead["company"]}, "")
     return jsonify(due)
 
 
@@ -2278,12 +2292,19 @@ def api_wa_draft_batch():
     if not leads:
         return jsonify({"ok": True, "drafted": 0})
 
-    templates = db.get_wa_templates()
-    base_messages = []
+    templates = db.get_wa_templates(owner_id=me())
+    # Arms are cycled per signal type, not across the whole batch: a batch that
+    # happened to be mostly gap_found would otherwise deal the gap template's
+    # arms unevenly and the comparison would be against different sample sizes.
+    seen_per_kind = {"gap": 0, "no_gap": 0}
+    base_messages, arm_labels = [], []
     for lead in leads:
-        template = templates["gap"] if lead["signal_type"] == "gap_found" else templates["no_gap"]
+        kind = "gap" if lead["signal_type"] == "gap_found" else "no_gap"
+        label, text = db.pick_wa_arm(templates[kind], seen_per_kind[kind])
+        seen_per_kind[kind] += 1
+        arm_labels.append(label)
         base_messages.append(db._render_wa_template(
-            template, {"name": lead["company"]}, lead["signal_detail"],
+            text, {"name": lead["company"]}, lead["signal_detail"],
         ))
 
     final_messages = base_messages
@@ -2304,11 +2325,13 @@ def api_wa_draft_batch():
         logging.warning("WhatsApp paraphrase batch failed: %s", exc)
         paraphrase_error = "Paraphrase call failed — used the plain template instead"
 
-    variant = "paraphrased" if final_messages is not base_messages else "template"
-    for lead, message in zip(leads, final_messages):
-        db.save_wa_draft(lead["id"], message, variant)
+    paraphrased = final_messages is not base_messages
+    for lead, message, label in zip(leads, final_messages, arm_labels):
+        db.save_wa_draft(lead["id"], message, label, paraphrased=paraphrased)
 
-    result = {"ok": True, "drafted": len(leads), "variant": variant}
+    result = {"ok": True, "drafted": len(leads),
+              "variant": "paraphrased" if paraphrased else "template",
+              "arms": sorted({a for a in arm_labels if a})}
     if paraphrase_error:
         result["note"] = paraphrase_error
     return jsonify(result)
@@ -2343,7 +2366,9 @@ def api_wa_mark_sent(wid):
     if not lead:
         return jsonify({"ok": False, "error": "Not found"}), 404
     message = (d.get("message") or lead.get("draft_message") or "").strip()
-    db.mark_wa_sent(wid, message, kind=kind, template_variant=lead.get("template_variant", ""))
+    db.mark_wa_sent(wid, message, kind=kind,
+                    template_variant=lead.get("template_variant", ""),
+                    paraphrased=bool(lead.get("paraphrased")))
     return jsonify({"ok": True})
 
 
@@ -2396,16 +2421,37 @@ def api_wa_move_lead(wid):
 @app.route("/api/wa/templates", methods=["GET"])
 @login_required
 def api_wa_get_templates():
-    return jsonify(db.get_wa_templates())
+    payload = db.get_wa_templates(owner_id=me())
+    payload["stats"] = db.get_wa_variant_stats(owner_id=me())
+    payload["max_arms"] = db.WA_MAX_ARMS
+    return jsonify(payload)
 
 
 @app.route("/api/wa/templates", methods=["PUT"])
-@admin_required
+@login_required
 def api_wa_save_templates():
-    templates = (request.json or {}).get("templates") or {}
+    """
+    Each operator's own copy and their own follow-up interval. Not admin-only:
+    these are the words one person sends under their own name, and the interval
+    is the rhythm they work at -- neither is anyone else's to set.
+
+    The interval lives here rather than in /api/settings so changing it doesn't
+    require the rights to change the global sending rules alongside it.
+    """
+    d = request.json or {}
+    templates = d.get("templates") or {}
     if not isinstance(templates, dict):
         return jsonify({"ok": False, "error": "templates must be an object"}), 400
-    db.save_wa_templates(templates)
+    for key, value in templates.items():
+        arms = [value] if isinstance(value, str) else value
+        if not isinstance(arms, list) or not any(
+            isinstance(a, str) and a.strip() for a in arms
+        ):
+            return jsonify({
+                "ok": False,
+                "error": f"The {key.replace('_', ' ')} template needs at least one message",
+            }), 400
+    db.save_wa_templates(templates, owner_id=me(), followup_days=d.get("followup_days"))
     return jsonify({"ok": True})
 
 

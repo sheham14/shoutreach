@@ -291,11 +291,16 @@ async function moveWaLead(id) {
 
 // ── Templates ────────────────────────────────────────────────────────────────
 
+const WA_ARM_LABELS = ['A', 'B', 'C', 'D'];
+
+const WA_TEMPLATE_KINDS = [
+  ['gap',      'Gap found (no online booking seen)'],
+  ['no_gap',   'No gap (they already have online booking)'],
+  ['followup', 'Follow-up'],
+];
+
 async function loadWaTemplates() {
-  const [templates, settings] = await Promise.all([
-    api('/api/wa/templates'), api('/api/settings'),
-  ]);
-  _waTemplates = { ...(templates || {}), followup_days: (settings || {}).wa_followup_days || 3 };
+  _waTemplates = (await api('/api/wa/templates')) || {};
 }
 
 function toggleWaTemplateEditor() {
@@ -305,34 +310,112 @@ function toggleWaTemplateEditor() {
   if (show) _renderWaTemplateEditor();
 }
 
+// Whatever is currently typed into the editor, so re-rendering it (to add or
+// remove a version) never throws away an unsaved edit.
+function _readWaTemplateEditor() {
+  const t = _waTemplates || {};
+  const out = {
+    followup_days: parseInt(document.getElementById('wa-followup-days')?.value, 10) || 3,
+  };
+  WA_TEMPLATE_KINDS.forEach(([kind]) => {
+    out[kind] = (t[kind] || ['']).map(
+      (arm, i) => document.getElementById(`wa-tpl-${kind}-${i}`)?.value ?? arm
+    );
+  });
+  return out;
+}
+
+function addWaArm(kind) {
+  _waTemplates = { ..._waTemplates, ..._readWaTemplateEditor() };
+  const max = _waTemplates.max_arms || 4;
+  if ((_waTemplates[kind] || []).length >= max) {
+    toast(`${max} versions is the limit`, 'err');
+    return;
+  }
+  _waTemplates[kind] = [...(_waTemplates[kind] || []), ''];
+  _renderWaTemplateEditor();
+}
+
+function removeWaArm(kind, idx) {
+  _waTemplates = { ..._waTemplates, ..._readWaTemplateEditor() };
+  const arms = [...(_waTemplates[kind] || [])];
+  if (arms.length <= 1) return;
+  // Leads already sent keep the label they were drafted under, so removing a
+  // version stops it being used from now on without rewriting what happened.
+  if (!confirm(`Remove version ${WA_ARM_LABELS[idx]}? Messages already sent with it keep their results.`)) return;
+  arms.splice(idx, 1);
+  _waTemplates[kind] = arms;
+  _renderWaTemplateEditor();
+}
+
+function _waStatsFor(label) {
+  return ((_waTemplates || {}).stats || []).filter(s => s.arm === label);
+}
+
+function _renderWaArmStats(label) {
+  const rows = _waStatsFor(label);
+  if (!rows.length) return '';
+  const parts = rows.map(r => {
+    const how = r.paraphrased ? 'AI-reworded' : 'as written';
+    return `${r.sent} sent ${how} · ${r.replied} replied (${r.reply_rate}%)`;
+  });
+  return `<div class="text-muted text-small" style="margin-top:4px">${esc(parts.join('  |  '))}</div>`;
+}
+
 function _renderWaTemplateEditor() {
   const wrap = document.getElementById('wa-template-editor');
   const t = _waTemplates || {};
+
+  const kinds = WA_TEMPLATE_KINDS.map(([kind, label]) => {
+    const arms = (t[kind] && t[kind].length) ? t[kind] : [''];
+    const testing = arms.length > 1;
+    const boxes = arms.map((arm, i) => `
+      <div style="margin-bottom:8px">
+        ${testing ? `<div class="flex items-center" style="margin-bottom:4px">
+          <span class="badge badge-blue">Version ${WA_ARM_LABELS[i]}</span>
+          <button class="btn btn-ghost btn-sm ml-auto" onclick="removeWaArm('${kind}', ${i})">Remove</button>
+        </div>` : ''}
+        <textarea id="wa-tpl-${kind}-${i}" style="min-height:${kind === 'followup' ? 60 : 80}px">${esc(arm)}</textarea>
+        ${testing ? _renderWaArmStats(WA_ARM_LABELS[i]) : ''}
+      </div>`).join('');
+
+    return `
+      <div class="form-group">
+        <label>${esc(label)}</label>
+        ${boxes}
+        <button class="btn btn-ghost btn-sm" onclick="addWaArm('${kind}')">
+          ${testing ? '+ Add another version' : '+ Test a second version'}
+        </button>
+      </div>`;
+  }).join('');
+
+  const untested = _renderWaArmStats('-');
+
   wrap.innerHTML = `
     <div class="card" style="padding:18px">
-      <div class="card-title" style="margin-bottom:10px">Message templates</div>
+      <div class="flex items-center" style="margin-bottom:10px">
+        <div class="card-title">Your message templates</div>
+        ${infoDot('These are your own messages. Everyone using this app writes their own, and nobody else can see or change yours.')}
+      </div>
       <p class="text-muted text-small" style="margin-bottom:14px">
         Placeholders: <span class="mono">{{business_name}}</span> and <span class="mono">{{signal_detail}}</span>
         (the confirmed observation — not used in the follow-up). These are what gets drafted for every
-        lead, then optionally paraphrased for variety — the placeholders are always filled in first.
+        lead, then optionally reworded by AI for variety — the placeholders are always filled in first.
       </p>
-      <div class="form-group">
-        <label>Gap found (no online booking seen)</label>
-        <textarea id="wa-tpl-gap" style="min-height:80px">${esc(t.gap || '')}</textarea>
+      <div class="text-muted text-small" style="margin-bottom:16px;padding:10px 12px;background:var(--bg3);border-radius:6px">
+        <strong>Testing two versions:</strong> add a second version of any message and new leads are
+        dealt out between them, one after the other. Reply rates appear under each once messages
+        have gone out, so you can keep the one that actually works. A lead keeps the version it
+        started on, follow-ups included.
       </div>
-      <div class="form-group">
-        <label>No gap (they already have online booking)</label>
-        <textarea id="wa-tpl-no_gap" style="min-height:80px">${esc(t.no_gap || '')}</textarea>
-      </div>
-      <div class="form-group">
-        <label>Follow-up</label>
-        <textarea id="wa-tpl-followup" style="min-height:60px">${esc(t.followup || '')}</textarea>
-      </div>
+      ${kinds}
+      ${untested ? `<div class="form-group">
+        <label>Sent before you started testing</label>${untested}</div>` : ''}
       <div class="form-group">
         <label>Follow-up interval (days)</label>
         <input type="number" id="wa-followup-days" min="1" style="max-width:120px"
                value="${esc(t.followup_days ?? 3)}" />
-        <div class="form-hint">A sent lead surfaces under "Follow-up due" this many days after its last send, forever, until replied or paused.</div>
+        <div class="form-hint">A sent lead surfaces under "Follow-up due" this many days after its last send, forever, until replied or paused. This is your own setting.</div>
       </div>
       <div class="flex gap-2">
         <button class="btn btn-primary" onclick="saveWaTemplates()">Save</button>
@@ -342,16 +425,18 @@ function _renderWaTemplateEditor() {
 }
 
 async function saveWaTemplates() {
-  const templates = {
-    gap: document.getElementById('wa-tpl-gap').value,
-    no_gap: document.getElementById('wa-tpl-no_gap').value,
-    followup: document.getElementById('wa-tpl-followup').value,
-  };
-  const days = parseInt(document.getElementById('wa-followup-days').value, 10) || 3;
-  const [res] = await Promise.all([
-    api('/api/wa/templates', 'PUT', { templates }),
-    api('/api/settings', 'POST', { wa_followup_days: String(days) }),
-  ]);
+  const edited = _readWaTemplateEditor();
+  const templates = {};
+  for (const [kind, label] of WA_TEMPLATE_KINDS) {
+    const arms = (edited[kind] || []).map(a => (a || '').trim()).filter(Boolean);
+    if (!arms.length) {
+      toast(`"${label}" needs at least one message`, 'err');
+      return;
+    }
+    templates[kind] = arms;
+  }
+  const res = await api('/api/wa/templates', 'PUT',
+                        { templates, followup_days: edited.followup_days });
   if (!res || res.error) { toast((res && res.error) || 'Could not save', 'err'); return; }
   toast('Templates saved');
   await loadWaTemplates();
