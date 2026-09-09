@@ -501,6 +501,13 @@ def init_db():
             # load of the WhatsApp section rather than a scheduled job.
             "CREATE INDEX IF NOT EXISTS wa_leads_due_idx         ON wa_leads(sent_date) WHERE replied = 0 AND paused = 0",
             "CREATE INDEX IF NOT EXISTS wa_log_lead_idx          ON wa_log(wa_lead_id, sent_at)",
+            # Ownership is now a predicate on nearly every read -- the lead
+            # list, the call queue, every summary. Without these, filtering to
+            # one operator means a full scan of the table it is filtering.
+            # email_leads' partial unique index leads on owner_id but only
+            # covers rows with an address, so it cannot serve these.
+            "CREATE INDEX IF NOT EXISTS businesses_owner_idx     ON businesses(owner_id)",
+            "CREATE INDEX IF NOT EXISTS email_leads_owner_idx    ON email_leads(owner_id)",
         ):
             try:
                 conn.execute(idx_sql)
@@ -633,6 +640,27 @@ def owns(kind: str, row_id, owner_id) -> bool:
     }[kind]
     with get_db() as conn:
         return conn.execute(sql, (int(row_id), int(owner_id))).fetchone() is not None
+
+
+def _own_business_ids(conn, business_ids, owner_id=None) -> list:
+    """
+    Keep only the business ids this operator actually owns.
+
+    Anything taking ids from a request body has to pass through here. Ids are
+    sequential, so an unfiltered list is an invitation to act on the other
+    operator's leads by guessing -- and unlike a URL id, a body full of them
+    is not covered by the @owned route decorator.
+    """
+    ids = [int(b) for b in business_ids or []]
+    if not ids:
+        return []
+    rows = conn.execute(
+        "SELECT id FROM businesses WHERE id IN (%s) AND owner_id = ?"
+        % ",".join("?" * len(ids)),
+        [*ids, _resolve_owner_id(conn, owner_id)],
+    ).fetchall()
+    keep = {r["id"] for r in rows}
+    return [b for b in ids if b in keep]
 
 
 def _backfill_owner_ids(conn):
@@ -1082,21 +1110,34 @@ def get_scrape_job(job_id: int):
         return dict(row) if row else None
 
 
-def get_latest_scrape_job():
+def get_latest_scrape_job(owner_id=None):
     with get_db() as conn:
         row = conn.execute(
-            "SELECT * FROM scrape_jobs ORDER BY id DESC LIMIT 1"
+            "SELECT * FROM scrape_jobs WHERE owner_id=? ORDER BY id DESC LIMIT 1",
+            (_resolve_owner_id(conn, owner_id),)
         ).fetchone()
         return dict(row) if row else None
 
 
-def get_active_scrape_job():
+def get_active_scrape_job(owner_id=None, any_owner=False):
+    """
+    The job currently running, for this operator or for anyone.
+
+    `any_owner` is for the import path, which needs to attribute rows pushed
+    back by the worker and has no session to ask. Everything user-facing
+    passes an owner, so one operator cannot watch -- or stop -- the other's
+    scrape.
+    """
     placeholders = ",".join("?" * len(SCRAPE_ACTIVE_STATUSES))
+    scope = "" if any_owner else " AND owner_id = ?"
     with get_db() as conn:
+        args = list(SCRAPE_ACTIVE_STATUSES)
+        if not any_owner:
+            args.append(_resolve_owner_id(conn, owner_id))
         row = conn.execute(
-            f"SELECT * FROM scrape_jobs WHERE status IN ({placeholders}) "
+            f"SELECT * FROM scrape_jobs WHERE status IN ({placeholders}){scope} "
             "ORDER BY id ASC LIMIT 1",
-            SCRAPE_ACTIVE_STATUSES,
+            args,
         ).fetchone()
         return dict(row) if row else None
 
@@ -2218,12 +2259,20 @@ def delete_campaign(campaign_id: int):
         conn.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
 
 
-def delete_email_leads(ids: list):
+def delete_email_leads(ids: list, owner_id=None):
+    """
+    Hard-delete addresses. Scoped to one operator: this takes ids straight from
+    a request body, so without the owner clause a guessed id would delete
+    somebody else's lead outright.
+    """
     if not ids:
         return
     placeholders = ','.join('?' for _ in ids)
     with get_db() as conn:
-        conn.execute(f"DELETE FROM email_leads WHERE id IN ({placeholders})", ids)
+        conn.execute(
+            f"DELETE FROM email_leads WHERE id IN ({placeholders}) AND owner_id = ?",
+            [*ids, _resolve_owner_id(conn, owner_id)],
+        )
 
 
 def create_email_lead(email: str, first_name='', last_name='', company='',
@@ -2581,7 +2630,7 @@ TEMPLATE_VARIABLES = [
 ]
 
 
-def get_variable_coverage(campaign_id: int = None):
+def get_variable_coverage(campaign_id: int = None, owner_id=None):
     """
     How many contacts actually have a value for each template variable.
 
@@ -2617,9 +2666,13 @@ def get_variable_coverage(campaign_id: int = None):
             total = 0
 
         if not total:
+            # The "every contact" fallback is this operator's contacts. Without
+            # the owner clause a freshly drafted step would report coverage
+            # over the other operator's list.
             scope  = "all"
-            where  = "WHERE el.status NOT IN ('deleted','unsubscribed','bounced')"
-            params = []
+            where  = ("WHERE el.status NOT IN ('deleted','unsubscribed','bounced') "
+                      "AND b.owner_id = ?")
+            params = [_resolve_owner_id(conn, owner_id)]
             total  = conn.execute(f"SELECT COUNT(*) {join} {where}", params).fetchone()[0]
 
         if not total:
@@ -2705,7 +2758,7 @@ def get_campaign_contact_report(campaign_id: int):
         return [dict(r) for r in rows]
 
 
-def enroll_contacts_bulk(campaign_id, email_lead_ids):
+def enroll_contacts_bulk(campaign_id, email_lead_ids, owner_id=None):
     """
     Enroll addresses, skipping any that would produce a duplicate approach.
 
@@ -2730,6 +2783,19 @@ def enroll_contacts_bulk(campaign_id, email_lead_ids):
         enrolled = 0
         skipped = {"other_campaign": 0, "duplicate_address": 0,
                    "same_domain": 0, "do_not_contact": 0}
+
+        # Lead ids arrive in a request body. Owning the campaign says nothing
+        # about owning the addresses being put into it, and enrolling somebody
+        # else's lead would both expose it in the campaign report and actually
+        # mail them from this campaign.
+        owner_id = _resolve_owner_id(conn, owner_id)
+        email_lead_ids = [
+            r["id"] for r in conn.execute(
+                "SELECT id FROM email_leads WHERE id IN (%s) AND owner_id = ?"
+                % ",".join("?" * len(email_lead_ids)),
+                [*email_lead_ids, owner_id],
+            ).fetchall()
+        ] if email_lead_ids else []
 
         for lead_id in email_lead_ids:
             try:
@@ -3415,7 +3481,7 @@ def delete_call_campaign(cid: int):
         conn.execute("DELETE FROM call_campaigns WHERE id=?", (cid,))
 
 
-def add_to_call_campaign(cid: int, business_ids) -> int:
+def add_to_call_campaign(cid: int, business_ids, owner_id=None) -> int:
     """
     Add businesses to a call campaign, ignoring any already in it.
 
@@ -3426,6 +3492,7 @@ def add_to_call_campaign(cid: int, business_ids) -> int:
     """
     added = 0
     with get_db() as conn:
+        business_ids = _own_business_ids(conn, business_ids, owner_id)
         for business_id in business_ids:
             call_lead_id = get_or_create_call_lead(conn, int(business_id))
             cur = conn.execute("""
@@ -3436,10 +3503,10 @@ def add_to_call_campaign(cid: int, business_ids) -> int:
     return added
 
 
-def remove_from_call_campaign(cid: int, business_ids) -> int:
+def remove_from_call_campaign(cid: int, business_ids, owner_id=None) -> int:
     with get_db() as conn:
         removed = 0
-        for business_id in business_ids:
+        for business_id in _own_business_ids(conn, business_ids, owner_id):
             cur = conn.execute("""
                 DELETE FROM call_campaign_members
                  WHERE call_campaign_id=?
@@ -3599,7 +3666,7 @@ def get_call_lead_view(business_id: int):
         return dict(row) if row else None
 
 
-def search_businesses(q="", status=None, call_status=None, limit=100):
+def search_businesses(q="", status=None, call_status=None, limit=100, owner_id=None):
     """
     Businesses matching a filter, for the "add existing leads" pickers (call
     campaigns today; WhatsApp will use the same query).
@@ -3608,7 +3675,7 @@ def search_businesses(q="", status=None, call_status=None, limit=100):
     a clinic the scraper found with no email at all is still findable here,
     which is the entire point of the calling "from contacts" tab.
     """
-    where, params = ["1=1"], []
+    where, params = ["b.owner_id = ?"], [_owner_or_default(owner_id)]
     if status:
         where.append("b.web_status = ?")
         params.append(status)

@@ -26,6 +26,7 @@ first draft of this feature rather than hypotheticals:
     leads under the other.
 """
 import importlib
+import json
 import os
 import shutil
 import sqlite3
@@ -288,7 +289,7 @@ def test_suppression_crosses_the_wall(work):
     check("both operators hold the address before the opt-out", len(lead_ids) == 2)
     for owner, lead_id in zip((a, b), lead_ids):
         cid = db.create_campaign(f"C{owner}", owner_id=owner)
-        db.enroll_contacts_bulk(cid, [lead_id])
+        db.enroll_contacts_bulk(cid, [lead_id], owner_id=owner)
 
     db.unsubscribe_contact("stop@optout.ae")
 
@@ -359,7 +360,8 @@ def test_delete_user_guard(work):
     check("the account still exists",
           scalar(path, "SELECT COUNT(*) FROM users WHERE id=?", (b,)) == 1)
 
-    db.delete_email_leads([r[0] for r in rows(path, "SELECT id FROM email_leads")])
+    db.delete_email_leads([r[0] for r in rows(path, "SELECT id FROM email_leads")],
+                          owner_id=b)
     with db.get_db() as conn:
         conn.execute("DELETE FROM businesses WHERE owner_id=?", (b,))
     ok, err = db.delete_user(b)
@@ -446,6 +448,53 @@ def test_routes_enforce_the_wall(work):
           db_mod.get_campaign(b_campaign)["status"] != "paused")
     check("the owner themselves is not locked out",
           cb.get(f"/api/campaigns/{b_campaign}").status_code == 200)
+
+    # ── ids in the request body ──────────────────────────────────────────────
+    # The URL-id sweep never saw these. Each one was reachable when this
+    # section was written: an operator naming another's row in a POST body
+    # could read it, mail it, delete it, or kill it.
+    print("\n12. IDS SMUGGLED IN A REQUEST BODY, NOT THE URL")
+
+    b_lead = db_mod.get_email_leads(owner_id=b)[0]["id"]
+    check("(fixture) the other operator's lead exists to aim at", bool(b_lead))
+
+    enrolled = ca.post(f"/api/campaigns/{a_campaign}/contacts",
+                       json={"contact_ids": [b_lead]}, headers=hdr).get_json()
+    check("cannot enrol another operator's lead into your campaign",
+          (enrolled or {}).get("enrolled") == 0, f"got {enrolled}")
+    report = ca.get(f"/api/campaigns/{a_campaign}/contacts").get_json()
+    leaked = [r for r in (report or []) if "bob" in str(r.get("email", ""))]
+    check("so their address never appears in your campaign report", not leaked,
+          f"leaked={leaked}")
+
+    ca.post("/api/contacts/bulk-delete", json={"ids": [b_lead]}, headers=hdr)
+    still_there = db_mod.get_email_leads(owner_id=b)
+    check("cannot hard-delete another operator's lead", len(still_there) == 1,
+          f"they have {len(still_there)} left")
+
+    logged = ca.post("/api/calls/log",
+                     json={"contact_id": b_business_id(db_mod, b),
+                           "outcome": "not_interested"}, headers=hdr)
+    check("cannot log a call against another operator's business",
+          logged.status_code == 404, f"got {logged.status_code}")
+
+    found = ca.get("/api/businesses/search?q=").get_json() or {}
+    blob = json.dumps(found)
+    check("the business search returns only your own",
+          found.get("total") == 1 and "Bob" not in blob and "555 2222" not in blob,
+          f"total={found.get('total')} body={blob[:200]}")
+
+    cover = ca.get("/api/variable-coverage").get_json()
+    check("variable coverage counts only your own contacts",
+          (cover or {}).get("total") == 1, f"got total={(cover or {}).get('total')}")
+
+
+def b_business_id(db_mod, owner):
+    """The business id behind that operator's only lead."""
+    with db_mod.get_db() as conn:
+        return conn.execute(
+            "SELECT id FROM businesses WHERE owner_id=? ORDER BY id LIMIT 1", (owner,)
+        ).fetchone()["id"]
 
 
 def main():

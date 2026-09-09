@@ -293,7 +293,7 @@ def import_owner(rows) -> int:
         job = db.get_scrape_job(jid)
         if job and job.get("owner_id"):
             return job["owner_id"]
-    active = db.get_active_scrape_job()
+    active = db.get_active_scrape_job(any_owner=True)
     if active and active.get("owner_id"):
         return active["owner_id"]
     abort(400, "Cannot tell which account these leads belong to")
@@ -553,7 +553,7 @@ def _is_secret_key(key: str) -> bool:
 
 
 @app.route("/api/settings", methods=["GET"])
-@admin_required
+@login_required
 def api_get_settings():
     s = db.get_settings()
     safe = {k: (_SECRET_PLACEHOLDER if _is_secret_key(k) else v) for k, v in s.items()}
@@ -756,14 +756,14 @@ def api_test_account_imap(aid):
 
 
 @app.route("/api/campaigns/<int:cid>/accounts", methods=["GET"])
-@admin_required
+@login_required
 @owned("campaign", "cid")
 def api_get_campaign_accounts(cid):
     return jsonify(db.get_campaign_smtp_accounts(cid))
 
 
 @app.route("/api/campaigns/<int:cid>/accounts", methods=["POST"])
-@admin_required
+@login_required
 @owned("campaign", "cid")
 def api_set_campaign_accounts(cid):
     ids = (request.json or {}).get("account_ids", [])
@@ -1009,7 +1009,7 @@ _AI_CALLERS = {
 
 
 @app.route("/api/ai/review", methods=["POST"])
-@admin_required
+@login_required
 def api_ai_review():
     s = db.get_settings()
     if s.get("ai_features_enabled") != "1":
@@ -1169,7 +1169,7 @@ def api_get_campaigns():
 
 
 @app.route("/api/campaigns", methods=["POST"])
-@admin_required
+@login_required
 def api_create_campaign():
     d = request.json or {}
     cid = db.create_campaign(
@@ -1340,7 +1340,7 @@ def api_export_campaign(cid):
 
 
 @app.route("/api/campaigns/<int:cid>", methods=["DELETE"])
-@admin_required
+@login_required
 @owned("campaign", "cid")
 def api_delete_campaign(cid):
     db.delete_campaign(cid)
@@ -1349,7 +1349,7 @@ def api_delete_campaign(cid):
 
 
 @app.route("/api/campaigns/<int:cid>", methods=["PATCH"])
-@admin_required
+@login_required
 @owned("campaign", "cid")
 def api_update_campaign(cid):
     d = request.json or {}
@@ -1362,7 +1362,7 @@ def api_update_campaign(cid):
 
 
 @app.route("/api/campaigns/<int:cid>/variable-coverage", methods=["GET"])
-@admin_required
+@login_required
 @owned("campaign", "cid")
 def api_variable_coverage(cid):
     """
@@ -1370,18 +1370,18 @@ def api_variable_coverage(cid):
     reach. Writing "Hi {{first_name}}," against a scraped list produces "Hi ,"
     for every recipient, and nothing said so until the mail had gone out.
     """
-    return jsonify(db.get_variable_coverage(cid))
+    return jsonify(db.get_variable_coverage(cid, owner_id=me()))
 
 
 @app.route("/api/variable-coverage", methods=["GET"])
-@admin_required
+@login_required
 def api_variable_coverage_global():
     """Coverage across every contact — for a step being drafted outside a campaign."""
-    return jsonify(db.get_variable_coverage(None))
+    return jsonify(db.get_variable_coverage(None, owner_id=me()))
 
 
 @app.route("/api/campaigns/<int:cid>/activate", methods=["POST"])
-@admin_required
+@login_required
 @owned("campaign", "cid")
 def api_activate(cid):
     steps = db.get_steps(cid)
@@ -1410,7 +1410,7 @@ def api_activate(cid):
 
 
 @app.route("/api/campaigns/<int:cid>/pause", methods=["POST"])
-@admin_required
+@login_required
 @owned("campaign", "cid")
 def api_pause(cid):
     db.update_campaign(cid, status="paused")
@@ -1439,7 +1439,7 @@ def api_get_steps(cid):
 
 
 @app.route("/api/campaigns/<int:cid>/steps", methods=["POST"])
-@admin_required
+@login_required
 @owned("campaign", "cid")
 def api_upsert_step(cid):
     d = request.json or {}
@@ -1463,7 +1463,7 @@ def api_upsert_step(cid):
 
 
 @app.route("/api/campaigns/<int:cid>/steps/<int:step_num>", methods=["DELETE"])
-@admin_required
+@login_required
 @owned("campaign", "cid")
 def api_delete_step(cid, step_num):
     db.delete_step(cid, step_num)
@@ -1661,18 +1661,18 @@ def api_import_contacts():
 
 
 @app.route("/api/contacts/bulk-delete", methods=["POST"])
-@admin_required
+@login_required
 def api_bulk_delete_contacts():
     ids = (request.json or {}).get("ids", [])
     if not ids:
         return jsonify({"ok": False, "error": "No IDs provided"}), 400
-    db.delete_email_leads(ids)
+    db.delete_email_leads(ids, owner_id=me())
     db.add_log(f"Hard-deleted {len(ids)} contacts via UI")
     return jsonify({"ok": True, "deleted": len(ids)})
 
 
 @app.route("/api/contacts", methods=["POST"])
-@admin_required
+@login_required
 def api_add_contact():
     d = request.json or {}
     contact_id, err = db.create_email_lead(
@@ -1691,7 +1691,7 @@ def api_add_contact():
 
 
 @app.route("/api/contacts/<int:cid>", methods=["PUT"])
-@admin_required
+@login_required
 @owned("email_lead", "cid")
 def api_update_contact(cid):
     d = request.json or {}
@@ -1702,7 +1702,7 @@ def api_update_contact(cid):
 
 
 @app.route("/api/contacts/<int:cid>", methods=["DELETE"])
-@admin_required
+@login_required
 @owned("email_lead", "cid")
 def api_delete_contact(cid):
     db.delete_email_lead(cid)
@@ -1710,7 +1710,7 @@ def api_delete_contact(cid):
 
 
 @app.route("/api/campaigns/<int:cid>/contacts", methods=["POST"])
-@admin_required
+@login_required
 @owned("campaign", "cid")
 def api_enroll_contacts(cid):
     """
@@ -1722,7 +1722,8 @@ def api_enroll_contacts(cid):
     if d.get("all"):
         with db.get_db() as conn:
             ids = [r[0] for r in conn.execute(
-                "SELECT id FROM email_leads WHERE status='active'"
+                "SELECT id FROM email_leads WHERE status='active' AND owner_id=?",
+                (me(),)
             ).fetchall()]
     else:
         ids = d.get("contact_ids", [])
@@ -1730,7 +1731,7 @@ def api_enroll_contacts(cid):
     if not ids:
         return jsonify({"ok": False, "error": "No contact IDs"}), 400
 
-    enrolled, skipped = db.enroll_contacts_bulk(cid, ids)
+    enrolled, skipped = db.enroll_contacts_bulk(cid, ids, owner_id=me())
 
     # Surface why contacts were left out. Silently enrolling fewer than the
     # operator selected looks like a bug; naming the reason makes the
@@ -1760,7 +1761,7 @@ def api_campaign_contacts(cid):
 
 
 @app.route("/api/enrollments/<int:enroll_id>", methods=["DELETE"])
-@admin_required
+@login_required
 @owned("enrollment", "enroll_id")
 def api_unenroll_contact(enroll_id):
     db.unenroll_contact(enroll_id)
@@ -1768,7 +1769,7 @@ def api_unenroll_contact(enroll_id):
 
 
 @app.route("/api/enrollments/<int:enroll_id>/status", methods=["PATCH"])
-@admin_required
+@login_required
 @owned("enrollment", "enroll_id")
 def api_set_enrollment_status(enroll_id):
     status = (request.json or {}).get("status", "")
@@ -1799,7 +1800,7 @@ def api_clear_logs():
 # ── API: Cold calling ─────────────────────────────────────────────────────────
 
 @app.route("/api/calls/queue", methods=["GET"])
-@admin_required
+@login_required
 def api_call_queue():
     """The leads to work now, plus what is waiting in the other buckets."""
     bucket = request.args.get("bucket", "today")
@@ -1838,7 +1839,7 @@ def api_call_queue():
 
 
 @app.route("/api/call-outcomes", methods=["GET"])
-@admin_required
+@login_required
 def api_list_call_outcomes():
     return jsonify(list(db.get_call_outcomes(include_archived=True).values()))
 
@@ -1880,7 +1881,7 @@ def api_delete_call_outcome(key):
 
 
 @app.route("/api/businesses/search", methods=["GET"])
-@admin_required
+@login_required
 def api_search_businesses():
     """
     Businesses matching a filter, for "add existing leads" pickers.
@@ -1890,6 +1891,7 @@ def api_search_businesses():
     of the calling "from contacts" tab, and will be WhatsApp's too.
     """
     return jsonify(db.search_businesses(
+        owner_id=me(),
         q=request.args.get("q", ""),
         status=request.args.get("status") or None,
         call_status=request.args.get("call_status") or None,
@@ -1898,13 +1900,13 @@ def api_search_businesses():
 
 
 @app.route("/api/call-campaigns", methods=["GET"])
-@admin_required
+@login_required
 def api_list_call_campaigns():
     return jsonify(db.get_call_campaigns(owner_id=me()))
 
 
 @app.route("/api/call-campaigns", methods=["POST"])
-@admin_required
+@login_required
 def api_create_call_campaign():
     d = request.json or {}
     name = (d.get("name") or "").strip()
@@ -1918,7 +1920,7 @@ def api_create_call_campaign():
         if conflicts:
             flagged = {c["business_id"] for c in conflicts}
             contact_ids = [i for i in contact_ids if int(i) not in flagged]
-    added = db.add_to_call_campaign(cid, contact_ids) if contact_ids else 0
+    added = db.add_to_call_campaign(cid, contact_ids, owner_id=me()) if contact_ids else 0
     db.add_log(f"☎ Call campaign '{name}' created with {added} lead(s)")
     return jsonify({
         "ok": True, "id": cid, "added": added,
@@ -1928,7 +1930,7 @@ def api_create_call_campaign():
 
 
 @app.route("/api/call-campaigns/<int:cid>", methods=["PATCH"])
-@admin_required
+@login_required
 @owned("call_campaign", "cid")
 def api_update_call_campaign(cid):
     db.update_call_campaign(cid, **(request.json or {}))
@@ -1936,7 +1938,7 @@ def api_update_call_campaign(cid):
 
 
 @app.route("/api/call-campaigns/<int:cid>", methods=["DELETE"])
-@admin_required
+@login_required
 @owned("call_campaign", "cid")
 def api_delete_call_campaign(cid):
     """Deletes the batch, never the leads — the contacts and their call history stay."""
@@ -1945,7 +1947,7 @@ def api_delete_call_campaign(cid):
 
 
 @app.route("/api/call-campaigns/<int:cid>/members", methods=["POST"])
-@admin_required
+@login_required
 @owned("call_campaign", "cid")
 def api_add_call_campaign_members(cid):
     d = request.json or {}
@@ -1960,7 +1962,7 @@ def api_add_call_campaign_members(cid):
             flagged = {c["business_id"] for c in conflicts}
             ids = [i for i in ids if int(i) not in flagged]
 
-    added = db.add_to_call_campaign(cid, ids) if ids else 0
+    added = db.add_to_call_campaign(cid, ids, owner_id=me()) if ids else 0
     return jsonify({
         "ok": True, "added": added, "already_present": len(ids) - added,
         "conflicts": [{"business_id": c["business_id"], "business_name": c["business_name"],
@@ -1969,18 +1971,19 @@ def api_add_call_campaign_members(cid):
 
 
 @app.route("/api/call-campaigns/<int:cid>/members", methods=["DELETE"])
-@admin_required
+@login_required
 @owned("call_campaign", "cid")
 def api_remove_call_campaign_members(cid):
     d = request.json or {}
     ids = d.get("contact_ids") or []
     if not ids:
         return jsonify({"ok": False, "error": "No contacts given"}), 400
-    return jsonify({"ok": True, "removed": db.remove_from_call_campaign(cid, ids)})
+    return jsonify({"ok": True,
+                    "removed": db.remove_from_call_campaign(cid, ids, owner_id=me())})
 
 
 @app.route("/api/calls/<int:cid>/reopen", methods=["POST"])
-@admin_required
+@login_required
 @owned("call_lead", "cid")
 def api_reopen_call_lead(cid):
     """
@@ -1998,7 +2001,7 @@ def api_reopen_call_lead(cid):
 
 
 @app.route("/api/calls/log", methods=["POST"])
-@admin_required
+@login_required
 def api_log_call():
     """
     Body's `contact_id` is a business id (kept as-is for the frontend, which
@@ -2011,6 +2014,10 @@ def api_log_call():
         business_id = int(d.get("contact_id"))
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "A contact is required"}), 400
+    # The business arrives in the body, so the @owned decorator never saw it.
+    # A terminal outcome here sets do_not_contact, which would silently kill
+    # another operator's lead on every channel at once.
+    require_owned("business", business_id)
 
     outcome = (d.get("outcome") or "").strip()
     spec = db.get_call_outcome(outcome)
@@ -2044,7 +2051,7 @@ def api_log_call():
 
 
 @app.route("/api/calls/contact/<int:cid>", methods=["GET"])
-@admin_required
+@login_required
 @owned("business", "cid")
 def api_call_contact(cid):
     """cid is the business id — see api_log_call."""
@@ -2059,7 +2066,7 @@ def api_call_contact(cid):
 
 
 @app.route("/api/call-script", methods=["GET"])
-@admin_required
+@login_required
 def api_get_call_script():
     return jsonify(db.get_active_call_script())
 
@@ -2081,7 +2088,7 @@ def api_save_call_script():
 
 
 @app.route("/api/calls/<int:cid>/ics", methods=["GET"])
-@admin_required
+@login_required
 @owned("business", "cid")
 def api_call_ics(cid):
     """
@@ -2138,7 +2145,7 @@ _WA_DEFAULT_FOLLOWUP_DAYS = 3
 
 
 @app.route("/api/wa/import", methods=["POST"])
-@admin_required
+@login_required
 def api_wa_import():
     """
     Accepts JSON { "rows": [...], "country": "AE" } or a multipart CSV with a
@@ -2194,7 +2201,7 @@ def api_wa_import():
 
 
 @app.route("/api/wa/leads", methods=["GET"])
-@admin_required
+@login_required
 def api_wa_leads():
     status = request.args.get("status")
     limit = min(int(request.args.get("limit", 200)), 1000)
@@ -2202,13 +2209,13 @@ def api_wa_leads():
 
 
 @app.route("/api/wa/summary", methods=["GET"])
-@admin_required
+@login_required
 def api_wa_summary():
     return jsonify(db.get_wa_summary(owner_id=me()))
 
 
 @app.route("/api/wa/followups-due", methods=["GET"])
-@admin_required
+@login_required
 def api_wa_followups_due():
     days = int(db.get_settings().get("wa_followup_days", _WA_DEFAULT_FOLLOWUP_DAYS))
     due = db.get_wa_followups_due(days=days, owner_id=me())
@@ -2222,7 +2229,7 @@ def api_wa_followups_due():
 
 
 @app.route("/api/wa/leads/<int:wid>/confirm", methods=["POST"])
-@admin_required
+@login_required
 @owned("wa_lead", "wid")
 def api_wa_confirm(wid):
     """
@@ -2257,7 +2264,7 @@ Messages:
 
 
 @app.route("/api/wa/draft-batch", methods=["POST"])
-@admin_required
+@login_required
 def api_wa_draft_batch():
     """
     Drafts every confirmed-but-undrafted lead in one pass: render the
@@ -2308,7 +2315,7 @@ def api_wa_draft_batch():
 
 
 @app.route("/api/wa/leads/<int:wid>/message", methods=["PUT"])
-@admin_required
+@login_required
 @owned("wa_lead", "wid")
 def api_wa_update_message(wid):
     message = ((request.json or {}).get("message") or "").strip()
@@ -2319,7 +2326,7 @@ def api_wa_update_message(wid):
 
 
 @app.route("/api/wa/leads/<int:wid>/sent", methods=["POST"])
-@admin_required
+@login_required
 @owned("wa_lead", "wid")
 def api_wa_mark_sent(wid):
     """
@@ -2341,7 +2348,7 @@ def api_wa_mark_sent(wid):
 
 
 @app.route("/api/wa/leads/<int:wid>/sent-date", methods=["PUT"])
-@admin_required
+@login_required
 @owned("wa_lead", "wid")
 def api_wa_correct_sent_date(wid):
     """Manual correction for 'I opened the link but didn't actually send.'"""
@@ -2355,7 +2362,7 @@ def api_wa_correct_sent_date(wid):
 
 
 @app.route("/api/wa/leads/<int:wid>/replied", methods=["POST"])
-@admin_required
+@login_required
 @owned("wa_lead", "wid")
 def api_wa_mark_replied(wid):
     replied = bool((request.json or {}).get("replied", True))
@@ -2364,7 +2371,7 @@ def api_wa_mark_replied(wid):
 
 
 @app.route("/api/wa/leads/<int:wid>/pause", methods=["POST"])
-@admin_required
+@login_required
 @owned("wa_lead", "wid")
 def api_wa_set_paused(wid):
     paused = bool((request.json or {}).get("paused", True))
@@ -2373,7 +2380,7 @@ def api_wa_set_paused(wid):
 
 
 @app.route("/api/wa/leads/<int:wid>/move", methods=["POST"])
-@admin_required
+@login_required
 @owned("wa_lead", "wid")
 def api_wa_move_lead(wid):
     """The number turned out not to be on WhatsApp — file it under Calling
@@ -2387,7 +2394,7 @@ def api_wa_move_lead(wid):
 
 
 @app.route("/api/wa/templates", methods=["GET"])
-@admin_required
+@login_required
 def api_wa_get_templates():
     return jsonify(db.get_wa_templates())
 
@@ -2580,7 +2587,7 @@ def api_scraper_status():
         "worker_online": seen is not None and seen < db.WORKER_STALE_SECONDS,
         "worker_last_seen": None if seen is None else int(seen),
     }
-    job = db.get_active_scrape_job() or db.get_latest_scrape_job()
+    job = db.get_active_scrape_job(owner_id=me()) or db.get_latest_scrape_job(owner_id=me())
     if not job:
         payload["status"] = "idle"
         return jsonify(payload)
@@ -2589,11 +2596,19 @@ def api_scraper_status():
 
 
 @app.route("/api/scraper/start", methods=["POST"])
-@admin_required
+@login_required
 def api_scraper_start():
     db.reap_stale_scrape_jobs()
-    if db.get_active_scrape_job():
-        return jsonify({"ok": False, "error": "A scrape is already queued or running"}), 409
+    # One worker machine, so one scrape at a time across everybody -- but say
+    # whose it is rather than claiming the operator has one running when they
+    # don't.
+    running = db.get_active_scrape_job(any_owner=True)
+    if running:
+        mine = running.get("owner_id") == me()
+        return jsonify({"ok": False, "error": (
+            "A scrape is already queued or running" if mine
+            else "Someone else's scrape is running on the worker right now"
+        )}), 409
 
     d           = request.json or {}
     niche       = d.get("niche", "").strip()
@@ -2618,9 +2633,9 @@ def api_scraper_start():
 
 
 @app.route("/api/scraper/stop", methods=["POST"])
-@admin_required
+@login_required
 def api_scraper_stop():
-    job = db.get_active_scrape_job()
+    job = db.get_active_scrape_job(owner_id=me())
     if job:
         db.flag_scrape_job(job["id"], stop=True)
         if job["status"] == "queued":
@@ -2630,9 +2645,9 @@ def api_scraper_stop():
 
 
 @app.route("/api/scraper/resume", methods=["POST"])
-@admin_required
+@login_required
 def api_scraper_resume():
-    job = db.get_active_scrape_job()
+    job = db.get_active_scrape_job(owner_id=me())
     if job:
         db.flag_scrape_job(job["id"], resume=True)
     return jsonify({"ok": True})
