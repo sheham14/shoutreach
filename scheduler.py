@@ -73,7 +73,9 @@ def process_queue():
     """
     try:
         settings  = db.get_settings()
-        campaigns = db.get_campaigns()
+        # Every operator's campaigns: this loop runs on a timer with nobody
+        # logged in, and the accounts, domain and daily cap are shared anyway.
+        campaigns = db.get_campaigns(all_owners=True)
         today_total = db.get_today_count()
 
         # Global daily cap across all campaigns (from settings, default 200)

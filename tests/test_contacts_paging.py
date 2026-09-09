@@ -40,6 +40,12 @@ def boot(work):
     import app as app_mod
     importlib.reload(app_mod)
 
+    # The session faked below names user 1, so user 1 has to exist: leads are
+    # owned per operator now, and rows created before any account exists
+    # belong to nobody.
+    if not db.get_user_by_username("admin"):
+        db.create_user("admin", "test-password-123", is_admin=True)
+
     app_mod.app.config["TESTING"] = True
     client = app_mod.app.test_client()
     with client.session_transaction() as sess:

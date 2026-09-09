@@ -368,6 +368,86 @@ def test_delete_user_guard(work):
           scalar(path, "SELECT COUNT(*) FROM users WHERE id=?", (b,)) == 0)
 
 
+def test_routes_enforce_the_wall(work):
+    """
+    The wall has to hold at the HTTP layer, not just in db.py. Everything below
+    is one operator pointing a request at another operator's row id -- which is
+    all it takes, since ids are sequential and guessable.
+    """
+    print("\n11. ONE OPERATOR REACHING FOR ANOTHER'S ROWS OVER HTTP")
+    path = os.path.join(work, "routes.db")
+    os.environ["DB_PATH"] = path
+    os.environ["SECRET_KEY"] = "test-secret"
+
+    import db as db_mod
+    importlib.reload(db_mod)
+    db_mod.init_db()
+    a = db_mod.create_user("alice", "test-password-123", is_admin=True)
+    b = db_mod.create_user("bob", "test-password-123", is_admin=True)
+
+    import app as app_mod
+    importlib.reload(app_mod)
+    app_mod.app.config["TESTING"] = True
+
+    def client_for(uid):
+        c = app_mod.app.test_client()
+        with c.session_transaction() as s:
+            s["user_id"] = uid
+            s["is_admin"] = True
+            s["csrf_token"] = "t"
+        return c
+
+    ca, cb = client_for(a), client_for(b)
+
+    db_mod.upsert_businesses([{"email": "lead@alice.ae", "company": "Alice Clinic",
+                               "phone": "+971 50 555 1111"}], owner_id=a)
+    db_mod.upsert_businesses([{"email": "lead@bob.ae", "company": "Bob Clinic",
+                               "phone": "+971 50 555 2222"}], owner_id=b)
+    a_campaign = db_mod.create_campaign("Alice Q1", owner_id=a)
+    b_campaign = db_mod.create_campaign("Bob Q1", owner_id=b)
+    db_mod.upsert_wa_leads([{"company": "Bob WA", "phone": "+971 50 555 3333"}],
+                           default_country="AE", owner_id=b)
+    b_wa = db_mod.get_wa_leads(owner_id=b)[0]["id"]
+
+    listed = ca.get("/api/contacts").get_json()
+    emails = {r["email"] for r in listed["rows"]}
+    check("the contact list shows only your own leads", emails == {"lead@alice.ae"},
+          f"got {emails}")
+
+    campaigns = {c["name"] for c in ca.get("/api/campaigns").get_json()}
+    check("the campaign list shows only your own", campaigns == {"Alice Q1"}, f"got {campaigns}")
+
+    wa = ca.get("/api/wa/leads").get_json()
+    check("the WhatsApp list shows only your own", wa == [], f"got {wa}")
+
+    calls = ca.get("/api/calls/queue?bucket=new").get_json()
+    names = {l.get("company") or l.get("name") for l in calls["leads"]}
+    check("the call queue shows only your own", names == {"Alice Clinic"}, f"got {names}")
+
+    hdr = {"X-CSRF-Token": "t"}
+    probes = [
+        ("read another's campaign",        ca.get(f"/api/campaigns/{b_campaign}")),
+        ("read another's campaign stats",  ca.get(f"/api/stats/{b_campaign}")),
+        ("read another's campaign steps",  ca.get(f"/api/campaigns/{b_campaign}/steps")),
+        ("export another's campaign",      ca.get(f"/api/campaigns/{b_campaign}/export")),
+        ("pause another's campaign",       ca.post(f"/api/campaigns/{b_campaign}/pause", headers=hdr)),
+        ("delete another's campaign",      ca.delete(f"/api/campaigns/{b_campaign}", headers=hdr)),
+        ("edit another's WhatsApp draft",  ca.put(f"/api/wa/leads/{b_wa}/message",
+                                                 json={"message": "hi"}, headers=hdr)),
+        ("mark another's WhatsApp sent",   ca.post(f"/api/wa/leads/{b_wa}/sent",
+                                                  json={}, headers=hdr)),
+        ("pause another's WhatsApp lead",  ca.post(f"/api/wa/leads/{b_wa}/pause",
+                                                  json={"paused": True}, headers=hdr)),
+    ]
+    for label, resp in probes:
+        check(f"cannot {label}", resp.status_code == 404, f"got {resp.status_code}")
+
+    check("and the other operator's campaign is untouched",
+          db_mod.get_campaign(b_campaign)["status"] != "paused")
+    check("the owner themselves is not locked out",
+          cb.get(f"/api/campaigns/{b_campaign}").status_code == 200)
+
+
 def main():
     work = tempfile.mkdtemp(prefix="shoutreach_owner_")
     try:
@@ -381,6 +461,7 @@ def main():
         test_writes_fail_closed(work)
         test_single_operator_needs_no_ceremony(work)
         test_delete_user_guard(work)
+        test_routes_enforce_the_wall(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

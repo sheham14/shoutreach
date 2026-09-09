@@ -37,6 +37,11 @@ def fresh(work, name):
     import db
     importlib.reload(db)
     db.init_db()
+    # Campaigns belong to an operator now, and section 12 drives the HTTP
+    # routes as user 1 -- so that user has to own what the rest of the file
+    # creates.
+    if not db.get_user_by_username("admin"):
+        db.create_user("admin", "test-password-123", is_admin=True)
     return db
 
 

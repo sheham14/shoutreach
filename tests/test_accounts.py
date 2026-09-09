@@ -40,6 +40,9 @@ def boot(work):
     import app as app_mod
     importlib.reload(app_mod)
 
+    if not db.get_user_by_username("admin"):
+        db.create_user("admin", "test-password-123", is_admin=True)
+
     app_mod.app.config["TESTING"] = True
     client = app_mod.app.test_client()
     with client.session_transaction() as sess:

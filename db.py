@@ -601,6 +601,40 @@ def _resolve_owner_id(conn, owner_id=None) -> int:
     return users[0]["id"] if users else OWNER_UNASSIGNED
 
 
+def _owner_or_default(owner_id=None) -> int:
+    """_resolve_owner_id for callers that don't already hold a connection."""
+    if owner_id:
+        return int(owner_id)
+    with get_db() as conn:
+        return _resolve_owner_id(conn, None)
+
+
+def owns(kind: str, row_id, owner_id) -> bool:
+    """
+    Whether `owner_id` owns this row. The guard behind every route that acts on
+    a single record by id.
+
+    wa_leads and call_leads have no owner column of their own -- they are one
+    per business and inherit it -- so ownership is asked of the business they
+    hang off rather than duplicated onto them.
+    """
+    sql = {
+        "business":      "SELECT 1 FROM businesses WHERE id=? AND owner_id=?",
+        "campaign":      "SELECT 1 FROM campaigns WHERE id=? AND owner_id=?",
+        "call_campaign": "SELECT 1 FROM call_campaigns WHERE id=? AND owner_id=?",
+        "scrape_job":    "SELECT 1 FROM scrape_jobs WHERE id=? AND owner_id=?",
+        "email_lead":    "SELECT 1 FROM email_leads WHERE id=? AND owner_id=?",
+        "wa_lead":       ("SELECT 1 FROM wa_leads w JOIN businesses b ON b.id=w.business_id "
+                          "WHERE w.id=? AND b.owner_id=?"),
+        "call_lead":     ("SELECT 1 FROM call_leads c JOIN businesses b ON b.id=c.business_id "
+                          "WHERE c.id=? AND b.owner_id=?"),
+        "enrollment":    ("SELECT 1 FROM enrollments e JOIN campaigns c ON c.id=e.campaign_id "
+                          "WHERE e.id=? AND c.owner_id=?"),
+    }[kind]
+    with get_db() as conn:
+        return conn.execute(sql, (int(row_id), int(owner_id))).fetchone() is not None
+
+
 def _backfill_owner_ids(conn):
     """
     Assign every ownerless row to the founding account.
@@ -1212,10 +1246,23 @@ def reap_stale_scrape_jobs():
 
 # ── Campaigns ─────────────────────────────────────────────────────────────────
 
-def get_campaigns():
+def get_campaigns(owner_id=None, all_owners=False):
+    """
+    One operator's campaigns, or everyone's.
+
+    `all_owners` exists for the send loop in scheduler.py, which runs on a
+    timer with nobody logged in and has to send for every operator. It is the
+    only caller entitled to it -- anything answering a request must pass the
+    requesting user instead.
+    """
     with get_db() as conn:
+        if all_owners:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM campaigns ORDER BY created_at DESC"
+            ).fetchall()]
         return [dict(r) for r in conn.execute(
-            "SELECT * FROM campaigns ORDER BY created_at DESC"
+            "SELECT * FROM campaigns WHERE owner_id=? ORDER BY created_at DESC",
+            (_resolve_owner_id(conn, owner_id),)
         ).fetchall()]
 
 
@@ -1705,7 +1752,7 @@ def _note_alternate_name(conn, business_id: int, name: str):
         )
 
 
-def get_known_company_names() -> set:
+def get_known_company_names(owner_id=None) -> set:
     """
     Every company already stored, for the scraper's resume set.
 
@@ -1713,21 +1760,28 @@ def get_known_company_names() -> set:
     this lets a new search skip businesses an earlier search already collected
     -- overlapping niches like "dentists" and "dental clinics" in one city
     otherwise re-scrape the same places from scratch.
+
+    Scoped to the operator whose scrape job this is. Skipping a business
+    because the OTHER operator already has it would silently deny this one a
+    lead they are entitled to work, and leak the shape of the other's list
+    through what came back.
     """
     with get_db() as conn:
         return {
             r["name"] for r in conn.execute(
-                "SELECT DISTINCT name FROM businesses WHERE name != ''"
+                "SELECT DISTINCT name FROM businesses WHERE name != '' AND owner_id = ?",
+                (_resolve_owner_id(conn, owner_id),)
             ).fetchall()
         }
 
 
-def get_email_leads(limit=200, offset=0):
+def get_email_leads(limit=200, offset=0, owner_id=None):
     with get_db() as conn:
         return [dict(r) for r in conn.execute(f"""
             SELECT {_EMAIL_LEAD_COLUMNS} {_EMAIL_LEAD_JOIN}
+             WHERE b.owner_id = ?
              ORDER BY el.created_at DESC LIMIT ? OFFSET ?
-        """, (limit, offset)).fetchall()]
+        """, (_resolve_owner_id(conn, owner_id), limit, offset)).fetchall()]
 
 
 # ── Email leads: server-side paging, filtering and the lead-list view ────────
@@ -1781,9 +1835,18 @@ SOURCE_MANUAL = "manual"
 
 
 def _email_lead_filters(q="", source_job_id=None, status=None, include_deleted=False,
-                        call_status=None):
-    """Build the shared WHERE clause for the email lead list views."""
+                        call_status=None, owner_id=None):
+    """
+    Build the shared WHERE clause for the email lead list views.
+
+    `owner_id` is a resolved id, not None-means-everyone: every caller runs it
+    through _resolve_owner_id first, so a list view cannot accidentally be
+    built without a wall.
+    """
     clauses, params = [], []
+
+    clauses.append("b.owner_id = ?")
+    params.append(int(owner_id))
 
     if not include_deleted:
         clauses.append("el.status != 'deleted'")
@@ -1832,7 +1895,7 @@ def _email_lead_filters(q="", source_job_id=None, status=None, include_deleted=F
 
 def get_email_leads_page(page=1, per_page=50, q="", source_job_id=None, status=None,
                          include_deleted=False, sort_col="", sort_dir="desc",
-                         call_status=None):
+                         call_status=None, owner_id=None):
     """One page of email leads plus the total matching the same filter."""
     page     = max(1, int(page or 1))
     per_page = max(1, min(int(per_page or 50), 500))
@@ -1848,10 +1911,11 @@ def get_email_leads_page(page=1, per_page=50, q="", source_job_id=None, status=N
         sort_col = ""
         order_by = "el.created_at DESC, el.id DESC"
 
-    where, params = _email_lead_filters(q, source_job_id, status, include_deleted, call_status)
     join = _EMAIL_LEAD_JOIN
 
     with get_db() as conn:
+        where, params = _email_lead_filters(q, source_job_id, status, include_deleted,
+                                            call_status, _resolve_owner_id(conn, owner_id))
         total = conn.execute(f"SELECT COUNT(*) {join} {where}", params).fetchone()[0]
         rows = conn.execute(
             f"SELECT {_EMAIL_LEAD_COLUMNS} {join} {where} "
@@ -1871,7 +1935,7 @@ def get_email_leads_page(page=1, per_page=50, q="", source_job_id=None, status=N
 
 
 def get_email_lead_ids_matching(q="", source_job_id=None, status=None, include_deleted=False,
-                                call_status=None):
+                                call_status=None, owner_id=None):
     """
     Every email lead id matching a filter, ignoring paging.
 
@@ -1879,15 +1943,16 @@ def get_email_lead_ids_matching(q="", source_job_id=None, status=None, include_d
     reach the rows on screen, so a bulk delete over a filtered list would
     silently act on one page's worth.
     """
-    where, params = _email_lead_filters(q, source_job_id, status, include_deleted, call_status)
     with get_db() as conn:
+        where, params = _email_lead_filters(q, source_job_id, status, include_deleted,
+                                            call_status, _resolve_owner_id(conn, owner_id))
         return [r["id"] for r in conn.execute(
             f"SELECT el.id FROM email_leads el "
             f"JOIN businesses b ON b.id = el.business_id {where}", params
         ).fetchall()]
 
 
-def get_lead_sources():
+def get_lead_sources(owner_id=None):
     """
     The lead lists: one entry per scrape that produced businesses, newest
     first, plus a 'manual' bucket for hand-added and CSV-imported rows.
@@ -1909,9 +1974,10 @@ def get_lead_sources():
                    COUNT(*)                  AS count
               FROM businesses b
               LEFT JOIN scrape_jobs j ON j.id = b.source_job_id
+             WHERE b.owner_id = ?
              GROUP BY b.source_job_id
              ORDER BY (b.source_job_id IS NULL), b.source_job_id DESC
-        """).fetchall()
+        """, (_resolve_owner_id(conn, owner_id),)).fetchall()
 
     out = []
     for r in rows:
@@ -2266,25 +2332,32 @@ def unsubscribe_contact(email):
         """, (email_lc,))
 
 
-def get_unsubscribed_contacts():
+def get_unsubscribed_contacts(owner_id=None):
+    """
+    This operator's own opt-outs, for their suppression list view.
+
+    Only their own: the underlying suppression is global (see
+    unsubscribe_contact), but who ELSE has been asked to stop is not something
+    one operator needs to read out of another's list.
+    """
     with get_db() as conn:
         return [dict(r) for r in conn.execute("""
             SELECT el.email, el.first_name, el.last_name,
                    b.name AS company, el.created_at
               FROM email_leads el JOIN businesses b ON b.id = el.business_id
-             WHERE el.status = 'unsubscribed'
+             WHERE el.status = 'unsubscribed' AND b.owner_id = ?
              ORDER BY el.created_at DESC
-        """).fetchall()]
+        """, (_resolve_owner_id(conn, owner_id),)).fetchall()]
 
 
-def get_invalid_mx_contacts():
+def get_invalid_mx_contacts(owner_id=None):
     with get_db() as conn:
         return [dict(r) for r in conn.execute("""
             SELECT el.email, b.name AS company, b.website, b.address, el.created_at
               FROM email_leads el JOIN businesses b ON b.id = el.business_id
-             WHERE el.mx_valid = 0
+             WHERE el.mx_valid = 0 AND b.owner_id = ?
              ORDER BY el.created_at DESC
-        """).fetchall()]
+        """, (_resolve_owner_id(conn, owner_id),)).fetchall()]
 
 
 def mark_bounced(email):
@@ -3394,7 +3467,7 @@ def get_or_create_call_lead(conn, business_id: int) -> int:
     ).lastrowid
 
 
-def get_call_campaigns():
+def get_call_campaigns(owner_id=None):
     """
     Every campaign with its progress. One query per campaign is fine at this
     scale and keeps the counting rules in one readable place rather than a
@@ -3405,7 +3478,8 @@ def get_call_campaigns():
 
     with get_db() as conn:
         campaigns = [dict(r) for r in conn.execute(
-            "SELECT * FROM call_campaigns ORDER BY id DESC"
+            "SELECT * FROM call_campaigns WHERE owner_id=? ORDER BY id DESC",
+            (_resolve_owner_id(conn, owner_id),)
         ).fetchall()]
 
         for c in campaigns:
@@ -3564,7 +3638,7 @@ def search_businesses(q="", status=None, call_status=None, limit=100):
 
 
 def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_website=False,
-                   call_campaign_id=None):
+                   call_campaign_id=None, owner_id=None):
     """
     The leads to work right now.
 
@@ -3595,7 +3669,11 @@ def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_websit
     ]
     params = list(terminal)
 
+    owner = _owner_or_default(owner_id)
+
     def _apply_common(where, params):
+        where.append("b.owner_id = ?")
+        params.append(owner)
         if source_job_id:
             where.append("b.source_job_id = ?")
             params.append(int(source_job_id))
@@ -3648,12 +3726,14 @@ def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_websit
         return [dict(r) for r in rows]
 
 
-def get_call_queue_counts(source_job_id=None, only_no_website=False, call_campaign_id=None):
+def get_call_queue_counts(source_job_id=None, only_no_website=False, call_campaign_id=None,
+                          owner_id=None):
     """Bucket sizes, so the tabs can show what is waiting without loading it."""
+    owner = _owner_or_default(owner_id)
     return {
         b: len(get_call_queue(b, limit=100000, source_job_id=source_job_id,
                               only_no_website=only_no_website,
-                              call_campaign_id=call_campaign_id))
+                              call_campaign_id=call_campaign_id, owner_id=owner))
         for b in ("today", "new", "upcoming", "worked")
     }
 
@@ -3676,7 +3756,7 @@ def reopen_call_lead(call_lead_id: int) -> bool:
         return cur.rowcount > 0
 
 
-def get_call_summary(call_campaign_id=None) -> dict:
+def get_call_summary(call_campaign_id=None, owner_id=None) -> dict:
     """
     Totals across calling, scoped to a campaign when one is selected so the
     numbers agree with the list underneath rather than describing some wider
@@ -3701,8 +3781,9 @@ def get_call_summary(call_campaign_id=None) -> dict:
                         AND datetime(cl.next_call_at) <= datetime('now')
                         AND cl.call_status NOT IN ({tph}) THEN 1 ELSE 0 END)    AS due
               FROM businesses b LEFT JOIN call_leads cl ON cl.business_id = b.id
-             WHERE b.do_not_contact = 0 AND COALESCE(b.phone,'') != '' {scope}
-        """, (*terminal, *scope_params)).fetchone()
+             WHERE b.do_not_contact = 0 AND COALESCE(b.phone,'') != ''
+               AND b.owner_id = ? {scope}
+        """, (*terminal, _resolve_owner_id(conn, owner_id), *scope_params)).fetchone()
 
         # Calls, not leads: one clinic rung four times is four calls, and that
         # is the number that reflects a day's work.
@@ -4023,40 +4104,42 @@ def get_wa_lead(wa_lead_id: int):
         return dict(row) if row else None
 
 
-def get_wa_leads(status: str = None, limit: int = 200) -> list:
+def get_wa_leads(status: str = None, limit: int = 200, owner_id=None) -> list:
     """
     The WhatsApp list, optionally scoped to one lifecycle stage:
     '' (imported, awaiting signal), 'signal_ready' (needs operator review),
     'confirmed' (signal locked in, awaiting drafting), 'drafted' (ready to
     open), 'sent' (in the cadence), 'replied' / 'moved' (terminal).
     """
-    where, params = "", []
-    if status is not None:
-        where = "WHERE w.wa_status = ?"
-        params.append(status)
-    params.append(limit)
+    clauses, params = ["b.owner_id = ?"], []
     with get_db() as conn:
+        params.append(_resolve_owner_id(conn, owner_id))
+        if status is not None:
+            clauses.append("w.wa_status = ?")
+            params.append(status)
+        params.append(limit)
         rows = conn.execute(
-            f"SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN} {where} "
+            f"SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN} WHERE {' AND '.join(clauses)} "
             f"ORDER BY w.created_at DESC LIMIT ?", params,
         ).fetchall()
         return [dict(r) for r in rows]
 
 
-def get_wa_summary() -> dict:
+def get_wa_summary(owner_id=None) -> dict:
     with get_db() as conn:
         row = conn.execute("""
             SELECT
-              COUNT(*)                                                     AS total,
-              SUM(CASE WHEN wa_status=''            THEN 1 ELSE 0 END)     AS pending_signal,
-              SUM(CASE WHEN wa_status='signal_ready' THEN 1 ELSE 0 END)    AS awaiting_review,
-              SUM(CASE WHEN wa_status='confirmed'   THEN 1 ELSE 0 END)     AS awaiting_draft,
-              SUM(CASE WHEN wa_status='drafted'     THEN 1 ELSE 0 END)     AS ready_to_send,
-              SUM(CASE WHEN wa_status='sent'        THEN 1 ELSE 0 END)     AS in_cadence,
-              SUM(replied)                                                 AS replied,
-              SUM(CASE WHEN moved_to != ''          THEN 1 ELSE 0 END)     AS moved
-              FROM wa_leads
-        """).fetchone()
+              COUNT(*)                                                       AS total,
+              SUM(CASE WHEN w.wa_status=''            THEN 1 ELSE 0 END)     AS pending_signal,
+              SUM(CASE WHEN w.wa_status='signal_ready' THEN 1 ELSE 0 END)    AS awaiting_review,
+              SUM(CASE WHEN w.wa_status='confirmed'   THEN 1 ELSE 0 END)     AS awaiting_draft,
+              SUM(CASE WHEN w.wa_status='drafted'     THEN 1 ELSE 0 END)     AS ready_to_send,
+              SUM(CASE WHEN w.wa_status='sent'        THEN 1 ELSE 0 END)     AS in_cadence,
+              SUM(w.replied)                                                 AS replied,
+              SUM(CASE WHEN w.moved_to != ''          THEN 1 ELSE 0 END)     AS moved
+              FROM wa_leads w JOIN businesses b ON b.id = w.business_id
+             WHERE b.owner_id = ?
+        """, (_resolve_owner_id(conn, owner_id),)).fetchone()
         return {k: (row[k] or 0) for k in row.keys()}
 
 
@@ -4100,14 +4183,15 @@ def confirm_wa_signal(wa_lead_id: int, signal_type: str, signal_detail: str):
         """, (signal_type, signal_detail, wa_lead_id))
 
 
-def get_wa_leads_ready_to_draft(limit: int = 200) -> list:
+def get_wa_leads_ready_to_draft(limit: int = 200, owner_id=None) -> list:
     """Confirmed leads with no draft yet -- what the batch draft step processes."""
     with get_db() as conn:
         rows = conn.execute(f"""
             SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN}
              WHERE w.wa_status='confirmed' AND w.signal_confirmed=1
+               AND b.owner_id = ?
              ORDER BY w.created_at ASC LIMIT ?
-        """, (limit,)).fetchall()
+        """, (_resolve_owner_id(conn, owner_id), limit)).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -4178,7 +4262,7 @@ def set_wa_paused(wa_lead_id: int, paused: bool = True):
         conn.execute("UPDATE wa_leads SET paused=? WHERE id=?", (1 if paused else 0, wa_lead_id))
 
 
-def get_wa_followups_due(days: int = 3, limit: int = 200) -> list:
+def get_wa_followups_due(days: int = 3, limit: int = 200, owner_id=None) -> list:
     """
     Leads due for a follow-up: sent at least `days` ago, not replied, not
     paused, not moved to another channel. A live query, not a scheduled job
@@ -4193,8 +4277,9 @@ def get_wa_followups_due(days: int = 3, limit: int = 200) -> list:
                AND w.replied = 0 AND w.paused = 0 AND w.moved_to = ''
                AND w.sent_date IS NOT NULL
                AND datetime(w.sent_date) <= datetime('now', ?)
+               AND b.owner_id = ?
              ORDER BY w.sent_date ASC LIMIT ?
-        """, (f"-{int(days)} days", limit)).fetchall()
+        """, (f"-{int(days)} days", _resolve_owner_id(conn, owner_id), limit)).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -4235,34 +4320,29 @@ def move_wa_lead(wa_lead_id: int, destination: str) -> dict:
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
-def get_stats(campaign_id=None):
+def get_stats(campaign_id=None, owner_id=None):
     with get_db() as conn:
-        q = ("WHERE campaign_id=?", (campaign_id,)) if campaign_id else ("", ())
-        def cnt(table, cond=""):
-            sql = f"SELECT COUNT(*) FROM {table} {q[0]} {cond}"
-            return conn.execute(sql, q[1]).fetchone()[0]
-
+        # Enrollments and sends have no owner of their own -- they belong to a
+        # campaign, and the campaign has one. Without this the dashboard would
+        # add both operators' numbers together and report neither's.
         if campaign_id:
-            total     = cnt("enrollments")
-            sent      = cnt("sends")
-            replied   = cnt("enrollments", "AND status='replied'")
-            bounced   = cnt("enrollments", "AND status='bounced'")
-            completed = cnt("enrollments", "AND status='completed'")
-            queued    = cnt("enrollments", "AND status='queued'")
-            sent_to   = conn.execute(
-                "SELECT COUNT(DISTINCT email_lead_id) FROM sends WHERE campaign_id=?",
-                (campaign_id,)
-            ).fetchone()[0]
+            scope, args = "WHERE campaign_id=?", (campaign_id,)
         else:
-            total     = conn.execute("SELECT COUNT(*) FROM enrollments").fetchone()[0]
-            sent      = conn.execute("SELECT COUNT(*) FROM sends").fetchone()[0]
-            replied   = conn.execute("SELECT COUNT(*) FROM enrollments WHERE status='replied'").fetchone()[0]
-            bounced   = conn.execute("SELECT COUNT(*) FROM enrollments WHERE status='bounced'").fetchone()[0]
-            completed = conn.execute("SELECT COUNT(*) FROM enrollments WHERE status='completed'").fetchone()[0]
-            queued    = conn.execute("SELECT COUNT(*) FROM enrollments WHERE status='queued'").fetchone()[0]
-            sent_to   = conn.execute(
-                "SELECT COUNT(DISTINCT email_lead_id) FROM sends"
-            ).fetchone()[0]
+            scope = "WHERE campaign_id IN (SELECT id FROM campaigns WHERE owner_id=?)"
+            args = (_resolve_owner_id(conn, owner_id),)
+
+        def cnt(table, cond=""):
+            return conn.execute(f"SELECT COUNT(*) FROM {table} {scope} {cond}", args).fetchone()[0]
+
+        total     = cnt("enrollments")
+        sent      = cnt("sends")
+        replied   = cnt("enrollments", "AND status='replied'")
+        bounced   = cnt("enrollments", "AND status='bounced'")
+        completed = cnt("enrollments", "AND status='completed'")
+        queued    = cnt("enrollments", "AND status='queued'")
+        sent_to   = conn.execute(
+            f"SELECT COUNT(DISTINCT email_lead_id) FROM sends {scope}", args
+        ).fetchone()[0]
 
         # reply_rate = % of people we emailed who replied (industry-standard definition)
         reply_rate = round(replied / sent_to * 100, 1) if sent_to > 0 else 0
@@ -4366,6 +4446,14 @@ def create_user(username: str, password: str, is_admin: bool = False) -> int:
             "INSERT INTO users(username, password_hash, is_admin) VALUES(?,?,?)",
             (username.strip().lower(), _hash_password(password), 1 if is_admin else 0),
         )
+        # The founding account inherits anything already in the database. Rows
+        # can predate it -- init_db builds the schema long before anyone signs
+        # up -- and without this they would belong to owner 0 forever, visible
+        # to nobody. Only when this is the only account: once a second exists,
+        # unassigned rows are ambiguous and must not be handed to whoever
+        # happened to register next.
+        if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1:
+            _backfill_owner_ids(conn)
         return cur.lastrowid
 
 

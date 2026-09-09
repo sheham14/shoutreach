@@ -44,6 +44,9 @@ def boot(work):
     import db
     importlib.reload(db)
     db.init_db()
+    # The session faked below names user 1, and leads belong to an operator now.
+    if not db.get_user_by_username("admin"):
+        db.create_user("admin", "test-password-123", is_admin=True)
     import app as app_mod
     importlib.reload(app_mod)
     app_mod.app.config["TESTING"] = True
