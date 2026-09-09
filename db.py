@@ -730,6 +730,37 @@ def _backfill_owner_ids(conn):
         (owner, OWNER_UNASSIGNED),
     )
 
+    _migrate_wa_settings(conn, owner)
+
+
+def _migrate_wa_settings(conn, owner: int):
+    """
+    Hand the pre-multi-user WhatsApp copy to the operator who wrote it.
+
+    Templates and the follow-up interval used to be one shared set. Moved
+    rather than copied: a leftover shared value is read by nothing now, and
+    the version that did read it as a fallback is exactly the cross-operator
+    leak that was removed -- a second operator opening the editor onto
+    somebody else's messages.
+
+    Idempotent. Once the shared key is gone there is nothing left to move, and
+    an operator who already has their own value keeps it.
+    """
+    bases = [key for key, _default in _WA_TEMPLATE_SETTINGS_KEYS.values()]
+    bases.append(WA_FOLLOWUP_DAYS_KEY)
+    for base in bases:
+        shared = conn.execute(
+            "SELECT value FROM settings WHERE key=?", (base,)
+        ).fetchone()
+        if not shared or shared["value"] in (None, ""):
+            continue
+        own_key = _wa_owner_key(base, owner)
+        if conn.execute("SELECT 1 FROM settings WHERE key=?", (own_key,)).fetchone():
+            continue
+        conn.execute("INSERT INTO settings(key, value) VALUES(?,?)",
+                     (own_key, shared["value"]))
+        conn.execute("DELETE FROM settings WHERE key=?", (base,))
+
 
 # ── One-shot migration: contacts → businesses + per-channel leads ────────────
 
@@ -4134,26 +4165,24 @@ def _wa_owner_key(base: str, owner_id: int) -> str:
     Per-operator settings key.
 
     Suffixed rather than given its own table: these are three strings and a
-    number per person, and the fallback below means nothing has to be migrated.
+    number per person, and _migrate_wa_settings moves the old shared value into
+    the founding operator's key so nothing else has to change.
     """
     return f"{base}:{int(owner_id)}"
 
 
 def _wa_setting(settings: dict, base: str, owner_id: int, default):
     """
-    This operator's value, falling back to the shared one, then the default.
+    This operator's own value, or the factory default.
 
-    The shared key is what every install had before templates were per-person.
-    Falling back to it means the existing customised copy carries over for the
-    operator who wrote it, and a second operator starts from that same copy
-    rather than from factory text -- a better starting point than the default,
-    and it costs nothing to abandon by saving their own.
+    Deliberately does NOT fall back to another operator's copy. An earlier
+    version fell back to the shared pre-multi-user key, which meant a second
+    operator opened the editor onto the first one's messages -- and two people
+    here lead with different services, so that copy is both wrong for them and
+    not theirs to read. Anyone who wants the other's wording can ask for it.
     """
     own = settings.get(_wa_owner_key(base, owner_id))
-    if own not in (None, ""):
-        return own
-    shared = settings.get(base)
-    return shared if shared not in (None, "") else default
+    return own if own not in (None, "") else default
 
 
 def _wa_arms(raw, default: str) -> list:

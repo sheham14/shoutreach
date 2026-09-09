@@ -569,6 +569,51 @@ def b_business_id(db_mod, owner):
         ).fetchone()["id"]
 
 
+def test_wa_copy_is_not_inherited(work):
+    """
+    Message copy must not cross the wall, not even as a starting point.
+
+    An earlier version fell back to the shared pre-multi-user value when an
+    operator had none of their own, so a second operator opened the editor
+    onto the first one's messages. Two people here lead with different
+    services: that copy is wrong for them and not theirs to read.
+    """
+    print("\n15. WHATSAPP COPY IS NOT INHERITED FROM THE OTHER OPERATOR")
+    path = os.path.join(work, "wacopy.db")
+    db = load_db(path)
+    db.init_db()
+    a = db.create_user("first", "pw", is_admin=True)
+
+    # The shape an install had before templates were per-person.
+    db.save_settings({"wa_template_gap": "First operator's own pitch",
+                      "wa_followup_days": "7"})
+    db.init_db()          # startup runs the migration
+
+    mine = db.get_wa_templates(owner_id=a)
+    check("the operator who wrote it keeps it",
+          mine["gap"] == ["First operator's own pitch"], f"got {mine['gap']}")
+    check("along with their follow-up interval", mine["followup_days"] == 7,
+          f"got {mine['followup_days']}")
+    check("and the shared copy is gone rather than left readable",
+          db.get_settings().get("wa_template_gap") in (None, ""),
+          f"got {db.get_settings().get('wa_template_gap')!r}")
+
+    b = db.create_user("second", "pw", is_admin=False)
+    theirs = db.get_wa_templates(owner_id=b)
+    check("a second operator does not inherit a word of it",
+          "First operator" not in json.dumps(theirs["gap"]), f"got {theirs['gap']}")
+    check("they get the factory default to write over",
+          theirs["gap"] == [db._DEFAULT_WA_TEMPLATE_GAP], f"got {theirs['gap']}")
+    check("and the factory follow-up interval, not the other operator's",
+          theirs["followup_days"] == db.WA_DEFAULT_FOLLOWUP_DAYS,
+          f"got {theirs['followup_days']}")
+
+    db.save_wa_templates({"gap": ["Second operator's own pitch"]}, owner_id=b)
+    check("saving their own leaves the first operator's untouched",
+          db.get_wa_templates(owner_id=a)["gap"] == ["First operator's own pitch"],
+          f"got {db.get_wa_templates(owner_id=a)['gap']}")
+
+
 def main():
     work = tempfile.mkdtemp(prefix="shoutreach_owner_")
     try:
@@ -583,6 +628,7 @@ def main():
         test_single_operator_needs_no_ceremony(work)
         test_delete_user_guard(work)
         test_routes_enforce_the_wall(work)
+        test_wa_copy_is_not_inherited(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

@@ -52,13 +52,20 @@
     </div>
     <div class="form-group">
       <label>Password</label>
-      <input id="new-user-password" type="password" placeholder="Min 8 characters" />
+      <input id="new-user-password" type="password" placeholder="Min 12 characters" />
     </div>
     <div class="form-group">
       <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
         <input type="checkbox" id="new-user-admin" style="cursor:pointer" />
-        Admin (can manage users and all settings)
+        Admin
       </label>
+      <div class="form-hint">
+        Everyone gets their own leads, campaigns, call script and message
+        templates — private either way, and nobody sees anyone else's.
+        Admin adds the shared setup on top: email accounts, sending rules,
+        API keys and user management. Leave it off for someone who is just
+        doing their own outreach.
+      </div>
     </div>
     <div class="flex gap-2">
       <button class="btn btn-primary" onclick="saveNewUser()">Create User</button>

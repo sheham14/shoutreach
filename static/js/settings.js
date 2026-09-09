@@ -169,6 +169,10 @@ async function saveNewUser() {
     toast("Username and password required", "err");
     return;
   }
+  if (password.length < 12) {
+    toast("Password must be at least 12 characters", "err");
+    return;
+  }
   const res = await api("/api/users", "POST", { username, password, is_admin });
   if (res.error) {
     toast(res.error, "err");
@@ -222,7 +226,13 @@ async function submitChangePassword() {
 
 async function deleteUser(uid, username) {
   if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
-  await api(`/api/users/${uid}`, "DELETE");
+  const res = await api(`/api/users/${uid}`, "DELETE");
+  // Refused while they still own leads or campaigns — say so rather than
+  // reporting success and leaving the account sitting there.
+  if (!res || res.error) {
+    toast((res && res.error) || "Could not delete that user", "err");
+    return;
+  }
   toast("User deleted");
   loadUsers();
 }

@@ -788,8 +788,11 @@ def api_create_user():
     is_admin = bool(d.get("is_admin", False))
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
-    if len(password) < 8:
-        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    # Same floor as changing one anywhere else. It used to be 8 here and 12
+    # everywhere else, so the weakest password on the system was always the one
+    # an account was created with.
+    if len(password) < 12:
+        return jsonify({"error": "Password must be at least 12 characters"}), 400
     if db.get_user_by_username(username):
         return jsonify({"error": "Username already exists"}), 409
     uid = db.create_user(username, password, is_admin)
