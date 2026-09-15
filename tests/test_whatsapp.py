@@ -439,6 +439,64 @@ def test_ab_arms(db, client, token):
           len(arm_b) == 1 and arm_b[0]["replied"] == 1, f"{stats}")
 
 
+def test_add_existing(db, client, token):
+    print("\n18. PUTTING LEADS YOU ALREADY HAVE ONTO WHATSAPP")
+    db.upsert_businesses([
+        {"company": "Existing With Phone", "phone": "050 111 2233", "website": "https://ewp.ae"},
+        {"company": "Existing No Phone", "website": "https://enp.ae"},
+    ])
+    found = db.search_businesses(q="Existing", not_on_channel="whatsapp")
+    ids = {r["company"]: r["id"] for r in found["rows"]}
+    check("the picker offers leads not yet on WhatsApp",
+          {"Existing With Phone", "Existing No Phone"} <= set(ids), str(sorted(ids)))
+
+    s, body = api(client, token, "post", "/api/wa/add-existing",
+                  json={"business_ids": list(ids.values())})
+    check("a country is required", s == 400, f"{s} {body}")
+
+    s, body = api(client, token, "post", "/api/wa/add-existing",
+                  json={"business_ids": list(ids.values()), "country": "AE"})
+    check("the request succeeds", s == 200, str(body))
+    check("the one with a phone is added", body.get("added") == 1, str(body))
+    check("the one without is counted, not silently dropped", body.get("no_phone") == 1, str(body))
+    again = {r["company"] for r in db.search_businesses(q="Existing", not_on_channel="whatsapp")["rows"]}
+    check("and the picker stops offering it once it's on WhatsApp",
+          "Existing With Phone" not in again, str(sorted(again)))
+
+    s, body = api(client, token, "post", "/api/wa/add-existing",
+                  json={"business_ids": [ids["Existing With Phone"]], "country": "AE"})
+    check("adding it twice doesn't duplicate it",
+          body.get("added") == 0 and body.get("already") == 1, str(body))
+
+    db.upsert_businesses([{"email": "hi@emailed.ae", "company": "Already Emailed",
+                           "phone": "050 999 8877"}])
+    emailed = db.search_businesses(q="Already Emailed")["rows"][0]["id"]
+    s, body = api(client, token, "post", "/api/wa/add-existing",
+                  json={"business_ids": [emailed], "country": "AE"})
+    check("a lead already being emailed is held for confirmation",
+          body.get("added") == 0 and len(body.get("conflicts") or []) == 1, str(body))
+    s, body = api(client, token, "post", "/api/wa/add-existing",
+                  json={"business_ids": [emailed], "country": "AE", "confirm_conflicts": True})
+    check("and goes through once confirmed", body.get("added") == 1, str(body))
+
+    wa_id = next(l["id"] for l in db.get_wa_leads() if l["company"] == "Existing With Phone")
+    db.move_wa_lead(wa_id, "call")
+    s, body = api(client, token, "post", "/api/wa/add-existing", json={
+        "business_ids": [ids["Existing With Phone"]], "country": "AE", "confirm_conflicts": True,
+    })
+    check("a number already ruled out as not on WhatsApp is not requeued",
+          body.get("ruled_out") == 1 and body.get("added") == 0, str(body))
+
+    db.upsert_businesses([{"company": "Asked To Stop", "phone": "050 444 5566"}])
+    stop_id = db.search_businesses(q="Asked To Stop")["rows"][0]["id"]
+    with db.get_db() as conn:
+        conn.execute("UPDATE businesses SET do_not_contact=1 WHERE id=?", (stop_id,))
+    s, body = api(client, token, "post", "/api/wa/add-existing",
+                  json={"business_ids": [stop_id], "country": "AE"})
+    check("someone who asked not to be contacted is not added",
+          body.get("opted_out") == 1 and body.get("added") == 0, str(body))
+
+
 def test_import_and_cross_channel(db, client, token):
     print("\n15. IMPORT: DEDUPES THROUGH THE SAME BUSINESS IDENTITY AS EVERY OTHER CHANNEL")
     db.upsert_businesses([{"email": "front@sharedclinic.ae", "company": "Shared Clinic",
@@ -481,7 +539,7 @@ def test_import_and_cross_channel(db, client, token):
 
 
 def test_http_auth(app_mod):
-    print("\n18. THE ROUTES NEED A LOGIN")
+    print("\n19. THE ROUTES NEED A LOGIN")
     anon = app_mod.app.test_client()
     for path in ("/api/wa/leads", "/api/wa/summary", "/api/wa/followups-due",
                  "/api/wa/templates"):
@@ -504,6 +562,7 @@ def main():
         test_templates(db, client, token)
         test_import_and_cross_channel(db, client, token)
         test_ab_arms(db, client, token)
+        test_add_existing(db, client, token)
         test_http_auth(app_mod)
     finally:
         shutil.rmtree(work, ignore_errors=True)

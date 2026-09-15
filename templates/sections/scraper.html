@@ -2,7 +2,7 @@
   <div class="page-header">
     <div>
       <div class="page-title">Lead Scraper</div>
-      <div class="page-sub">Google Maps → emails → contacts</div>
+      <div class="page-sub">Google Maps → your email or WhatsApp leads</div>
     </div>
   </div>
 
@@ -36,6 +36,23 @@
     <div class="card" style="padding:24px">
       <div class="card-title" style="margin-bottom:20px">Search Settings</div>
       <div class="form-group">
+        <label>Send leads to</label>
+        <select id="sc-destination" onchange="scraperDestinationChanged()">
+          <option value="email">Email</option>
+          <option value="whatsapp">WhatsApp</option>
+        </select>
+        <div class="form-hint" id="sc-destination-hint">
+          Visits each business's website looking for an email address. Leads go to Contacts.
+        </div>
+      </div>
+      <div class="form-group" id="sc-country-group" style="display:none">
+        <label>Country the numbers are in</label>
+        <select id="sc-country">
+          <option value="AE">United Arab Emirates</option>
+          <option value="QA">Qatar</option>
+        </select>
+      </div>
+      <div class="form-group">
         <label>Niche / Business Type</label>
         <input id="sc-niche" placeholder="dental clinics" />
       </div>
@@ -50,7 +67,7 @@
       </div>
       <div class="form-group" style="display:flex;align-items:center;gap:10px">
         <input type="checkbox" id="sc-autoimport" checked style="width:auto;margin:0" />
-        <label style="margin:0;font-size:13px;color:var(--text)">Auto-import contacts with emails into the database</label>
+        <label for="sc-autoimport" id="sc-autoimport-label" style="margin:0;font-size:13px;color:var(--text)">Import leads into Contacts as they're found</label>
       </div>
       <div class="flex gap-2" style="margin-top:8px">
         <button class="btn btn-primary" id="sc-start-btn" onclick="startScraper()">▶ Start</button>

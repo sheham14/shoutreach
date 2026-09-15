@@ -1,6 +1,16 @@
 let _scraperPoll = null;
 
 async function loadScraper() {
+  // Arriving from WhatsApp's "Scrape Google Maps" button: aim the form at
+  // WhatsApp so what this finds lands there. One-shot, so a later visit from
+  // the sidebar opens on whatever was last picked rather than being re-forced.
+  if (window._scraperPreset) {
+    const { destination, country } = window._scraperPreset;
+    window._scraperPreset = null;
+    document.getElementById('sc-destination').value = destination;
+    if (country) document.getElementById('sc-country').value = country;
+  }
+  scraperDestinationChanged();
   await pollScraperStatus();
   // Keep polling while the section is open so the worker indicator stays
   // honest even when no job is running -- otherwise you only learn the worker
@@ -14,10 +24,12 @@ async function startScraper() {
   const city       = document.getElementById('sc-city').value.trim();
   const maxResults = +document.getElementById('sc-max').value;
   const autoImport = document.getElementById('sc-autoimport').checked;
+  const destination = document.getElementById('sc-destination').value;
+  const country     = destination === 'whatsapp' ? document.getElementById('sc-country').value : '';
   if (!niche || !city) { toast('Enter a niche and city', 'err'); return; }
 
   const res = await api('/api/scraper/start', 'POST',
-    { niche, city, max_results: maxResults, auto_import: autoImport });
+    { niche, city, max_results: maxResults, auto_import: autoImport, destination, country });
   if (!res.ok) { toast(res.error || 'Failed to queue the scrape', 'err'); return; }
 
   // Queued with no worker connected is a real outcome, not an error -- it will
@@ -30,6 +42,26 @@ async function startScraper() {
   _setScraperUI('running');
   clearInterval(_scraperPoll);
   _scraperPoll = setInterval(pollScraperStatus, 2000);
+}
+
+const _SCRAPER_DESTINATIONS = {
+  email: {
+    hint: "Visits each business's website looking for an email address. Leads go to Contacts.",
+    importLabel: "Import leads into Contacts as they're found",
+  },
+  whatsapp: {
+    hint: "Uses the phone number from Google Maps and skips the websites, so it's much faster. Leads go to WhatsApp and nowhere else.",
+    importLabel: "Import leads into WhatsApp as they're found",
+  },
+};
+
+function scraperDestinationChanged() {
+  const destination = document.getElementById('sc-destination').value;
+  const spec = _SCRAPER_DESTINATIONS[destination] || _SCRAPER_DESTINATIONS.email;
+  document.getElementById('sc-destination-hint').textContent = spec.hint;
+  document.getElementById('sc-autoimport-label').textContent = spec.importLabel;
+  document.getElementById('sc-country-group').style.display =
+    destination === 'whatsapp' ? 'block' : 'none';
 }
 
 async function stopScraper() {
@@ -78,7 +110,7 @@ async function pollScraperStatus() {
   const pct = d.total ? Math.round(d.progress / d.total * 100) : 0;
   document.getElementById('sc-progress-bar').style.width = pct + '%';
   document.getElementById('sc-progress-text').textContent =
-    d.total ? `${d.progress} / ${d.total} businesses`
+    d.total ? `${d.progress} / ${d.total} businesses → ${d.destination === 'whatsapp' ? 'WhatsApp' : 'Contacts'}`
             : (d.status === 'idle' ? 'Idle' : (d.status || 'Idle'));
   document.getElementById('sc-found').textContent    = d.found    ?? '—';
   document.getElementById('sc-scraped').textContent  = d.progress ?? '—';

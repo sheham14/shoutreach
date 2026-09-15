@@ -180,6 +180,68 @@ def main():
                         json={"rows": [{"email": f"a{i}@b.ca"} for i in range(50_001)]})
         check("oversized JSON import is refused", r.status_code == 413, f"got {r.status_code}")
 
+        print("\n9. A SCRAPE AIMED AT WHATSAPP LANDS THERE AND NOWHERE ELSE")
+        r = admin_post(client, "/api/scraper/start",
+                       {"niche": "dentists", "city": "Doha", "destination": "whatsapp"})
+        check("a WhatsApp scrape needs a country", r.status_code == 400, f"got {r.status_code}")
+        r = admin_post(client, "/api/scraper/start",
+                       {"niche": "dentists", "city": "Doha", "destination": "fax"})
+        check("an unknown destination is refused", r.status_code == 400, f"got {r.status_code}")
+
+        r = admin_post(client, "/api/scraper/start", {"niche": "dentists", "city": "Doha",
+                                                      "destination": "whatsapp", "country": "QA"})
+        wa_job = (r.get_json() or {}).get("job_id")
+        check("a WhatsApp scrape with a country queues", r.status_code == 200 and wa_job,
+              f"{r.status_code} {r.get_json()}")
+
+        spec = client.post("/api/scraper/claim", headers=wh).get_json() or {}
+        check("the worker is told it's a WhatsApp scrape, and where",
+              spec.get("destination") == "whatsapp" and spec.get("country") == "QA", str(spec))
+
+        # A worker that hasn't been updated still hunts for emails and sends
+        # them. They must not become email leads.
+        r = client.post("/api/contacts/import", headers=wh, json={"rows": [
+            {"email": "front@pearldental.qa", "company": "Pearl Dental", "phone": "5512 3456",
+             "website": "http://pearldental.qa", "mx_valid": 1, "source_job_id": wa_job},
+            {"email": "", "company": "Corniche Clinic", "phone": "4412 7788", "website": "",
+             "status": "no_website", "source_job_id": wa_job},
+        ]})
+        body = r.get_json() or {}
+        check("the worker's import succeeds", r.status_code == 200 and body.get("ok"),
+              f"{r.status_code} {body}")
+        check("and is filed as WhatsApp", body.get("destination") == "whatsapp", str(body))
+        with db.get_db() as conn:
+            wa = conn.execute("""
+                SELECT w.wa_number FROM wa_leads w JOIN businesses b ON b.id = w.business_id
+                 WHERE b.name IN ('Pearl Dental', 'Corniche Clinic')
+            """).fetchall()
+            stray_email = conn.execute(
+                "SELECT COUNT(*) FROM email_leads WHERE email='front@pearldental.qa'"
+            ).fetchone()[0]
+        check("both became WhatsApp leads", len(wa) == 2, f"got {len(wa)}")
+        check("with numbers formatted for Qatar",
+              all(row["wa_number"].startswith("974") for row in wa), str([dict(x) for x in wa]))
+        check("and the email a stale worker sent was not filed as an email lead",
+              stray_email == 0, f"got {stray_email}")
+
+        # The same job id arriving from a person, not the worker, means Contacts.
+        r = client.post("/api/contacts/import", headers={"X-CSRF-Token": "test-csrf"}, json={"rows": [
+            {"email": "hello@westbay.qa", "company": "West Bay Dental",
+             "website": "http://westbay.qa", "mx_valid": 1, "source_job_id": wa_job},
+        ]})
+        body = r.get_json() or {}
+        with db.get_db() as conn:
+            westbay_email = conn.execute(
+                "SELECT COUNT(*) FROM email_leads WHERE email='hello@westbay.qa'"
+            ).fetchone()[0]
+            westbay_wa = conn.execute("""
+                SELECT COUNT(*) FROM wa_leads w JOIN businesses b ON b.id = w.business_id
+                 WHERE b.name = 'West Bay Dental'
+            """).fetchone()[0]
+        check("a CSV imported by hand through Contacts still goes to Contacts",
+              westbay_email == 1 and westbay_wa == 0,
+              f"email={westbay_email} whatsapp={westbay_wa} body={body}")
+
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

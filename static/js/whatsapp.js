@@ -445,7 +445,123 @@ async function saveWaTemplates() {
 
 // ── Import ────────────────────────────────────────────────────────────────────
 
-function openWaImportModal() { openModal('modal-import-wa'); }
+// One "Add leads" door with the same routes in as Calling: pick from leads you
+// already have, bring a CSV or paste, or go and scrape new ones.
+let _waAddTab = 'existing';
+let _waAddSelected = new Set();
+let _waAddRows = [];
+let _waAddTotal = 0;
+let _waAddTimer = null;
+
+function openWaImportModal(tab = 'existing') {
+  _waAddSelected.clear();
+  const search = document.getElementById('wa-add-search');
+  if (search) search.value = '';
+  openModal('modal-import-wa');
+  setWaAddTab(tab);
+}
+
+function setWaAddTab(tab) {
+  _waAddTab = tab;
+  ['existing', 'import'].forEach(t => {
+    const btn = document.getElementById(`wa-add-tab-${t}`);
+    if (btn) {
+      btn.classList.toggle('btn-primary', t === tab);
+      btn.classList.toggle('btn-ghost', t !== tab);
+    }
+    const pane = document.getElementById(`wa-add-pane-${t}`);
+    if (pane) pane.style.display = t === tab ? 'block' : 'none';
+  });
+  const submit = document.getElementById('wa-add-submit');
+  if (submit) submit.textContent = tab === 'existing' ? 'Add to WhatsApp' : 'Import';
+  if (tab === 'existing') waAddSearch();
+}
+
+function waAddSearch() {
+  clearTimeout(_waAddTimer);
+  _waAddTimer = setTimeout(_waAddFetch, 250);
+}
+
+async function _waAddFetch() {
+  const p = new URLSearchParams({ per_page: 100 });
+  const q = document.getElementById('wa-add-search').value.trim();
+  if (q) p.set('q', q);
+  const status = document.getElementById('wa-add-status').value;
+  if (status) p.set('status', status);
+  if (document.getElementById('wa-add-new-only').checked) p.set('not_on', 'whatsapp');
+  const data = await api('/api/businesses/search?' + p.toString());
+  _waAddRows = (data && data.rows) || [];
+  _waAddTotal = data ? data.total : 0;
+  _waAddRender();
+}
+
+function _waAddRender() {
+  const tbody = document.getElementById('wa-add-table');
+  document.getElementById('wa-add-count').textContent =
+    `${_waAddSelected.size} selected · showing ${_waAddRows.length} of ${_waAddTotal}`;
+  if (!_waAddRows.length) {
+    tbody.innerHTML = '<tr><td colspan="3"><div class="empty-state"><p>No leads match</p></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = _waAddRows.map(c => `
+    <tr style="cursor:pointer" onclick="waAddToggle(${c.id})">
+      <td><input type="checkbox" ${_waAddSelected.has(c.id) ? 'checked' : ''}
+                 onclick="event.stopPropagation();waAddToggle(${c.id})" style="cursor:pointer" /></td>
+      <td>${esc(c.company || '—')}${contactSignalPill(c)}</td>
+      <td class="mono" style="font-size:12px">${c.phone ? esc(c.phone) : '<span class="text-muted">no phone</span>'}</td>
+    </tr>`).join('');
+}
+
+function waAddToggle(id) {
+  if (_waAddSelected.has(id)) _waAddSelected.delete(id); else _waAddSelected.add(id);
+  _waAddRender();
+}
+
+function waAddSelectAllShown() {
+  _waAddRows.forEach(c => _waAddSelected.add(c.id));
+  _waAddRender();
+}
+
+function waAddClearSelection() {
+  _waAddSelected.clear();
+  _waAddRender();
+}
+
+async function submitWaAdd() {
+  if (_waAddTab === 'import') return importWaLeads();
+  if (!_waAddSelected.size) { toast('Select at least one lead', 'err'); return; }
+
+  const country = document.getElementById('wa-import-country').value;
+  const first = await api('/api/wa/add-existing', 'POST',
+                          { business_ids: [..._waAddSelected], country });
+  if (!first || first.error) { toast((first && first.error) || 'Could not add them', 'err'); return; }
+  const final = await confirmChannelConflicts(first, () =>
+    api('/api/wa/add-existing', 'POST', {
+      business_ids: first.conflicts.map(c => c.business_id), country, confirm_conflicts: true,
+    })
+  );
+
+  const total = k => (first[k] || 0) + (final !== first ? (final[k] || 0) : 0);
+  const skipped = [
+    total('no_phone')  && `${total('no_phone')} had no phone number`,
+    total('ruled_out') && `${total('ruled_out')} were already ruled out as not on WhatsApp`,
+    total('opted_out') && `${total('opted_out')} asked not to be contacted`,
+    total('already')   && `${total('already')} were already on WhatsApp`,
+  ].filter(Boolean);
+  toast(`Added ${total('added')} to WhatsApp` + (skipped.length ? ` — ${skipped.join(', ')}` : ''));
+  closeModal('modal-import-wa');
+  await refreshWaCounts();
+  loadWaBucket();
+}
+
+// Opens the Scraper already aimed at WhatsApp, so what it finds lands here and
+// nowhere else. The country carries across so it doesn't have to be picked twice.
+function scrapeForWhatsApp() {
+  const country = document.getElementById('wa-import-country')?.value || 'AE';
+  closeModal('modal-import-wa');
+  window._scraperPreset = { destination: 'whatsapp', country };
+  showSection('scraper');
+}
 
 async function importWaLeads() {
   const country = document.getElementById('wa-import-country').value;

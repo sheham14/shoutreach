@@ -1,38 +1,81 @@
+<!-- Getting leads onto WhatsApp. The same three routes in as a call campaign:
+     pick from leads you already have, bring a CSV or paste, or scrape new ones.
+     Opens on the first, which is the common case once a few scrapes have run. -->
 <div class="modal-overlay" id="modal-import-wa">
-  <div class="modal">
+  <div class="modal" style="max-width:640px">
     <button class="modal-close" onclick="closeModal('modal-import-wa')">✕</button>
-    <h2>Import WhatsApp Leads</h2>
-    <p class="text-muted text-small" style="margin-bottom:18px">
-      CSV columns: <span class="mono">company, phone, website, address, category, rating, email</span>
-      (company and phone are what matter most — email is optional and only used for the Contacts side).
-    </p>
+    <h2>Add WhatsApp leads</h2>
 
     <div class="form-group">
-      <label>Country</label>
+      <label>Country the numbers are in</label>
       <select id="wa-import-country">
         <option value="AE">United Arab Emirates</option>
         <option value="QA">Qatar</option>
       </select>
       <div class="form-hint">
-        Used to turn a locally-formatted number ("050 123 4567") into the international
-        form a WhatsApp link needs. A <span class="mono">country</span> column in the CSV
-        overrides this per row.
+        Turns a local number ("050 123 4567") into the international form a
+        WhatsApp link needs.
       </div>
     </div>
 
-    <div class="form-group">
-      <label>Upload CSV File</label>
-      <input type="file" id="wa-import-file" accept=".csv" style="color:var(--text)" />
-    </div>
-    <hr />
-    <div class="form-group">
-      <label>Or paste one business per line</label>
-      <textarea id="wa-import-paste" placeholder="Paradise Dental, 050 123 4567&#10;Kenmount Physio, 050 456 7890, kenmountphysio.ae"></textarea>
-      <div class="form-hint">Comma-separated: <span class="mono">business name, phone, website</span> — website is optional.</div>
+    <div class="flex gap-2" style="margin:4px 0 16px;flex-wrap:wrap">
+      <button class="btn btn-primary btn-sm" id="wa-add-tab-existing" onclick="setWaAddTab('existing')">From my leads</button>
+      <button class="btn btn-ghost btn-sm"   id="wa-add-tab-import"   onclick="setWaAddTab('import')">Paste or CSV</button>
+      <button class="btn btn-ghost btn-sm"   onclick="scrapeForWhatsApp()">Scrape Google Maps →</button>
     </div>
 
-    <div class="flex gap-2">
-      <button class="btn btn-primary" onclick="importWaLeads()">Import</button>
+    <!-- 1. Leads already in the database -->
+    <div id="wa-add-pane-existing">
+      <div class="flex gap-2 items-center" style="margin-bottom:10px;flex-wrap:wrap">
+        <input id="wa-add-search" class="search-input" placeholder="Search name, phone…" oninput="waAddSearch()" />
+        <select id="wa-add-status" class="filter-select" onchange="waAddSearch()">
+          <option value="">Any status</option>
+          <option value="no_website">No website</option>
+          <option value="no_email">No email</option>
+          <option value="has_email">Has an email</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
+          <input type="checkbox" id="wa-add-new-only" checked onchange="waAddSearch()" style="cursor:pointer" />
+          Not on WhatsApp yet
+        </label>
+      </div>
+      <div class="flex gap-2 items-center" style="margin-bottom:8px;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" onclick="waAddSelectAllShown()">Select all shown</button>
+        <button class="btn btn-ghost btn-sm" onclick="waAddClearSelection()">Clear</button>
+        <span class="text-muted text-small mono" id="wa-add-count"></span>
+      </div>
+      <div class="table-wrap" style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
+        <table>
+          <thead><tr><th style="width:36px"></th><th>Business</th><th>Phone</th></tr></thead>
+          <tbody id="wa-add-table"></tbody>
+        </table>
+      </div>
+      <div class="form-hint" style="margin-top:8px">
+        Leads with no phone number are skipped, and you're told how many.
+      </div>
+    </div>
+
+    <!-- 2. Paste or CSV -->
+    <div id="wa-add-pane-import" style="display:none">
+      <p class="text-muted text-small" style="margin-bottom:14px">
+        CSV columns: <span class="mono">company, phone, website, address, category, rating, email</span>
+        (company and phone matter most — email is optional and only used for the Contacts side).
+        A <span class="mono">country</span> column overrides the country above, row by row.
+      </p>
+      <div class="form-group">
+        <label>Upload CSV File</label>
+        <input type="file" id="wa-import-file" accept=".csv" style="color:var(--text)" />
+      </div>
+      <hr />
+      <div class="form-group">
+        <label>Or paste one business per line</label>
+        <textarea id="wa-import-paste" placeholder="Paradise Dental, 050 123 4567&#10;Kenmount Physio, 050 456 7890, kenmountphysio.ae"></textarea>
+        <div class="form-hint">Comma-separated: <span class="mono">business name, phone, website</span> — website is optional.</div>
+      </div>
+    </div>
+
+    <div class="flex gap-2" style="margin-top:18px">
+      <button class="btn btn-primary" id="wa-add-submit" onclick="submitWaAdd()">Add to WhatsApp</button>
       <button class="btn btn-ghost" onclick="closeModal('modal-import-wa')">Cancel</button>
     </div>
   </div>

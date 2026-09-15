@@ -306,6 +306,11 @@ def init_db():
                 -- this is the only thing that can tell the import who the
                 -- leads it pushes back belong to.
                 owner_id     INTEGER NOT NULL DEFAULT 0,
+                -- Which channel the finished leads go to: 'email' (what every
+                -- scrape did originally) or 'whatsapp'. Applied by the server
+                -- from this row, not by the worker, so where leads land never
+                -- depends on which version of the worker someone is running.
+                destination  TEXT    NOT NULL DEFAULT 'email',
                 niche        TEXT    NOT NULL,
                 city         TEXT    NOT NULL,
                 max_results  INTEGER NOT NULL DEFAULT 50,
@@ -463,6 +468,7 @@ def init_db():
             "ALTER TABLE wa_log   ADD COLUMN paraphrased INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE call_scripts       ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE call_outcome_types ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scrape_jobs ADD COLUMN destination TEXT NOT NULL DEFAULT 'email'",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -1158,19 +1164,26 @@ def rotate_worker_api_key() -> str:
 # Statuses a job can sit in while it is still someone's responsibility.
 SCRAPE_ACTIVE_STATUSES = ("queued", "claimed", "running", "captcha")
 
+SCRAPE_DESTINATIONS = ("email", "whatsapp")
+
 # A worker that has not checked in for this long is treated as gone. It has to
 # comfortably exceed the worker's own post interval, or a busy scrape that goes
 # quiet during a slow page load would flap the UI to "offline".
 WORKER_STALE_SECONDS = 45
 
 
-def create_scrape_job(niche, city, max_results=50, auto_import=True, owner_id=None) -> int:
+def create_scrape_job(niche, city, max_results=50, auto_import=True, owner_id=None,
+                      destination="email", country="") -> int:
+    if destination not in SCRAPE_DESTINATIONS:
+        raise ValueError(f"Unknown scrape destination: {destination}")
     with get_db() as conn:
         cur = conn.execute("""
-            INSERT INTO scrape_jobs(niche, city, max_results, auto_import, logs, owner_id)
-            VALUES(?,?,?,?,'[]',?)
+            INSERT INTO scrape_jobs(niche, city, max_results, auto_import, logs, owner_id,
+                                    destination, country)
+            VALUES(?,?,?,?,'[]',?,?,?)
         """, (niche, city, int(max_results), 1 if auto_import else 0,
-              _resolve_owner_id(conn, owner_id)))
+              _resolve_owner_id(conn, owner_id), destination,
+              (country or "").strip().upper()))
         return cur.lastrowid
 
 
@@ -3763,7 +3776,8 @@ def get_call_lead_view(business_id: int, owner_id=None):
         return dict(row) if row else None
 
 
-def search_businesses(q="", status=None, call_status=None, limit=100, owner_id=None):
+def search_businesses(q="", status=None, call_status=None, limit=100, owner_id=None,
+                      not_on_channel=None):
     """
     Businesses matching a filter, for the "add existing leads" pickers (call
     campaigns today; WhatsApp will use the same query).
@@ -3776,6 +3790,11 @@ def search_businesses(q="", status=None, call_status=None, limit=100, owner_id=N
     if status:
         where.append("b.web_status = ?")
         params.append(status)
+    # For the "add to WhatsApp" picker. A lead that was moved off WhatsApp
+    # still has its row there, so a number already ruled out as not being on
+    # WhatsApp is never offered back as a fresh lead.
+    if not_on_channel == "whatsapp":
+        where.append("NOT EXISTS (SELECT 1 FROM wa_leads w WHERE w.business_id = b.id)")
     if call_status == "none":
         where.append("COALESCE(cl.call_status,'') = ''")
     elif call_status == "any":
@@ -4396,6 +4415,52 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None) -> tup
             _pick_business_winner(conn, business_id)
 
         return accepted, ordered_ids
+
+
+def add_businesses_to_wa(business_ids, country: str, owner_id=None) -> dict:
+    """
+    Put leads this operator already has onto WhatsApp.
+
+    For businesses already in the database -- an earlier scrape, a clinic that
+    was emailed and never answered. Their identity is settled, so unlike
+    upsert_wa_leads this does no matching: it attaches a WhatsApp lead to each
+    business as it stands.
+
+    Anything skipped is counted, so the operator is told why rather than left
+    wondering where their selection went:
+      no_phone   -- nothing to put in a wa.me link
+      ruled_out  -- moved off WhatsApp earlier because the number wasn't on it;
+                    adding it back would requeue a number known to be dead
+      opted_out  -- do_not_contact is set; they asked to be left alone
+      already    -- already on WhatsApp
+    """
+    country = (country or "").strip().upper()
+    counts = {"added": 0, "already": 0, "no_phone": 0, "ruled_out": 0, "opted_out": 0}
+    with get_db() as conn:
+        for business_id in _own_business_ids(conn, business_ids, owner_id):
+            existing = conn.execute(
+                "SELECT moved_to FROM wa_leads WHERE business_id=?", (business_id,)
+            ).fetchone()
+            if existing:
+                counts["ruled_out" if existing["moved_to"] else "already"] += 1
+                continue
+            biz = conn.execute(
+                "SELECT phone, do_not_contact FROM businesses WHERE id=?", (business_id,)
+            ).fetchone()
+            if biz["do_not_contact"]:
+                counts["opted_out"] += 1
+                continue
+            phone = (biz["phone"] or "").strip()
+            if not phone:
+                counts["no_phone"] += 1
+                continue
+            conn.execute("""
+                INSERT INTO wa_leads(business_id, wa_number, country, number_type)
+                VALUES(?,?,?,?)
+            """, (business_id, format_whatsapp_number(phone, country), country,
+                  classify_number_type(phone, country)))
+            counts["added"] += 1
+    return counts
 
 
 # Every row a WhatsApp list view needs, business joined in the same shape the

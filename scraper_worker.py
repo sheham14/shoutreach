@@ -158,13 +158,15 @@ class RemoteScraperJob:
     """
 
     def __init__(self, server: Server, job_id: int, niche, city,
-                 max_results, auto_import):
+                 max_results, auto_import, destination="email", country=""):
         self.server      = server
         self.job_id      = job_id
         self.niche       = niche
         self.city        = city
         self.max_results = max_results
         self.auto_import = auto_import
+        self.destination = destination
+        self.country     = country
 
         self.status   = "running"
         self.progress = 0
@@ -269,6 +271,10 @@ def run_job(server: Server, spec: dict):
     job = RemoteScraperJob(
         server, spec["job_id"], spec["niche"], spec["city"],
         spec["max_results"], spec["auto_import"],
+        # .get: a server older than this worker sends neither, and every scrape
+        # it queues is an email scrape.
+        destination=spec.get("destination") or "email",
+        country=spec.get("country") or "",
     )
     log.info(f"Claimed job {job.job_id}: {job.niche} in {job.city} "
              f"(max {job.max_results})")
@@ -296,6 +302,11 @@ def _heartbeat_loop(job: RemoteScraperJob):
         time.sleep(PROGRESS_SECONDS)
         if job.status == "running":
             job._maybe_push(force=True)
+
+
+# Recorded for a business whose website was deliberately not searched, so it
+# can't be mistaken for a search that ran and came up empty.
+STATUS_NOT_SEARCHED = "not_searched"
 
 
 def _run_scrape(server: Server, job: RemoteScraperJob):
@@ -329,7 +340,12 @@ def _run_scrape(server: Server, job: RemoteScraperJob):
         return
 
     job.total = len(businesses)
-    job.log(f"Maps done — {job.total} businesses. Scraping their websites...")
+    for_whatsapp = job.destination == "whatsapp"
+    if for_whatsapp:
+        job.log(f"Maps done — {job.total} businesses. These are going to WhatsApp, "
+                f"so their websites won't be searched for emails.")
+    else:
+        job.log(f"Maps done — {job.total} businesses. Scraping their websites...")
     job.push()
 
     # ── Websites ────────────────────────────────────────────────────────
@@ -339,13 +355,26 @@ def _run_scrape(server: Server, job: RemoteScraperJob):
         if job.stop_event.is_set():
             job.log("Stopped by user.")
             break
-        emails, status = scraper.get_emails_for_business(biz["website"])
+        if for_whatsapp:
+            # WhatsApp needs the phone number Maps already returned, not an
+            # email. Fetching every clinic's site is the slow part of a scrape,
+            # so it is skipped outright rather than done and thrown away.
+            emails, status = "", STATUS_NOT_SEARCHED
+        else:
+            emails, status = scraper.get_emails_for_business(biz["website"])
         biz["emails"], biz["email_status"] = emails, status
         job.progress = i + 1
         processed.append(biz)
         unpushed.append(biz)
 
-        if status == scraper.STATUS_FOUND:
+        if for_whatsapp:
+            phone = (scraper._qualifying_fields(biz).get("phone") or "").strip()
+            if phone:
+                job.found += 1
+                job.log(f"[{i+1}/{job.total}] ✓ {biz['name']} — {phone}")
+            else:
+                job.log(f"[{i+1}/{job.total}] ✗ {biz['name']} — no phone on the listing")
+        elif status == scraper.STATUS_FOUND:
             job.found += 1
             job.log(f"[{i+1}/{job.total}] ✓ {biz['name']} — {emails}")
         else:
@@ -363,7 +392,10 @@ def _run_scrape(server: Server, job: RemoteScraperJob):
             _push_batch(server, job, unpushed)
             unpushed = []
 
-        time.sleep(random.uniform(*scraper.SITE_REQUEST_DELAY))
+        # The delay is politeness toward the sites being fetched. A WhatsApp
+        # scrape fetches none, so there is nobody to be polite to.
+        if not for_whatsapp:
+            time.sleep(random.uniform(*scraper.SITE_REQUEST_DELAY))
 
     if job.auto_import and unpushed and job.stop_event.is_set():
         # Interrupted mid-run: get what we have to the server before exiting.
@@ -400,7 +432,10 @@ def _run_scrape(server: Server, job: RemoteScraperJob):
         job.log(f"{len(rows)} leads saved to {output_file} (auto-import off)")
 
     job.status = "done"
-    job.log(f"Complete. {job.found}/{job.total} businesses had emails.")
+    if for_whatsapp:
+        job.log(f"Complete. {job.found}/{job.total} businesses had a phone number.")
+    else:
+        job.log(f"Complete. {job.found}/{job.total} businesses had emails.")
     job.push(finished=True)
 
 
@@ -470,14 +505,19 @@ def _build_contact_rows(processed, job) -> list:
                     **_qualifiers(biz),
                 })
         elif biz.get("website"):
-            rows.append({
+            row = {
                 "email":   "",
                 "company": biz.get("name", ""),
                 "website": biz.get("website", ""),
                 "address": biz.get("address", ""),
-                "status":  "form_only" if status == scraper.STATUS_FORM_ONLY else "no_email",
                 **_qualifiers(biz),
-            })
+            }
+            # "no_email" is a finding, and a WhatsApp scrape never looked. Left
+            # unset, the lead stays unknown rather than labelled with a fact
+            # nobody established.
+            if status != STATUS_NOT_SEARCHED:
+                row["status"] = "form_only" if status == scraper.STATUS_FORM_ONLY else "no_email"
+            rows.append(row)
         else:
             # No website at all. These used to be logged and thrown away, but
             # for a web-design agency a business with no site is the strongest

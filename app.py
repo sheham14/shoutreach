@@ -1530,6 +1530,64 @@ def api_contact_ids():
     return jsonify({"ids": ids, "total": len(ids)})
 
 
+def _scraped_for_whatsapp(rows):
+    """
+    The scrape job these rows came from, if it was aimed at WhatsApp.
+
+    Worker requests only. A person importing a CSV through Contacts means
+    Contacts, even if that CSV came out of a WhatsApp scrape and still carries
+    its job id.
+    """
+    if not _has_valid_worker_key():
+        return None
+    job = None
+    for jid in {r.get("source_job_id") for r in rows if r.get("source_job_id")}:
+        job = db.get_scrape_job(jid)
+        if job:
+            break
+    job = job or db.get_active_scrape_job(any_owner=True)
+    return job if job and job.get("destination") == "whatsapp" else None
+
+
+_SCRAPE_EMAIL_FIELDS = ("email", "first_name", "last_name", "mx_valid")
+
+
+def _import_scraped_whatsapp(rows, job, owner):
+    """
+    File a WhatsApp scrape's rows as WhatsApp leads, and nowhere else.
+
+    Emails are dropped rather than filed on the side. A worker that hasn't been
+    updated still hunts for them, and without this they would quietly become
+    email leads -- exactly the "somewhere else" a WhatsApp scrape exists to
+    avoid.
+
+    Nobody is watching an unattended scrape to confirm anything, so a clinic
+    already worked on another channel is imported anyway, and the count goes
+    into the scrape's own log, which is where the operator is looking.
+    """
+    rows = [{k: v for k, v in r.items() if k not in _SCRAPE_EMAIL_FIELDS} for r in rows]
+    with_phone = [r for r in rows if (r.get("phone") or "").strip()]
+    conflicts = db.find_cross_channel_conflicts(with_phone, channel="whatsapp", owner_id=owner)
+    overlaps = db.find_cross_owner_matches(rows, owner_id=owner)
+    inserted, business_ids = db.upsert_wa_leads(
+        rows, default_country=job.get("country") or "", owner_id=owner,
+    )
+
+    notes = []
+    if conflicts:
+        notes.append(f"  {len(conflicts)} of these were already on another channel "
+                     f"- added to WhatsApp as well")
+    if overlaps:
+        notes.append(f"  {len(overlaps)} are also on someone else's list")
+    if notes:
+        db.update_scrape_job(job["id"], new_logs=[{"msg": n, "level": "WARN"} for n in notes])
+
+    return jsonify({
+        "ok": True, "inserted": inserted, "business_ids": business_ids,
+        "conflicts": [], "overlaps": overlaps, "destination": "whatsapp",
+    })
+
+
 @app.route("/api/contacts/import", methods=["POST"])
 @admin_or_worker_required
 def api_import_contacts():
@@ -1637,6 +1695,11 @@ def api_import_contacts():
     # the confirmed re-submission, which is the operator's own "yes, all of
     # these too" after seeing exactly this list.
     owner = import_owner(rows)
+
+    wa_job = _scraped_for_whatsapp(rows)
+    if wa_job:
+        return _import_scraped_whatsapp(rows, wa_job, owner)
+
     confirmed = bool((request.json or {}).get("confirm_conflicts")) if request.is_json else False
     conflicts = []
     overlaps = []
@@ -1902,6 +1965,7 @@ def api_search_businesses():
     """
     return jsonify(db.search_businesses(
         owner_id=me(),
+        not_on_channel=request.args.get("not_on") or None,
         q=request.args.get("q", ""),
         status=request.args.get("status") or None,
         call_status=request.args.get("call_status") or None,
@@ -2436,6 +2500,40 @@ def api_wa_move_lead(wid):
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/wa/add-existing", methods=["POST"])
+@login_required
+def api_wa_add_existing():
+    """
+    Put businesses this operator already has onto WhatsApp.
+
+    Same hold-and-confirm as adding to a call campaign: a clinic already being
+    worked on another channel is held back until the operator says yes, so a
+    second channel is a decision rather than a side effect.
+    """
+    d = request.json or {}
+    ids = d.get("business_ids") or []
+    country = (d.get("country") or "").strip().upper()
+    if not ids:
+        return jsonify({"ok": False, "error": "No leads selected"}), 400
+    if country not in db.WA_COUNTRY_CODES:
+        return jsonify({"ok": False, "error": "Pick the country these numbers are in"}), 400
+
+    conflicts = []
+    if not d.get("confirm_conflicts"):
+        conflicts = db.channel_conflicts_for_businesses(ids, channel="whatsapp", owner_id=me())
+        if conflicts:
+            flagged = {c["business_id"] for c in conflicts}
+            ids = [i for i in ids if int(i) not in flagged]
+
+    counts = (db.add_businesses_to_wa(ids, country, owner_id=me()) if ids
+              else {"added": 0, "already": 0, "no_phone": 0, "ruled_out": 0, "opted_out": 0})
+    return jsonify({
+        "ok": True, **counts,
+        "conflicts": [{"business_id": c["business_id"], "business_name": c["business_name"],
+                       "channels": c["channel_labels"]} for c in conflicts],
+    })
+
+
 @app.route("/api/wa/templates", methods=["GET"])
 @login_required
 def api_wa_get_templates():
@@ -2638,6 +2736,8 @@ def _job_payload(job: dict) -> dict:
         "error":    job.get("error") or "",
         "niche":    job["niche"],
         "city":     job["city"],
+        "destination": job.get("destination") or "email",
+        "country":  job.get("country") or "",
         "logs":     logs[-80:],
         "heartbeat_secs": None if heartbeat_secs is None else int(heartbeat_secs),
     }
@@ -2678,6 +2778,15 @@ def api_scraper_start():
     niche       = d.get("niche", "").strip()
     city        = d.get("city", "").strip()
     auto_import = bool(d.get("auto_import", True))
+    destination = (d.get("destination") or "email").strip().lower()
+    country     = (d.get("country") or "").strip().upper()
+    if destination not in db.SCRAPE_DESTINATIONS:
+        return jsonify({"ok": False, "error": "Choose where the leads should go"}), 400
+    # A WhatsApp link can't be built from a local number without the country,
+    # and the city box is free text ("Doha Qatar") -- so it's asked for rather
+    # than guessed.
+    if destination == "whatsapp" and country not in db.WA_COUNTRY_CODES:
+        return jsonify({"ok": False, "error": "Pick the country these numbers are in"}), 400
     try:
         max_results = max(1, min(500, int(d.get("max_results", 50))))
     except (TypeError, ValueError):
@@ -2686,7 +2795,8 @@ def api_scraper_start():
     if not niche or not city:
         return jsonify({"ok": False, "error": "Niche and city are required"}), 400
 
-    job_id = db.create_scrape_job(niche, city, max_results, auto_import, owner_id=me())
+    job_id = db.create_scrape_job(niche, city, max_results, auto_import, owner_id=me(),
+                                  destination=destination, country=country)
     seen = db.worker_seconds_since_seen()
     warning = None
     if seen is None or seen >= db.WORKER_STALE_SECONDS:
@@ -2733,6 +2843,10 @@ def api_scraper_claim():
         "city":        job["city"],
         "max_results": job["max_results"],
         "auto_import": bool(job["auto_import"]),
+        # Tells the worker whether to hunt for emails at all. Where the rows
+        # end up is decided server-side regardless -- see _scraped_for_whatsapp.
+        "destination": job.get("destination") or "email",
+        "country":     job.get("country") or "",
     })
 
 
