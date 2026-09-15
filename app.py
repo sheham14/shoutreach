@@ -29,7 +29,7 @@ from functools import wraps
 from urllib.parse import urlparse
 from flask import (
     Flask, render_template, request, jsonify,
-    redirect, url_for, make_response, Response, session, abort
+    redirect, url_for, make_response, Response, session, abort, g
 )
 
 import db
@@ -166,14 +166,20 @@ _WORKER_PATH_PREFIX = "/api/scraper/claim"
 _WORKER_PATHS = {"/api/scraper/claim", "/api/scraper/heartbeat"}
 
 
+def worker_owner():
+    """
+    The operator whose worker key this request presents, or None.
+
+    Cached on the request: the auth decorator, the CSRF exemption and the
+    import route each ask, and each ask compares against every stored key.
+    """
+    if "worker_owner" not in g:
+        g.worker_owner = db.worker_owner_for_key(request.headers.get("X-API-Key", ""))
+    return g.worker_owner
+
+
 def _has_valid_worker_key() -> bool:
-    presented = request.headers.get("X-API-Key", "")
-    if not presented:
-        return False
-    try:
-        return hmac.compare_digest(presented, db.get_or_create_worker_api_key())
-    except Exception:
-        return False
+    return worker_owner() is not None
 
 
 def _is_worker_route() -> bool:
@@ -209,11 +215,17 @@ def admin_required(f):
     return decorated
 
 
-def admin_or_worker_required(f):
-    """Either a logged-in admin in a browser, or the local scrape worker."""
+def login_or_worker_required(f):
+    """
+    A logged-in operator in a browser, or a scrape worker presenting its key.
+
+    Not admin-only. Importing leads is something every operator does for their
+    own list; requiring admin here quietly stopped non-admins importing a CSV
+    at all -- including from Calling, which posts to the same route.
+    """
     @wraps(f)
     def decorated(*args, **kwargs):
-        if session.get("is_admin") or _has_valid_worker_key():
+        if session.get("user_id") or _has_valid_worker_key():
             return f(*args, **kwargs)
         return jsonify({"error": "Forbidden"}), 403
     return decorated
@@ -221,19 +233,17 @@ def admin_or_worker_required(f):
 
 def worker_auth_required(f):
     """
-    Authenticate the local scrape worker by shared key instead of a session.
+    Authenticate a scrape worker by its operator's key instead of a session.
 
     The worker is a script, not a browser: it has no cookie and no CSRF token.
     A custom header is the right primitive here because browsers will not
     attach one cross-origin, so these routes are not CSRF-reachable the way a
-    cookie-authenticated route is. Compared with compare_digest so a wrong key
-    cannot be recovered by timing the response.
+    cookie-authenticated route is. The key also says whose worker this is --
+    see worker_owner, and db.worker_owner_for_key for the timing-safe compare.
     """
     @wraps(f)
     def decorated(*args, **kwargs):
-        presented = request.headers.get("X-API-Key", "")
-        expected = db.get_or_create_worker_api_key()
-        if not presented or not hmac.compare_digest(presented, expected):
+        if worker_owner() is None:
             return jsonify({"error": "Invalid or missing worker API key"}), 401
         return f(*args, **kwargs)
     return decorated
@@ -280,22 +290,20 @@ def import_owner(rows) -> int:
     """
     Who incoming import rows belong to.
 
-    A browser import belongs to whoever is logged in. The scrape worker has no
-    session -- it authenticates with a shared key -- so its rows are attributed
-    through the job that produced them, which recorded its owner when it was
-    queued. The worker tags rows with source_job_id but treats that tag as
-    optional, so the job it is currently running is the fallback. If neither
-    says, the import is refused rather than filed under a guess.
+    A scrape worker's rows belong to the operator whose key it presents. The
+    key is what ties a worker to one person, so it outranks anything written
+    in the rows -- a job id in a row can't file leads into someone else's
+    account. It's checked before the session on purpose: a request carrying a
+    valid worker key is the worker speaking, whatever cookie came with it.
+
+    A browser import belongs to whoever is logged in. If neither says, the
+    import is refused rather than filed under a guess.
     """
+    owner = worker_owner()
+    if owner:
+        return owner
     if session.get("user_id"):
         return session["user_id"]
-    for jid in {r.get("source_job_id") for r in rows if r.get("source_job_id")}:
-        job = db.get_scrape_job(jid)
-        if job and job.get("owner_id"):
-            return job["owner_id"]
-    active = db.get_active_scrape_job(any_owner=True)
-    if active and active.get("owner_id"):
-        return active["owner_id"]
     abort(400, "Cannot tell which account these leads belong to")
 
 
@@ -576,16 +584,20 @@ def api_save_settings():
 
 
 @app.route("/api/settings/worker-key", methods=["GET"])
-@admin_required
+@login_required
 def api_get_worker_key():
-    """Deliberately separate from /api/settings, which masks every secret."""
-    return jsonify({"key": db.get_or_create_worker_api_key()})
+    """
+    Your own worker key. Separate from /api/settings, which masks every secret.
+    Per operator and never anyone else's, admins included -- a key would let
+    its holder run that person's scrapes and file leads into their account.
+    """
+    return jsonify({"key": db.get_or_create_worker_key(me())})
 
 
 @app.route("/api/settings/worker-key", methods=["POST"])
-@admin_required
+@login_required
 def api_rotate_worker_key():
-    return jsonify({"key": db.rotate_worker_api_key()})
+    return jsonify({"key": db.rotate_worker_key(me())})
 
 
 @app.route("/api/settings/test-smtp", methods=["POST"])
@@ -1538,14 +1550,18 @@ def _scraped_for_whatsapp(rows):
     Contacts, even if that CSV came out of a WhatsApp scrape and still carries
     its job id.
     """
-    if not _has_valid_worker_key():
+    owner = worker_owner()
+    if not owner:
         return None
     job = None
     for jid in {r.get("source_job_id") for r in rows if r.get("source_job_id")}:
-        job = db.get_scrape_job(jid)
-        if job:
+        candidate = db.get_scrape_job(jid)
+        # Only this worker's own jobs count. A row naming another operator's
+        # WhatsApp scrape must not be able to steer where these leads land.
+        if candidate and candidate.get("owner_id") == owner:
+            job = candidate
             break
-    job = job or db.get_active_scrape_job(any_owner=True)
+    job = job or db.get_active_scrape_job(owner_id=owner)
     return job if job and job.get("destination") == "whatsapp" else None
 
 
@@ -1589,7 +1605,7 @@ def _import_scraped_whatsapp(rows, job, owner):
 
 
 @app.route("/api/contacts/import", methods=["POST"])
-@admin_or_worker_required
+@login_or_worker_required
 def api_import_contacts():
     """
     Accepts JSON body: { "rows": [...] }
@@ -2746,7 +2762,7 @@ def _job_payload(job: dict) -> dict:
 @app.route("/api/scraper/status")
 def api_scraper_status():
     db.reap_stale_scrape_jobs()
-    seen = db.worker_seconds_since_seen()
+    seen = db.worker_seconds_since_seen(me())
     payload = {
         "worker_online": seen is not None and seen < db.WORKER_STALE_SECONDS,
         "worker_last_seen": None if seen is None else int(seen),
@@ -2763,16 +2779,11 @@ def api_scraper_status():
 @login_required
 def api_scraper_start():
     db.reap_stale_scrape_jobs()
-    # One worker machine, so one scrape at a time across everybody -- but say
-    # whose it is rather than claiming the operator has one running when they
-    # don't.
-    running = db.get_active_scrape_job(any_owner=True)
-    if running:
-        mine = running.get("owner_id") == me()
-        return jsonify({"ok": False, "error": (
-            "A scrape is already queued or running" if mine
-            else "Someone else's scrape is running on the worker right now"
-        )}), 409
+    # One scrape at a time per operator. Each worker runs only its own
+    # operator's jobs, so somebody else's scrape on their own laptop is no
+    # reason to make this one wait.
+    if db.get_active_scrape_job(owner_id=me()):
+        return jsonify({"ok": False, "error": "A scrape is already queued or running"}), 409
 
     d           = request.json or {}
     niche       = d.get("niche", "").strip()
@@ -2797,12 +2808,13 @@ def api_scraper_start():
 
     job_id = db.create_scrape_job(niche, city, max_results, auto_import, owner_id=me(),
                                   destination=destination, country=country)
-    seen = db.worker_seconds_since_seen()
+    seen = db.worker_seconds_since_seen(me())
     warning = None
     if seen is None or seen >= db.WORKER_STALE_SECONDS:
         # Queue it anyway -- it will run as soon as the worker comes up. But
         # say so, or pressing Start against a dead worker looks like a no-op.
-        warning = "Queued, but no worker is connected. Start scraper_worker.py on your machine."
+        warning = ("Queued, but your worker isn't connected. Start scraper_worker.py "
+                   "on your machine, using the key from your own Settings.")
     return jsonify({"ok": True, "job_id": job_id, "warning": warning})
 
 
@@ -2832,9 +2844,10 @@ def api_scraper_resume():
 @app.route("/api/scraper/claim", methods=["POST"])
 @worker_auth_required
 def api_scraper_claim():
-    db.touch_worker_seen()      # polling for work is itself a sign of life
+    owner = worker_owner()
+    db.touch_worker_seen(owner)      # polling for work is itself a sign of life
     db.reap_stale_scrape_jobs()
-    job = db.claim_scrape_job()
+    job = db.claim_scrape_job(owner)
     if not job:
         return ("", 204)
     return jsonify({
@@ -2853,7 +2866,15 @@ def api_scraper_claim():
 @app.route("/api/scraper/jobs/<int:job_id>/progress", methods=["POST"])
 @worker_auth_required
 def api_scraper_progress(job_id):
-    db.touch_worker_seen()
+    owner = worker_owner()
+    db.touch_worker_seen(owner)
+    job = db.get_scrape_job(job_id)
+    # A worker only reports on its own operator's jobs. Without this, any valid
+    # key could append to someone else's live log or read their stop flag. A
+    # job that no longer exists still falls through, so update_scrape_job can
+    # tell the worker to stop.
+    if job and job.get("owner_id") != owner:
+        return jsonify({"error": "Not found"}), 404
     d = request.json or {}
     logs = d.get("logs") or []
     if not isinstance(logs, list):
@@ -2876,7 +2897,7 @@ def api_scraper_progress(job_id):
 @worker_auth_required
 def api_scraper_heartbeat():
     """Idle check-in so the UI can show the worker as online between jobs."""
-    db.touch_worker_seen()
+    db.touch_worker_seen(worker_owner())
     return jsonify({"ok": True})
 
 

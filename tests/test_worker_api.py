@@ -37,6 +37,11 @@ def boot(work):
     import app as app_mod
     importlib.reload(app_mod)
 
+    # Worker keys belong to a real account now, so the session faked below has
+    # to name a user that exists.
+    if not db.get_user_by_username("admin"):
+        db.create_user("admin", "test-password-123", is_admin=True)
+
     app_mod.app.config["TESTING"] = True
     client = app_mod.app.test_client()
 
@@ -62,7 +67,8 @@ def main():
     work = tempfile.mkdtemp(prefix="worker_api_")
     try:
         db, app_mod, client = boot(work)
-        key = db.get_or_create_worker_api_key()
+        alice = db.get_user_by_username("admin")["id"]
+        key = db.get_or_create_worker_key(alice)
         wh = {"X-API-Key": key}
 
         print("\n1. AUTH BOUNDARIES")
@@ -72,15 +78,15 @@ def main():
         check("claim with a bad key is rejected", r.status_code == 401, f"got {r.status_code}")
         r = client.post("/api/scraper/claim", headers=wh)
         check("claim with a good key is accepted", r.status_code in (200, 204), f"got {r.status_code}")
-        check("worker key is masked in /api/settings",
-              client.get("/api/settings").get_json().get("_worker_api_key") != key)
+        check("the worker key never appears in /api/settings",
+              key not in str(client.get("/api/settings").get_json()))
 
         print("\n2. QUEUE A JOB")
         # The claim above counted as a check-in, so clear it to test the
         # no-worker path -- pressing Start with nothing listening has to say so
         # rather than silently queueing into the void.
         with db.get_db() as conn:
-            conn.execute("DELETE FROM settings WHERE key='_worker_last_seen'")
+            conn.execute("UPDATE worker_keys SET last_seen=NULL")
         r = admin_post(client, "/api/scraper/start",
                        {"niche": "HVAC", "city": "Calgary Canada", "max_results": 20})
         body = r.get_json()
@@ -241,6 +247,93 @@ def main():
         check("a CSV imported by hand through Contacts still goes to Contacts",
               westbay_email == 1 and westbay_wa == 0,
               f"email={westbay_email} whatsapp={westbay_wa} body={body}")
+
+        print("\n10. TWO OPERATORS, EACH WITH THEIR OWN WORKER")
+        # Close out section 9's scrape so it isn't still counted as active.
+        client.post(f"/api/scraper/jobs/{wa_job}/progress", headers=wh,
+                    json={"status": "done", "finished": True})
+
+        bob = db.create_user("bob", "test-password-456", is_admin=False)
+        bob_key = db.get_or_create_worker_key(bob)
+        bh = {"X-API-Key": bob_key}
+        check("each operator gets their own key", bob_key != key)
+
+        bob_client = app_mod.app.test_client()
+        with bob_client.session_transaction() as sess:
+            sess["user_id"] = bob
+            sess["is_admin"] = False
+            sess["csrf_token"] = "test-csrf"
+
+        r = bob_client.get("/api/settings/worker-key")
+        shown = (r.get_json() or {}).get("key")
+        check("a non-admin can read their own key", r.status_code == 200 and shown == bob_key,
+              f"{r.status_code}")
+        check("and it is theirs, never the admin's", shown != key)
+
+        r = admin_post(client, "/api/scraper/start", {"niche": "dentists", "city": "Halifax"})
+        alice_job = (r.get_json() or {}).get("job_id")
+        check("the admin queues a scrape", r.status_code == 200 and alice_job, str(r.get_json()))
+
+        r = client.post("/api/scraper/claim", headers=bh)
+        check("the other operator's worker does not pick it up", r.status_code == 204,
+              f"got {r.status_code}")
+
+        r = admin_post(bob_client, "/api/scraper/start", {"niche": "physio", "city": "Moncton"})
+        bob_job = (r.get_json() or {}).get("job_id")
+        check("the other operator can scrape at the same time, on their own worker",
+              r.status_code == 200 and bob_job, f"{r.status_code} {r.get_json()}")
+
+        spec = client.post("/api/scraper/claim", headers=bh).get_json() or {}
+        check("each worker gets its own operator's scrape", spec.get("job_id") == bob_job, str(spec))
+        spec = client.post("/api/scraper/claim", headers=wh).get_json() or {}
+        check("and the admin's worker gets the admin's", spec.get("job_id") == alice_job, str(spec))
+
+        r = client.post(f"/api/scraper/jobs/{alice_job}/progress", headers=bh,
+                        json={"status": "running", "logs": [{"msg": "snooping", "level": "INFO"}]})
+        check("a worker cannot report into another operator's scrape", r.status_code == 404,
+              f"got {r.status_code}")
+        check("so nothing reached that scrape's log",
+              "snooping" not in (db.get_scrape_job(alice_job).get("logs") or ""))
+
+        r = client.post("/api/contacts/import", headers=bh, json={"rows": [
+            {"email": "desk@monctonphysio.ca", "company": "Moncton Physio",
+             "website": "http://monctonphysio.ca", "mx_valid": 1, "source_job_id": alice_job},
+        ]})
+        check("the other operator's worker can import", r.status_code == 200,
+              f"{r.status_code} {r.get_json()}")
+        with db.get_db() as conn:
+            row = conn.execute(
+                "SELECT owner_id FROM businesses WHERE name='Moncton Physio'").fetchone()
+        check("its leads land in its own operator's account, even naming another's scrape",
+              row is not None and row["owner_id"] == bob, str(dict(row) if row else None))
+        sources = bob_client.get("/api/contacts/sources").get_json() or []
+        check("and naming that scrape reveals nothing about it",
+              "Halifax" not in str(sources) and "dentists" not in str(sources), str(sources))
+
+        r = admin_post(bob_client, "/api/settings/worker-key")
+        new_bob_key = (r.get_json() or {}).get("key")
+        check("an operator can rotate their own key",
+              r.status_code == 200 and new_bob_key and new_bob_key != bob_key, f"{r.status_code}")
+        r = client.post("/api/scraper/heartbeat", headers=bh)
+        check("their old key stops working", r.status_code == 401, f"got {r.status_code}")
+        r = client.post("/api/scraper/heartbeat", headers=wh)
+        check("while everyone else's keeps working", r.status_code == 200, f"got {r.status_code}")
+
+        with db.get_db() as conn:
+            conn.execute("UPDATE worker_keys SET last_seen=NULL WHERE owner_id=?", (bob,))
+        client.post("/api/scraper/heartbeat", headers=wh)
+        mine = client.get("/api/scraper/status").get_json() or {}
+        theirs = bob_client.get("/api/scraper/status").get_json() or {}
+        check("'worker connected' reflects your own worker, not someone else's",
+              mine.get("worker_online") is True and theirs.get("worker_online") is False,
+              f"admin={mine.get('worker_online')} other={theirs.get('worker_online')}")
+
+        r = bob_client.post("/api/contacts/import", headers={"X-CSRF-Token": "test-csrf"},
+                            json={"rows": [{"email": "hi@bobsown.ca", "company": "Bobs Own",
+                                            "website": "http://bobsown.ca", "mx_valid": 1}]})
+        check("a non-admin can import a CSV through the browser",
+              r.status_code == 200 and (r.get_json() or {}).get("inserted") == 1,
+              f"{r.status_code} {r.get_json()}")
 
     finally:
         shutil.rmtree(work, ignore_errors=True)

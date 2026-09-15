@@ -144,6 +144,11 @@ looking at. A headless VM cannot do that. Instead:
   campaigns.
 - **A worker on your own machine** claims jobs and drives Chrome locally.
 
+Each account has its own worker key, and a worker only ever runs the scrapes
+started by the account whose key it holds. Two people can each run a worker on
+their own machine and scrape at the same time without picking up each other's
+jobs — one scrape at a time per account.
+
 **One-time setup on your machine:**
 
 ```bash
@@ -153,7 +158,8 @@ playwright install chromium        # separate step — pip does not fetch the br
 ```
 
 **First run**, give it the server URL and key once — get the key from
-**Settings → Lead Scraper Worker → Copy**:
+**Settings → Lead Scraper Worker → Copy**, signed in as the person whose
+scrapes this machine should run:
 
 ```bash
 python scraper_worker.py --server https://your-shoutreach-host --api-key your-key-here
@@ -167,9 +173,9 @@ just:
 python scraper_worker.py           # leave it running
 ```
 
-No environment variables to re-set per terminal session. If you rotate the key in
+No environment variables to re-set per terminal session. If you rotate your key in
 Settings, run `python scraper_worker.py --forget` to clear the saved one, then pass
-`--api-key` again once.
+`--api-key` again once. Rotating only affects your own worker.
 
 You can still use environment variables or `--server`/`--api-key` instead — they
 take priority over what's saved, in case you're pointing at a different server for
@@ -584,9 +590,12 @@ rather than the one already stored.
 **Lead Scraper says "No worker connected":**
 1. The worker is not running — start `python scraper_worker.py` on your machine
 2. The saved (or env var) URL points somewhere else, or the API key is stale
-   (rotating the key in Settings invalidates any running worker — run
+   (rotating your key in Settings disconnects your worker — run
    `python scraper_worker.py --forget` then pass `--api-key` once with the new one)
 3. The worker logs `Server rejected the API key` if the key is wrong
+4. The worker has someone else's key. The banner only shows *your* worker, and a
+   worker only picks up scrapes from the account whose key it holds — copy the key
+   while signed in as yourself
 
 **Scraper finds no businesses at all:**
 Google changes its obfuscated class names without notice. Check

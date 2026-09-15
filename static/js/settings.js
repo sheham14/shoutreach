@@ -522,7 +522,7 @@ async function copyWorkerKey() {
 }
 
 async function rotateWorkerKey() {
-  if (!confirm('Rotate the worker key?\n\nAny worker still using the old key will stop being able to connect until you update it.')) return;
+  if (!confirm('Rotate your worker key?\n\nYour worker will stop being able to connect until you give it the new key. Only your worker is affected.')) return;
   const res = await api('/api/settings/worker-key', 'POST');
   const input = document.getElementById('cfg-worker-key');
   input.type = 'text';

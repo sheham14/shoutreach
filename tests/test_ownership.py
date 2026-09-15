@@ -614,6 +614,48 @@ def test_wa_copy_is_not_inherited(work):
           f"got {db.get_wa_templates(owner_id=a)['gap']}")
 
 
+def test_worker_key_migration(work):
+    """
+    The install-wide worker key has to survive the switch to per-operator keys.
+
+    It's saved on the founding operator's laptop, and their worker is usually
+    running straight through the deploy. If the upgrade dropped or re-keyed it,
+    scraping would just stop, with nothing on screen saying why.
+    """
+    print("\n16. THE OLD SHARED WORKER KEY SURVIVES THE UPGRADE")
+    path = os.path.join(work, "workerkey.db")
+    db = load_db(path)
+    db.init_db()
+    founder = db.create_user("founder", "pw", is_admin=True)
+
+    # The shape an install had before worker keys were per operator.
+    with db.get_db() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings(key,value) "
+                     "VALUES('_worker_api_key','old-shared-key')")
+        conn.execute("INSERT OR REPLACE INTO settings(key,value) "
+                     "VALUES('_worker_last_seen','2026-09-15 09:00:00')")
+    db.init_db()          # startup runs the migration
+
+    check("the key saved on the laptop still authenticates",
+          db.worker_owner_for_key("old-shared-key") == founder,
+          f"got {db.worker_owner_for_key('old-shared-key')}")
+    check("and it now belongs to the founding operator",
+          db.get_or_create_worker_key(founder) == "old-shared-key")
+    leftover = {k: v for k, v in db.get_settings().items()
+                if k in ("_worker_api_key", "_worker_last_seen")}
+    check("no ownerless shared copy is left behind", not leftover, f"got {leftover}")
+
+    second = db.create_user("second", "pw", is_admin=False)
+    check("a second operator gets their own key, not the old shared one",
+          db.get_or_create_worker_key(second) != "old-shared-key")
+    check("and the old key doesn't let anyone act as them",
+          db.worker_owner_for_key("old-shared-key") != second)
+
+    db.init_db()
+    check("re-running startup changes nothing",
+          db.worker_owner_for_key("old-shared-key") == founder)
+
+
 def main():
     work = tempfile.mkdtemp(prefix="shoutreach_owner_")
     try:
@@ -629,6 +671,7 @@ def main():
         test_delete_user_guard(work)
         test_routes_enforce_the_wall(work)
         test_wa_copy_is_not_inherited(work)
+        test_worker_key_migration(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

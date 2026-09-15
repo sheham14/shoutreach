@@ -137,7 +137,7 @@ def main():
               any(r["email"] == "front@onlycall.ca" for r in page["rows"]))
 
         print("\n6. THE SCRAPE WORKER IS EXEMPT")
-        worker_key = db.get_or_create_worker_api_key()
+        worker_key = db.get_or_create_worker_key(db.get_user_by_username("admin")["id"])
         db.upsert_businesses([{"company": "Worker Call Co", "phone": "709-555-0002"}])
         with db.get_db() as conn:
             wbiz = conn.execute(

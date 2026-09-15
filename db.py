@@ -416,6 +416,17 @@ def init_db():
                 is_admin      INTEGER NOT NULL DEFAULT 0,
                 created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
             );
+
+            -- One scrape worker key per operator. Its own table rather than a
+            -- column on users, so the secret never rides along in a user row
+            -- that gets loaded or serialised somewhere else. The key both
+            -- authenticates a worker and decides whose scrapes it may run.
+            CREATE TABLE IF NOT EXISTS worker_keys (
+                owner_id   INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                api_key    TEXT    NOT NULL UNIQUE,
+                last_seen  TEXT    DEFAULT NULL,
+                created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
         """)
 
         # Schema migrations — safe to run repeatedly on existing databases.
@@ -737,6 +748,27 @@ def _backfill_owner_ids(conn):
     )
 
     _migrate_wa_settings(conn, owner)
+    _migrate_worker_key(conn, owner)
+
+
+def _migrate_worker_key(conn, owner: int):
+    """
+    Hand the old install-wide worker key to the founding operator.
+
+    Their worker has that key saved on their laptop, so it has to keep working
+    through the upgrade rather than silently disconnecting. Moved, not copied:
+    left in settings it would be a second live credential with no owner --
+    exactly the ambiguity per-operator keys exist to remove.
+    """
+    shared = conn.execute(
+        "SELECT value FROM settings WHERE key='_worker_api_key'"
+    ).fetchone()
+    if not shared or not shared["value"]:
+        return
+    if not conn.execute("SELECT 1 FROM worker_keys WHERE owner_id=?", (owner,)).fetchone():
+        conn.execute("INSERT INTO worker_keys(owner_id, api_key) VALUES(?,?)",
+                     (owner, shared["value"]))
+    conn.execute("DELETE FROM settings WHERE key IN ('_worker_api_key', '_worker_last_seen')")
 
 
 def _migrate_wa_settings(conn, owner: int):
@@ -1126,37 +1158,63 @@ def get_or_create_secret() -> str:
         return key
 
 
-def get_or_create_worker_api_key() -> str:
+def get_or_create_worker_key(owner_id) -> str:
     """
-    Shared secret the local scrape worker uses to authenticate.
+    This operator's scrape worker key, created on first use.
+
+    One per operator rather than one for the install. A worker only ever runs
+    the scrapes of whoever owns the key it presents, so two people each running
+    a worker on their own laptop never pick up each other's jobs.
 
     The worker is not a browser and has no session cookie, so it presents this
     as an X-API-Key header instead. Custom headers are not attached
     cross-origin by browsers, so token auth on these routes is not exposed to
     CSRF the way a cookie-authenticated route would be.
     """
+    owner_id = int(owner_id)
     with get_db() as conn:
         row = conn.execute(
-            "SELECT value FROM settings WHERE key='_worker_api_key'"
+            "SELECT api_key FROM worker_keys WHERE owner_id=?", (owner_id,)
         ).fetchone()
-        if row and row["value"]:
-            return row["value"]
+        if row:
+            return row["api_key"]
         key = secrets.token_urlsafe(32)
         conn.execute(
-            "INSERT OR REPLACE INTO settings(key,value) VALUES('_worker_api_key',?)",
-            (key,),
+            "INSERT INTO worker_keys(owner_id, api_key) VALUES(?,?)", (owner_id, key)
         )
         return key
 
 
-def rotate_worker_api_key() -> str:
+def rotate_worker_key(owner_id) -> str:
+    """A new key for this operator only. Everyone else's worker keeps working."""
+    key = secrets.token_urlsafe(32)
     with get_db() as conn:
-        key = secrets.token_urlsafe(32)
-        conn.execute(
-            "INSERT OR REPLACE INTO settings(key,value) VALUES('_worker_api_key',?)",
-            (key,),
-        )
-        return key
+        conn.execute("""
+            INSERT INTO worker_keys(owner_id, api_key) VALUES(?,?)
+            ON CONFLICT(owner_id) DO UPDATE SET api_key=excluded.api_key
+        """, (int(owner_id), key))
+    return key
+
+
+def worker_owner_for_key(presented: str):
+    """
+    Which operator a presented worker key belongs to, or None.
+
+    Every stored key is compared with compare_digest and the loop never stops
+    early, so how long a wrong guess takes reveals nothing about how close it
+    was. The table holds one row per operator, so comparing against all of
+    them stays trivially cheap.
+    """
+    if not presented:
+        return None
+    with get_db() as conn:
+        rows = conn.execute("SELECT owner_id, api_key FROM worker_keys").fetchall()
+    offered = presented.encode("utf-8")
+    match = None
+    for row in rows:
+        if _hmac.compare_digest(offered, row["api_key"].encode("utf-8")):
+            match = row["owner_id"]
+    return match
 
 
 # ── Scrape jobs ───────────────────────────────────────────────────────────────
@@ -1202,39 +1260,38 @@ def get_latest_scrape_job(owner_id=None):
         return dict(row) if row else None
 
 
-def get_active_scrape_job(owner_id=None, any_owner=False):
+def get_active_scrape_job(owner_id=None):
     """
-    The job currently running, for this operator or for anyone.
+    This operator's queued or running scrape, if any.
 
-    `any_owner` is for the import path, which needs to attribute rows pushed
-    back by the worker and has no session to ask. Everything user-facing
-    passes an owner, so one operator cannot watch -- or stop -- the other's
-    scrape.
+    Always one operator's: each worker runs only its own operator's jobs, so
+    nothing needs to see -- or be able to stop -- anyone else's.
     """
     placeholders = ",".join("?" * len(SCRAPE_ACTIVE_STATUSES))
-    scope = "" if any_owner else " AND owner_id = ?"
     with get_db() as conn:
-        args = list(SCRAPE_ACTIVE_STATUSES)
-        if not any_owner:
-            args.append(_resolve_owner_id(conn, owner_id))
         row = conn.execute(
-            f"SELECT * FROM scrape_jobs WHERE status IN ({placeholders}){scope} "
+            f"SELECT * FROM scrape_jobs WHERE status IN ({placeholders}) AND owner_id = ? "
             "ORDER BY id ASC LIMIT 1",
-            args,
+            [*SCRAPE_ACTIVE_STATUSES, _resolve_owner_id(conn, owner_id)],
         ).fetchone()
         return dict(row) if row else None
 
 
-def claim_scrape_job() -> dict:
+def claim_scrape_job(owner_id) -> dict:
     """
-    Hand the oldest queued job to a worker, atomically.
+    Hand this operator's oldest queued job to their worker, atomically.
+
+    Only their own. Without the owner filter a worker takes whichever job is
+    next in line, opening Chrome on one person's laptop to run the other
+    person's search -- their business names in its log, their CSV on its disk.
 
     The UPDATE ... WHERE status='queued' is the lock: if two workers race, only
     one gets a rowcount of 1, so the job cannot be run twice.
     """
     with get_db() as conn:
         row = conn.execute(
-            "SELECT * FROM scrape_jobs WHERE status='queued' ORDER BY id ASC LIMIT 1"
+            "SELECT * FROM scrape_jobs WHERE status='queued' AND owner_id=? "
+            "ORDER BY id ASC LIMIT 1", (int(owner_id),)
         ).fetchone()
         if not row:
             return None
@@ -1314,18 +1371,21 @@ def flag_scrape_job(job_id: int, *, stop=False, resume=False):
         conn.execute(f"UPDATE scrape_jobs SET {column}=1 WHERE id=?", (job_id,))
 
 
-def touch_worker_seen():
+def touch_worker_seen(owner_id):
     """
-    Record that a worker just checked in.
+    Record that this operator's worker just checked in.
 
-    Kept in settings rather than on the job row because the worker polls for
-    work when no job exists -- the UI still needs to show it as connected so
-    pressing Start is not a shot in the dark.
+    Kept apart from the job row because the worker polls for work when no job
+    exists -- the UI still needs to show it as connected so pressing Start is
+    not a shot in the dark. Per operator, because the Scraper page answers "is
+    MY worker online": one shared timestamp would turn one person's page green
+    because the other's laptop was on, and a Start pressed there would sit
+    queued with nothing coming to run it.
     """
     with get_db() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO settings(key,value) "
-            "VALUES('_worker_last_seen', datetime('now'))"
+            "UPDATE worker_keys SET last_seen=datetime('now') WHERE owner_id=?",
+            (int(owner_id),),
         )
 
 
@@ -1340,13 +1400,13 @@ def _seconds_since(ts_str):
     return max(0.0, (datetime.datetime.utcnow() - then).total_seconds())
 
 
-def worker_seconds_since_seen():
-    """Seconds since any worker last checked in, or None if never."""
+def worker_seconds_since_seen(owner_id):
+    """Seconds since this operator's worker last checked in, or None if never."""
     with get_db() as conn:
         row = conn.execute(
-            "SELECT value FROM settings WHERE key='_worker_last_seen'"
+            "SELECT last_seen FROM worker_keys WHERE owner_id=?", (int(owner_id),)
         ).fetchone()
-    return _seconds_since(row["value"] if row else None)
+    return _seconds_since(row["last_seen"] if row else None)
 
 
 def reap_stale_scrape_jobs():
@@ -2097,7 +2157,10 @@ def get_lead_sources(owner_id=None):
                    j.created_at              AS scraped_at,
                    COUNT(*)                  AS count
               FROM businesses b
-              LEFT JOIN scrape_jobs j ON j.id = b.source_job_id
+              -- The job has to be this operator's own. A row can name any job
+              -- id -- a CSV column, a worker's tag -- and joining on the id
+              -- alone would print someone else's niche and city as a list.
+              LEFT JOIN scrape_jobs j ON j.id = b.source_job_id AND j.owner_id = b.owner_id
              WHERE b.owner_id = ?
              GROUP BY b.source_job_id
              ORDER BY (b.source_job_id IS NULL), b.source_job_id DESC

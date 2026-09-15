@@ -121,8 +121,9 @@
     <div class="card-title" style="margin-bottom:6px">Lead Scraper Worker</div>
     <div class="form-hint" style="margin-bottom:16px">
       Scrapes run on your own machine, not on this server — the browser needs a
-      screen you can see to solve CAPTCHAs. This key lets that worker talk to
-      ShoutReach. Treat it like a password.
+      screen you can see to solve CAPTCHAs. This key is yours alone: a worker
+      using it runs only the scrapes you start, and anyone else runs their own
+      worker with their own key. Treat it like a password.
     </div>
     <div class="form-group">
       <label>Worker API Key</label>
@@ -133,7 +134,8 @@
         <button class="btn btn-danger btn-sm" onclick="rotateWorkerKey()">Rotate</button>
       </div>
       <div class="form-hint">
-        Rotating immediately stops any worker still using the old key.
+        Rotating immediately stops your worker until you give it the new key.
+        Nobody else's worker is affected.
       </div>
     </div>
     <div class="form-hint" style="margin-top:14px">On your machine:</div>
