@@ -1,12 +1,14 @@
 # WhatsApp Module Handover
 
-> **Status (2026-09-06):** All three phases are built and tested. Phases 1–2
-> are already committed (`9784233`, `18a2306`); **Phase 3 (this document's
-> original subject) is built, fully tested, and currently uncommitted** — see
-> [§4](#4-current-repo-state). A handful of deliberate deferrals remain,
-> listed in [§6](#6-deferred--not-done-on-purpose). Read this whole document
-> before touching code; it exists so a session with zero memory of the work
-> below can pick it up correctly.
+> **Historical record — for the current state, read [`Handover.md`](Handover.md).**
+> Everything below was accurate on 2026-09-06. Since then, Phase 3 was
+> committed (`792537f`); the `contacts` → `businesses` migration **has** run
+> against production (deployed 2026-09-15, with a backup taken first); every
+> table described here gained per-operator ownership; WhatsApp templates became
+> per-operator with A/B versions; and scrapes can now feed WhatsApp directly.
+> So §4 ("Current repo state") and the production-migration item in §6 are out
+> of date. The design reasoning — signal detection, the manual-send
+> constraint, the infinite follow-up cadence, and the deferrals — still holds.
 
 ---
 

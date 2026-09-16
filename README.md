@@ -1,12 +1,14 @@
 # 📬 ShoutReach — Outreach Engine
 
-Find local businesses, email them, and call them — from one place. Scrapes
-Google Maps for leads, runs cold email sequences with A/B variants and reply
-detection, and gives you a call queue with a script and dispositions for the
-ones worth phoning.
+Find local businesses, then email them, call them, or message them on WhatsApp —
+from one place. Scrapes Google Maps for leads, runs cold email sequences with A/B
+variants and reply detection, gives you a call queue with a script and
+dispositions, and drafts WhatsApp openers that you send yourself.
 
-The two channels share one contact list and one answer: a lead who says no on
-the phone stops receiving emails, and an unsubscribe stops the calls.
+The channels share one answer: a lead who says no on the phone stops receiving
+emails, and an unsubscribe stops everything. Two people can use one install,
+each with their own leads, campaigns and messages — see
+[Accounts and Users](#accounts-and-users).
 
 Self-hosted. No per-seat SaaS fees. Runs on a small VM, or on your own machine.
 
@@ -33,6 +35,10 @@ python app.py
 ```
 
 That's it. The database (outreach.db) is created automatically on first run.
+
+The first time you open it there are no accounts yet, so the login page asks for
+a **setup token** — it's printed in the terminal where you started the app. Use it
+to create the first admin account.
 
 ---
 
@@ -133,8 +139,14 @@ Follow this schedule strictly:
 
 ### 0. Get Leads — the Lead Scraper
 
-Scrapes Google Maps for a niche in a city, visits each business website, and
-pulls out an email.
+Scrapes Google Maps for a niche in a city. Each scrape sends its leads to one
+place:
+
+- **Email** — visits each business website and pulls out an email address.
+  Leads land in Contacts.
+- **WhatsApp** — skips the websites entirely, which makes it much faster, and
+  uses the phone number from the listing. Pick the country the numbers are in
+  (UAE or Qatar). Leads land in WhatsApp and nowhere else.
 
 **The scraper does not run on the server.** Google serves CAPTCHAs that a human
 has to see and solve, so the browser has to open on a screen you are actually
@@ -205,8 +217,9 @@ while progress streams back to the page — Google Maps scrolling included, not
 just the email-scraping step. If a CAPTCHA appears, solve it in that Chrome
 window and click **Resume** in the UI.
 
-Leads with an email are imported to Contacts automatically. Businesses with a
-site but no findable address are stored as prospects to chase by hand, and
+On an email scrape, leads with an email are imported to Contacts automatically.
+Businesses with a site but no findable address are stored as prospects to chase
+by hand, and
 businesses with **no website at all** are kept too — for a web-design offer,
 those are the strongest leads on the list. Phone, category, rating and review
 count come along too — enough to qualify a list before spending a single send
@@ -482,16 +495,83 @@ already where you'll be looking.
 
 ---
 
+## WhatsApp
+
+For clinics you'd rather message than email. **Nothing is ever sent
+automatically** — the app prepares the message, and you tap Send yourself inside
+WhatsApp.
+
+**The flow.** Leads come in through **+ Add leads**: pick from leads you already
+have, paste or upload a CSV, or jump to the Lead Scraper already set to
+WhatsApp. For each lead, the app quietly checks the clinic's website for online
+booking and puts what it found under **Needs review**. You confirm or correct
+that, then **Write messages** drafts an opener for every confirmed lead at once
+(optionally reworded by AI, so they don't all read the same). **Open in
+WhatsApp** opens the chat with the message already filled in.
+
+**Follow-ups never stop on their own.** A lead you've messaged comes back under
+**Follow-up due** every few days — you set the interval — until they reply or
+you pause them. "Sent" only means you opened the link, because WhatsApp doesn't
+tell the app whether a message went, so a sent date can be corrected by hand.
+
+**Numbers that aren't on WhatsApp.** A link that goes nowhere is the check. Move
+the lead to Calling or Email from its card, and it won't be put back in the
+WhatsApp queue later.
+
+**Templates are yours** — each person writes their own. Any of the three (gap
+found, no gap, follow-up) can hold up to four versions to test against each
+other. New leads are dealt between them in turn, a lead keeps its version
+through its follow-ups, and reply rates show under each version.
+
+---
+
+## Accounts and Users
+
+Two people can share one install, each doing their own outreach.
+
+**Walled off from each other:** leads, email campaigns, call campaigns, the call
+script, custom call outcomes, WhatsApp templates and follow-up interval,
+scrapes, and scrape worker keys. Neither person sees the other's.
+
+**Shared:** the sending email accounts, the daily sending cap, AI keys and
+sending rules — you both send as the same company. So an unsubscribe or a bounce
+stops *everyone* emailing that address, and one person's busy week can use up
+the shared daily cap.
+
+**When you both have the same business.** Importing a lead the other person is
+already working shows a heads-up: the business name, which channel, and when it
+was added. Nothing is merged or shared, and your import goes ahead.
+
+**Admin** adds the shared setup on top: email accounts, sending rules, AI keys
+and user management. It doesn't let you see anyone else's leads. For someone
+who's just doing their own outreach, leave it off.
+
+**Adding someone:** Settings → Users → **+ Add User** (admins only). Passwords
+need at least 12 characters.
+
+**Forgotten password:** an admin can set a new one from Settings → Users without
+knowing the old one. If the only admin is locked out, run this on the server:
+
+```bash
+cd ~/shoutreach && source venv/bin/activate
+python reset_password.py
+```
+
+Each person who runs a scraper uses their own worker key — see
+[Get Leads](#0-get-leads--the-lead-scraper).
+
+---
+
 ## Anti-Spam Mechanisms (Built-in)
 
 | Protection                  | What it does                                                          |
 |-----------------------------|-----------------------------------------------------------------------|
 | **Daily cap**               | Hard stop at your campaign's daily limit                              |
-| **Business hours gate**     | Sends only Mon–Fri within your configured hour window                 |
+| **Sending window**          | Sends only on the campaign's sending days, within its hour window     |
 | **Random delays**           | 45–120 second random gap between sends (humanises the pattern)        |
 | **Jitter on scheduling**    | Next-step time has ±30 min random offset (not robotic patterns)       |
 | **Bounce circuit-breaker**  | Auto-pauses campaign when bounce rate exceeds 5%                      |
-| **Reply detection**         | IMAP scan every 15 min; stops sequence for any contact who replied    |
+| **Reply detection**         | IMAP scan every 5 min (switchable off on the Dashboard); stops the sequence for anyone who replied |
 | **Unsubscribe link**        | Every email has a working unsubscribe link (CAN-SPAM compliant)       |
 | **List-Unsubscribe header** | Machine-readable header (required by Gmail/Yahoo 2024 sender policy)  |
 | **Multipart emails**        | Sends text + HTML both (better deliverability than HTML-only)         |
@@ -525,6 +605,8 @@ shoutreach/
 ├── sender.py                  # Email sending engine (SMTP + IMAP)
 ├── scheduler.py               # Background job runner — sends, replies, bounces
 ├── email_validator.py         # MX record validation
+├── wa_signal.py               # WhatsApp booking-gap check on a clinic's website
+├── reset_password.py          # Reset a password from the server's shell
 │
 ├── gmaps_email_scraper.py     # Scraping logic (runs on YOUR machine)
 ├── scraper_worker.py          # Local worker — claims jobs, drives Chrome
@@ -532,9 +614,9 @@ shoutreach/
 ├── scraper_output/            # Scraped CSVs (git-ignored)
 ├── cookies/                   # Saved Maps browser sessions (git-ignored)
 │
-├── templates/, static/        # Dashboard UI — sections/calling.html + js/calling.js
-│                              # are the cold-calling screen
-├── tests/                     # python tests/<name>.py — 13 files, no framework
+├── templates/, static/        # Dashboard UI — one section template + one JS file per screen
+├── tests/                     # python tests/<name>.py — 19 files, no framework
+├── docs/Handover.md           # Current state of the project — start here
 ├── docs/audits/               # Audit findings and their resolution state
 ├── .github/workflows/         # Deploy on push to master, over SSH
 ├── requirements.txt           # Server
@@ -582,8 +664,8 @@ password can be verified before saving, and a newly pasted one is tested
 rather than the one already stored.
 
 **Scheduler not running:**
-- Refresh the page — the scheduler starts automatically with the Flask app
-- Check the green dot in the bottom-left of the dashboard
+- The scheduler starts automatically with the app, so restarting the app restarts it
+- On the server: `sudo systemctl status shoutreach`
 
 ---
 
@@ -605,7 +687,9 @@ Google changes its obfuscated class names without notice. Check
 
 ## Tests
 
-No framework needed — each file runs standalone and exits non-zero on failure:
+No framework needed — each file runs standalone and exits non-zero on failure.
+Run them all with `for f in tests/test_*.py; do python "$f"; done`, or one at a
+time:
 
 ```bash
 python tests/test_migrations.py       # schema migrations
@@ -621,6 +705,12 @@ python tests/test_dedupe_and_guards.py # duplicate sends, bounce breaker, busine
 python tests/test_calling.py          # call queue, outcomes, email crossover
 python tests/test_resilience.py       # worker batching and crash recovery
 python tests/test_security.py         # regression tests for closed audit findings
+python tests/test_cross_channel.py    # one business across email, calling and WhatsApp
+python tests/test_whatsapp.py         # WhatsApp numbers, signals, drafts, A/B, cadence
+python tests/test_ownership.py        # two accounts walled off from each other
+python tests/test_email_checking_toggle.py  # switching automatic reply checks off
+python tests/test_clear_logs.py       # clearing the activity log
+python tests/test_reset_password.py   # the shell password reset
 
 python tests/recall_harness.py        # live measurement against real sites (slow)
 ```
