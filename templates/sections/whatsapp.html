@@ -22,20 +22,18 @@
 
   <!-- ── To do ──────────────────────────────────────────────────────────────
        A short list on the left and the lead you're on to the right, worked
-       through with "Confirm & next" / "Open in WhatsApp" the way Calling's
-       dialler works -- rather than a wall of big cards, each with its own
-       buttons, all competing at once. -->
+       through with "Open in WhatsApp", which moves straight on to the next.
+       Leads arrive with their message already written, so there is nothing
+       to prepare first. -->
   <div class="tab-pane active" data-pane-group="whatsapp" data-pane="todo">
     <div class="flex gap-2 items-center" style="margin-bottom:14px;flex-wrap:wrap">
       <div class="chips">
-        <button class="chip active" id="wa-chip-review" onclick="setWaBucket('review')">Needs review <span class="count" id="wa-count-review">0</span></button>
-        <button class="chip" id="wa-chip-ready" onclick="setWaBucket('ready')">Ready to send <span class="count" id="wa-count-ready">0</span></button>
+        <button class="chip active" id="wa-chip-ready" onclick="setWaBucket('ready')">Ready to send <span class="count" id="wa-count-ready">0</span></button>
         <button class="chip" id="wa-chip-due" onclick="setWaBucket('due')">Follow-up due <span class="count" id="wa-count-due">0</span></button>
       </div>
-      <button class="btn btn-primary btn-sm" id="wa-draft-batch-btn" onclick="runWaDraftBatch()" style="display:none">
-        ✎ Write messages for <span id="wa-count-confirmed">0</span> confirmed lead(s)
-      </button>
-      <span class="text-muted text-small" id="wa-checking-note" style="margin-left:auto"></span>
+      <span class="sent-today" title="Messages and follow-ups opened in WhatsApp since midnight">
+        <b id="wa-sent-today">0</b> sent today
+      </span>
     </div>
 
     <div class="work-split">
@@ -55,14 +53,12 @@
 
   <!-- ── Leads: every WhatsApp lead ─────────────────────────────────────── -->
   <div class="tab-pane" data-pane-group="whatsapp" data-pane="leads">
+    <div class="work-split" id="wl-split" style="grid-template-columns:1fr">
     <div class="card">
       <div class="lt-toolbar">
         <input id="wl-search" class="search-input" placeholder="Search name, number, city…" oninput="LT.wl.search()" />
         <select id="wl-stage" class="filter-select" onchange="LT.wl.filter()">
           <option value="">On WhatsApp (any stage)</option>
-          <option value="checking">Checking website</option>
-          <option value="review">Needs review</option>
-          <option value="writing">Being written</option>
           <option value="ready">Ready to send</option>
           <option value="due">Follow-up due</option>
           <option value="waiting">Waiting for reply</option>
@@ -73,6 +69,8 @@
         <span class="lt-count" id="wl-count"></span>
       </div>
       <div id="wl-body"></div>
+    </div>
+    <div class="card work-panel" id="wl-panel" style="display:none"></div>
     </div>
   </div>
 
@@ -87,7 +85,7 @@
       <div class="table-wrap">
         <table class="lead-table">
           <thead><tr>
-            <th>Campaign</th><th>Leads</th><th>To review</th><th>Ready</th><th>Due</th>
+            <th>Campaign</th><th>Leads</th><th>Ready</th><th>Due</th>
             <th>Messaged</th><th>Replied</th><th>Follow up every</th><th></th>
           </tr></thead>
           <tbody id="wa-campaign-list"></tbody>

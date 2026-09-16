@@ -62,6 +62,10 @@ createLeadTable({
     { key: 'phone', label: 'Phone', sort: true, cls: 'num', render: r => esc(r.phone || '') },
     { key: 'created_at', label: 'Added', sort: true, cls: 'num', render: r => esc(shortDate(r.created_at)) },
   ],
+  onRowClick: r => r.business_id && openLeadPanel(r.business_id, {
+    channel: 'email', panelId: 'el-panel', splitId: 'el-split',
+    onClose: () => { LT.el.currentId = null; LT.el.render(); },
+  }),
   bulk: () => `
     <button class="btn btn-ghost btn-sm" onclick="enrollSelectedEmailLeads()">Enroll in campaign</button>
     <button class="btn btn-danger btn-sm" onclick="deleteSelectedContacts()">Delete</button>`,
@@ -71,7 +75,6 @@ createLeadTable({
     ...(r.enrollments || []).map(e => ({
       label: `Remove from “${e.campaign}”`, run: `removeEnrollment(${e.id})`,
     })),
-    { label: 'Open business in Contacts', run: `openBusiness(${r.business_id})` },
     { label: 'Delete address', run: `deleteContact(${r.id})`, danger: true },
   ],
   onLoad: data => {
@@ -114,6 +117,7 @@ async function enrollEmailLeads(ids) {
   toast(res.message || `Enrolled ${res.enrolled}`);
   LT.el.clear();
   LT.el.load();
+  refreshLeadPanel('el-panel');
 }
 
 function enrollSelectedEmailLeads() { enrollEmailLeads(LT.el.selectedIds()); }
@@ -124,6 +128,7 @@ async function removeEnrollment(enrollId) {
   if (!res || res.error) { toast((res && res.error) || 'Could not remove it', 'err'); return; }
   toast('Removed from the campaign');
   LT.el.load();
+  refreshLeadPanel('el-panel');
 }
 
 async function deleteSelectedContacts() {

@@ -53,10 +53,8 @@
       </div>
       <div class="form-group" id="sc-country-group" style="display:none">
         <label>Country the numbers are in</label>
-        <select id="sc-country">
-          <option value="AE">United Arab Emirates</option>
-          <option value="QA">Qatar</option>
-        </select>
+        <div id="sc-country-wrap"></div>
+        <div class="form-hint">Type to search — any country works.</div>
       </div>
       <div class="form-group">
         <label>Niche / Business Type</label>
@@ -112,6 +110,24 @@
         </div>
         <button class="btn btn-amber btn-sm" onclick="resumeScraper()">✓ Resume</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Every past scrape, so a whole list can be sent to a channel in one go --
+       including one scraped for another channel, or before a campaign existed. -->
+  <div class="card" style="margin-bottom:24px">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Your scrapes</div>
+        <div class="text-muted text-small" style="margin-top:2px">Send everything a scrape found to a channel and campaign in one go.</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="loadScrapeLists()">↻ Refresh</button>
+    </div>
+    <div class="table-wrap">
+      <table class="lead-table">
+        <thead><tr><th>Scrape</th><th>Scraped for</th><th>Leads</th><th>Date</th><th></th></tr></thead>
+        <tbody id="sc-lists"></tbody>
+      </table>
     </div>
   </div>
 

@@ -4,15 +4,19 @@ async function loadScraper() {
   // Arriving from WhatsApp's "Scrape Google Maps" button: aim the form at
   // WhatsApp so what this finds lands there. One-shot, so a later visit from
   // the sidebar opens on whatever was last picked rather than being re-forced.
+  await loadCountries();
+  const wrap = document.getElementById('sc-country-wrap');
+  if (!document.getElementById('sc-country')) wrap.innerHTML = countryPickerHtml('sc-country', _countries.used[0] || 'AE');
   let presetCampaign = '';
   if (window._scraperPreset) {
     const { destination, country, campaign_id } = window._scraperPreset;
     window._scraperPreset = null;
     document.getElementById('sc-destination').value = destination;
-    if (country) document.getElementById('sc-country').value = country;
+    if (country) setCountryPicker('sc-country', country);
     presetCampaign = campaign_id ? String(campaign_id) : '';
   }
   await scraperDestinationChanged(presetCampaign);
+  loadScrapeLists();
   await pollScraperStatus();
   // Keep polling while the section is open so the worker indicator stays
   // honest even when no job is running -- otherwise you only learn the worker
@@ -27,9 +31,10 @@ async function startScraper() {
   const maxResults = +document.getElementById('sc-max').value;
   const autoImport = document.getElementById('sc-autoimport').checked;
   const destination = document.getElementById('sc-destination').value;
-  const country     = destination === 'whatsapp' ? document.getElementById('sc-country').value : '';
+  const country     = destination === 'whatsapp' ? countryValue('sc-country') : '';
   const campaignId  = destination === 'email' ? '' : document.getElementById('sc-campaign').value;
   if (!niche || !city) { toast('Enter a niche and city', 'err'); return; }
+  if (destination === 'whatsapp' && !country) { toast('Pick the country from the list', 'err'); return; }
   if (destination === 'whatsapp' && !campaignId) {
     toast('Pick the WhatsApp campaign these leads go into', 'err');
     return;
@@ -74,7 +79,7 @@ const _SCRAPER_DESTINATIONS = {
         + "Leads go to WhatsApp and nowhere else.",
     importLabel: "Import leads into WhatsApp as they're found",
     campaigns: '/api/wa/campaigns',
-    campaignHint: "Their messages are written from this campaign's templates.",
+    campaignHint: "Their messages are written from this campaign's templates, ready to send.",
     campaignOptional: false,
   },
 };
@@ -98,8 +103,50 @@ async function scraperDestinationChanged(selectCampaign = '') {
   sel.innerHTML =
     (spec.campaignOptional ? '<option value="">No campaign</option>'
                            : (list.length ? '' : '<option value="">Create a campaign in WhatsApp first</option>')) +
-    list.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+    list.filter(c => c.status !== 'archived').map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   if (selectCampaign) sel.value = selectCampaign;
+  if (destination === 'whatsapp') {
+    sel.onchange = () => {
+      const c = list.find(x => String(x.id) === sel.value);
+      if (c && c.country) setCountryPicker('sc-country', c.country);
+    };
+    sel.onchange();
+  } else {
+    sel.onchange = null;
+  }
+}
+
+// ── Your scrapes ─────────────────────────────────────────────────────────────
+
+const _SCRAPE_FOR = { email: 'Email', calling: 'Calling', whatsapp: 'WhatsApp' };
+
+async function loadScrapeLists() {
+  const tbody = document.getElementById('sc-lists');
+  if (!tbody) return;
+  const lists = await api('/api/contacts/sources') || [];
+  if (!Array.isArray(lists) || !lists.length) {
+    tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state"><p>No scrapes yet.</p></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = lists.map(l => {
+    const manual = l.job_id === 'manual';
+    const title = manual ? 'Added by hand or from a CSV' : (l.niche || l.city ? `${l.niche || ''}${l.city ? ` — ${l.city}` : ''}` : l.label);
+    return `<tr>
+      <td><span class="biz-name">${esc(title)}</span>${l.country ? `<span class="sub">${esc(countryName(l.country))}</span>` : ''}</td>
+      <td>${manual ? '<span class="text-muted">—</span>' : pill(_SCRAPE_FOR[l.destination] || 'Email')}</td>
+      <td class="num">${l.count}</td>
+      <td class="num">${esc((l.scraped_at || '').substring(0, 10))}</td>
+      <td class="nowrap" style="text-align:right">
+        <button class="btn btn-ghost btn-sm" onclick="openScrapeInContacts('${escj(String(l.job_id))}')">View</button>
+        <button class="btn btn-primary btn-sm" onclick="addListToChannel('${escj(String(l.job_id))}', '${escj(title)}', ${l.count})">Add all to…</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function openScrapeInContacts(jobId) {
+  window._contactsPresetSource = jobId;
+  showSection('contacts');
 }
 
 async function stopScraper() {

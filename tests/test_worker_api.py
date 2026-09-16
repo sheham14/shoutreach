@@ -217,6 +217,8 @@ def main():
              "website": "http://pearldental.qa", "mx_valid": 1, "source_job_id": wa_job},
             {"email": "", "company": "Corniche Clinic", "phone": "4412 7788", "website": "",
              "status": "no_website", "source_job_id": wa_job},
+            {"email": "", "company": "No Number Spa", "phone": "", "website": "http://nonumber.qa",
+             "source_job_id": wa_job},
         ]})
         body = r.get_json() or {}
         check("the worker's import succeeds", r.status_code == 200 and body.get("ok"),
@@ -231,6 +233,16 @@ def main():
                 "SELECT COUNT(*) FROM email_leads WHERE email='front@pearldental.qa'"
             ).fetchone()[0]
         check("both became WhatsApp leads", len(wa) == 2, f"got {len(wa)}")
+        check("ready to send, with no review step",
+              {l["company"] for l in db.get_wa_ready(wa_campaign_id=wa_camp)} == {"Pearl Dental", "Corniche Clinic"},
+              str([l["company"] for l in db.get_wa_ready(wa_campaign_id=wa_camp)]))
+        with db.get_db() as conn:
+            spa = conn.execute("""SELECT b.id, w.id AS wa FROM businesses b
+                                   LEFT JOIN wa_leads w ON w.business_id = b.id
+                                  WHERE b.name='No Number Spa'""").fetchone()
+        check("a listing with no phone stays in Contacts, off WhatsApp",
+              spa is not None and spa["wa"] is None, str(dict(spa) if spa else None))
+        check("and the scrape log says so", "no phone number" in db.get_scrape_job(wa_job)["logs"])
         check("in the campaign the scrape was aimed at",
               {l["company"] for l in db.get_wa_leads(wa_campaign_id=wa_camp)}
               == {"Pearl Dental", "Corniche Clinic"},

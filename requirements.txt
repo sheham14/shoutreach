@@ -8,3 +8,5 @@ flask>=3.0
 gunicorn>=21.0
 requests>=2.31
 dnspython>=2.4
+# Formats any country's local phone numbers for WhatsApp links.
+phonenumbers>=8.13

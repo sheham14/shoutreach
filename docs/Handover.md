@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-09-16 (channel redesign) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-09-16 (lean WhatsApp flow, not yet deployed) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -22,6 +22,11 @@ fix this file.
   database built by the previously-live code (`076b20c`) — templates, leads,
   call history and campaigns all carried over. No fresh backup was taken for
   this deploy; the newest on the VM is `~/outreach.db.bak-2026-09-15`.
+- **Committed locally, NOT deployed: the lean WhatsApp flow** (§5). No
+  website check or review step — leads land ready to send; an optional,
+  on-click audit; every country; a side panel on every Leads tab; "Add all
+  to…" for a whole scrape. Its deploy runs one more one-shot migration,
+  `_migrate_wa_no_review` (§9) — back up first.
 - **Two people use this install, walled off from each other.** Almost every
   query is scoped to an owner, and a handful deliberately aren't. Read §3
   before adding a query, a route, or a background job.
@@ -36,6 +41,7 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
+| (local) | 09-16 | Lean WhatsApp flow, lead audit, every country, lead side panels, add a whole scrape | **No** |
 | `bed7f2a` | 09-16 | Contacts hub, Leads tabs on every channel, WhatsApp campaigns, explicit Calling, Dashboard | Yes |
 | `bfe08c7` | 09-15 | Each account gets its own scrape worker | Yes |
 | `076b20c` | 09-15 | Scrapes can feed WhatsApp; add existing leads to WhatsApp | Yes |
@@ -62,8 +68,13 @@ wasn't explicitly confirmed back in the session.
 
 - **Contacts** — every business (`businesses`), whichever channel it's on, with
   a Channels column, tabs for **All / Unassigned / Do not contact**, bulk
-  "send to a channel", and a detail panel with a cross-channel timeline.
-  Served by `/api/businesses*` (`db.get_businesses_page` and friends).
+  "send to a channel", "Add all in this list to…" when a scrape is picked, and
+  the lead side panel. Served by `/api/businesses*` (`db.get_businesses_page`
+  and friends).
+- **The lead side panel** (`static/js/lead_panel.js`, `openLeadPanel`) — one
+  business, opened beside the table on Contacts and on every channel's Leads
+  tab: that channel's controls, where else the business is, notes, the audit
+  and the history.
 - **Email** (sidebar *Email*, formerly *Campaigns*) — multi-step sequences, A/B
   variants per step, rotation across sending accounts, IMAP reply and bounce
   detection, HMAC-signed unsubscribe links. Tabs: Campaigns, Leads (every
@@ -73,20 +84,23 @@ wasn't explicitly confirmed back in the session.
 - **Calling** — tabs: To do (the dialler: buckets, lead card, script), Leads
   (`/api/calls/leads`), Campaigns, Script & outcomes. `.ics` invites for booked
   meetings.
-- **WhatsApp** — import into a **campaign** → background "booking gap" check on
-  the clinic's website → the operator confirms the signal in the To do panel →
-  a batch-drafted opener from the campaign's templates → the operator taps
-  *Open in WhatsApp* and sends it themselves → follow-ups at the campaign's gap,
-  forever, until replied or paused. Tabs: To do, Leads, Campaigns, Templates.
-  Design history: `docs/WhatsApp Module Handover.md`.
+- **WhatsApp** — import into a **campaign** → the lead lands in **Ready to
+  send**, its message read live from the campaign's template → the operator
+  taps *Open in WhatsApp* and sends it themselves → follow-ups at the
+  campaign's gap, forever, until replied or paused. The audit is optional and
+  never in the way. Tabs: To do (Ready to send, Follow-up due, "sent today"),
+  Leads, Campaigns, Templates. Design history:
+  `docs/WhatsApp Module Handover.md` (its booking-gap check is retired).
 - **Lead Scraper** — Google Maps, run by a worker on an operator's own laptop
   (the server has no screen to show CAPTCHAs on). Each scrape targets Email,
   Calling or WhatsApp, optionally into a campaign (required for WhatsApp).
+  "Your scrapes" lists past scrapes with "Add all to…".
 - **Dashboard** — today's to-do across channels, each channel's numbers, every
   campaign in one table (`/api/dashboard`, `db.get_dashboard`).
 - **Settings** — admins: email accounts, sending rules (including the automatic
-  reply-check switch, moved here from the Dashboard), AI keys, users.
-  Everyone: their own scrape worker key.
+  reply-check switch, moved here from the Dashboard), AI keys, the optional
+  Google API key for the audit, users. Everyone: their own scrape worker key
+  and their own audit links.
 
 ## 2a. Channel membership — what "on a channel" means
 
@@ -104,19 +118,20 @@ reason is derived in `_business_rows_sql`. Rules that are easy to break:
   on Calling. `get_or_create_call_lead` re-activates a removed lead, because
   logging a call against it is as explicit as adding it.
 - **Every WhatsApp lead belongs to a campaign** (`wa_leads.wa_campaign_id`).
-  NULL only happens when a campaign is deleted; such leads are skipped by the
-  draft batch (`no_campaign` in the response) until moved.
+  NULL only happens when a campaign is deleted; such a lead has no message
+  until it's moved into one.
 - **Templates live on `wa_campaigns`** (JSON `templates`, `followup_days`,
   `variables`). The old per-operator settings keys (`wa_template_gap:<uid>`…)
   are read only by `_migrate_wa_campaigns`, and `GET /api/settings` no longer
   returns any `:`-suffixed or `_`-prefixed key.
-- **A/B arms rotate per campaign and signal kind, continuing from
-  `wa_arm_offset`**, so batches of one or two still alternate.
+- **A new lead gets whichever version has fewest leads** in its campaign
+  (`_deal_wa_label`), so versions alternate A, B, A, B however small the batch.
 - **Deleting a business keeps anyone who opted out, unsubscribed or bounced**
   (`delete_businesses`), because that row is what suppresses a re-import.
-- The two one-shot migrations are guarded by settings markers
-  (`_migrated_calling_explicit`, `_migrated_wa_campaigns`), not by the absence
-  of rows — re-running them would undo operators' removals.
+- The one-shot migrations are guarded by settings markers
+  (`_migrated_calling_explicit`, `_migrated_wa_campaigns`,
+  `_migrated_wa_no_review`), not by the absence of rows — re-running them would
+  undo operators' removals and edits.
 
 ## 3. The multi-operator model
 
@@ -162,15 +177,18 @@ visibility into anyone else's leads.
   - The send loop (`get_campaigns(all_owners=True)`) and `get_due_enrollments`.
   - `terminal_outcome_keys` — it's matched against `call_status` values already
     written to rows.
-  - `get_wa_leads_pending_signal` and `reap_stale_scrape_jobs`.
+  - `reap_stale_scrape_jobs`.
 - **Overlap between operators is advisory only** (`find_cross_owner_matches`).
   The import goes ahead; the notice shows business name, channel and date,
   never contact details; nothing is merged. Matching is heuristic
   (phone / domain / email / name + locality).
 - **A user who still owns rows can't be deleted** (`delete_user` refuses).
-- **Per-operator settings are suffixed keys** — `wa_template_gap:<uid>`,
-  `wa_followup_days:<uid>` and so on. **Message copy never falls back to
+- **Per-operator settings are suffixed keys** — `audit_links:<uid>`, and the
+  retired `wa_template_gap:<uid>` family. **Message copy never falls back to
   another operator's**: the two lead with different services.
+- **The audit's checks and the shared Google API key** are the one audit
+  piece that isn't per operator; results live on the business, so they're
+  walled like it.
 
 `tests/test_ownership.py` (16 sections) is the most precise statement of all
 of this.
@@ -197,8 +215,9 @@ every key without stopping early). From there:
 ### Destinations
 
 A scrape targets `email`, `calling` or `whatsapp` (`scrape_jobs.destination`;
-WhatsApp also needs a `country` — `AE` or `QA` — and a `campaign_id`; Calling
-takes an optional one). The **server** decides where rows land, from the job,
+WhatsApp also needs a `country` — any region Google's `phonenumbers` library
+knows (`db.WA_COUNTRY_CODES`) — and a `campaign_id`; Calling takes an optional
+one). The **server** decides where rows land, from the job,
 and only for worker requests (`_scrape_job_for_import`): a CSV imported by hand
 still goes where the person importing it sent it. Calling and WhatsApp scrapes
 drop any emails rather than filing them as email leads; a Calling scrape's
@@ -211,8 +230,10 @@ server does the routing).
 **Adding leads you already have to a channel:** from Contacts (bulk or the
 detail panel), or each channel's *+ Add leads* (`POST /api/calls/add`,
 `POST /api/wa/add-existing` with a `wa_campaign_id`,
-`POST /api/businesses/enroll`). Anything already on another channel is held
-for confirmation. Leads with no phone, numbers already ruled out as not on
+`POST /api/businesses/enroll`), or a whole scrape at once from the Scraper's
+"Your scrapes" or Contacts (`POST /api/lists/add-to` with `source_job_id`,
+`channel`, `campaign_id`, and `country` for WhatsApp). Anything already on
+another channel is held for confirmation. Leads with no phone, numbers already ruled out as not on
 WhatsApp, and opted-out businesses are counted and reported rather than
 silently dropped.
 
@@ -262,35 +283,75 @@ CSV already holds.
 
 ## 5. WhatsApp additions since the module handover
 
-- **Templates, the follow-up gap and variables are per campaign**
-  (`wa_campaigns`), replacing the per-operator settings. A new campaign starts
-  from the factory copy or a copy of one of the operator's own campaigns —
-  never anyone else's. Existing copy and leads were moved into "My first
-  campaign" by `_migrate_wa_campaigns` (which reads the per-operator keys that
-  `_migrate_wa_settings` produced earlier).
+**The lean flow (local, not deployed).** The booking-gap check, the review step
+and the "write messages" batch are gone (`wa_signal.py` deleted, its scheduler
+job removed). The focus is volume.
+
+- **Leads land ready to send** (`wa_status = 'drafted'`) from every route in:
+  scrape, CSV/paste, add existing, add a whole list. A lead with no phone isn't
+  put on WhatsApp at all.
+- **Messages are live.** `wa_message_for(lead, campaign, kind)` renders the
+  campaign's *current* template for the lead's version each time it's shown,
+  so a template change reaches every unsent lead. A hand edit or AI rewording
+  is stored in `draft_message` with `message_edited = 1` and kept until
+  "Reset to template" (`reset_wa_message`). What was sent is in `wa_log`
+  and never changes.
+- **Versions** (`opener`, `followup`; up to 4 each, labelled A–D): a new lead is
+  dealt the version with fewest leads (`_deal_wa_label`). When the editor
+  removes or reorders opener versions it sends `opener_from` (each saved
+  version's old label, or null), and `_remap_wa_versions` points unsent leads
+  at their version's new position — or deals a lead whose version was deleted
+  to another. Sent leads keep their label; it records what they got. A lead's
+  follow-up uses the same letter as its opener.
 - **Rendering** is `db.render_wa_message`: `{{key|fallback}}` like email copy;
-  fields are the business's (`business_name`, `city`, `category`, `rating`…),
-  `signal_detail`, and the campaign's variables (lowest priority). The browser
-  preview (`fillPlaceholders` in `tables.js`) follows the same rules.
-- **The review panel** offers a two-way choice (no online booking / has it)
-  and one-tap phrases for `signal_detail`. The API still accepts `unclear`,
-  but the UI asks the operator to open the site and pick one.
+  fields are the business's (`business_name`, `city`, `category`, `rating`,
+  `review_count`, `website`, `address`) and the campaign's variables (lowest
+  priority). `{{signal_detail}}` still fills from an old lead's stored value
+  and is empty for new ones; the editor flags a template that uses it. The
+  browser preview (`fillPlaceholders` in `tables.js`) follows the same rules.
+- **Migration** `_migrate_wa_no_review`: each campaign's "no booking" opener
+  becomes its opener; the "has booking" copy is kept, unread, under
+  `retired_no_gap` in the templates JSON. Leads waiting on a check, review or
+  drafting move to Ready to send. A lead that already had written text keeps
+  it (as edited) only if it differs from what the template gives now.
+- **Countries:** `phonenumbers` (in `requirements.txt`) formats any country's
+  number (`format_whatsapp_number`) and tells mobile from landline, with a
+  prefix fallback for AE/QA. `GET /api/countries` lists every region and the
+  ones this operator uses; the picker is a searchable `<datalist>`.
+- **Open in WhatsApp** (`openWhatsAppChat` in `lead_panel.js`): on a computer,
+  `web.whatsapp.com/send?...` in one named tab reused for every lead; on a
+  phone, or when the operator picks "desktop app", `whatsapp://send`. It's a
+  link the operator opens — nothing reads or drives that page. "Sent today"
+  counts `wa_log` rows since the browser's local midnight (`since`).
+- **Reword with AI** is an optional button per lead (`POST .../reword`), saved
+  like a hand edit. `wa_leads.paraphrased` and `wa_log.paraphrased` keep a
+  rewrite from being credited to a version.
 - **"Not on WhatsApp"** is `POST /api/wa/leads/<id>/move` with destination
   `call` (optional call campaign), `email` (needs an active address; optional
   enrolment) or `none`. The other channel is set up first, so a refusal leaves
   the lead on WhatsApp.
-- **A/B versions:** each template holds 1–4 versions, labelled A–D
-  (`WA_ARM_LABELS`). New leads are dealt out round-robin *per signal type*,
-  not randomly — on small batches, random assignment routinely puts every lead
-  on one side. A lead keeps its version through its follow-ups
-  (`_wa_arm_position`).
-- `wa_leads.template_variant` holds the version label (`''` when a template
-  has only one). `wa_leads.paraphrased` and `wa_log.paraphrased` record
-  whether the AI reworded it — kept separate so a rewrite isn't credited to a
-  version.
 - **Reply rates** come from `get_wa_variant_stats`, counted per **lead** rather
-  than per message, and split by paraphrased. Nothing declares a winner; the
-  operator decides.
+  than per message, and split by paraphrased. Nothing declares a winner.
+
+**The lead audit** (`audit.py`), on any business with a website, only when the
+operator clicks *Run checks* on its panel:
+
+- `run_checks` runs, in parallel: a homepage scan (built with, analytics and ad
+  pixels, chat/booking widgets, socials, title/description, structured data,
+  phone viewport, footer year), Google PageSpeed v5 mobile scores and
+  screenshot (the `google_api_key` setting lifts the unauthenticated quota),
+  the SSL certificate, MX records → email provider, the Wayback Machine's
+  first capture, and RDAP domain dates. One failing never stops the rest.
+- `POST /api/businesses/<id>/audit` starts it on a background thread (single
+  gunicorn worker; at most `_AUDIT_MAX_RUNNING` = 3 at once) and the page polls
+  `GET`. Results are saved as JSON on `businesses.audit`. Tests set
+  `AUDIT_INLINE` to run it in the request.
+- `get_rating_context` compares the Google rating and review count with the
+  operator's own leads of the same category and city (needs 3 peers).
+- The one-click links (Meta Ad Library, Google Ads Transparency, Maps and
+  competitors, ChatGPT/Perplexity, BuiltWith, and so on) are built in the
+  browser (`auditLinkGroups`). Each operator adds their own under Settings →
+  Lead audit (`GET/PUT /api/audit-links`, https only, up to 40).
 
 ---
 
@@ -335,9 +396,8 @@ CSV already holds.
   `wa.me` link, and it must stay correctable by hand.
 - **WhatsApp follow-ups are infinite** until replied or paused. No
   auto-dormant cap.
-- **Signal detection stays lean:** one plain HTTP fetch per lead, no per-lead
-  agent loops or web searches. If a review-based signal is ever added, it must
-  quote verbatim text or say nothing.
+- **The audit runs on click, one lead at a time.** Nothing audits leads in the
+  background or in bulk, and nothing blocks sending on it.
 - **Suppression spans every operator** (§3).
 - **Don't push without asking** — it deploys.
 
@@ -352,15 +412,19 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-20 files, all passing as of the redesign. `tests/test_contacts_hub.py` covers
-Contacts, Unassigned, deletion guards and the Dashboard.
+20 files, all passing as of the lean WhatsApp flow. `tests/test_whatsapp.py`
+covers live messages, edits and reset, version dealing and removal, countries
+and sent today; `tests/test_contacts_hub.py` covers Contacts, Unassigned,
+deletion guards, the Dashboard, adding a whole list, and the audit.
 
 **Browser smoke test.** There's no UI test in the repo, but the redesign was
 checked by serving the app against a seeded throwaway database and driving
 every page and tab with Playwright (installed locally for the worker),
 watching for JS errors and failed API calls. Import `scheduler` and replace
-`scheduler.start` with a no-op first, or the app starts sending and fetching
-websites. **Never import `app` without `DB_PATH` pointing somewhere
+`scheduler.start` with a no-op first, or the app starts sending. Replace
+`audit.run_checks` with a canned result, and `window.open` with a recorder
+(`page.add_init_script`), so the test never reaches the internet or loads
+WhatsApp. **Never import `app` without `DB_PATH` pointing somewhere
 disposable** — importing runs `init_db()` against `./outreach.db`.
 
 - **Create any user you fake a session for.** A fixture that sets
@@ -368,8 +432,9 @@ disposable** — importing runs `init_db()` against `./outreach.db`.
   (invisible to everyone), and `worker_keys` has a real foreign key.
 - **With two or more users, pass `owner_id` to every db write in a test**, or
   `_resolve_owner_id` raises — by design.
-- **Never hit the live internet.** Signal detection is tested against a local
-  `http.server`; set `mx_valid` on import rows so the importer skips DNS.
+- **Never hit the live internet.** The audit's site scan is tested against a
+  local `http.server` with PageSpeed faked; set `mx_valid` on import rows so
+  the importer skips DNS.
 - **The Windows console is cp1252.** Printing an em dash or emoji can raise
   `UnicodeEncodeError`; print ASCII-safe.
 - **A check can pass without testing anything.** Read what new checks print,
@@ -381,6 +446,13 @@ disposable** — importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
+0. **Deploy the lean WhatsApp flow** once the operator says so. Back up the
+   database first (§6). The restart installs `phonenumbers` and runs
+   `_migrate_wa_no_review`. Afterwards: WhatsApp → To do shows the old
+   review/confirmed leads under Ready to send with messages filled in, and
+   each campaign's Templates tab shows one opening message (take
+   `{{signal_detail}}` out of it). A Google API key (Settings → Lead audit) is
+   optional.
 1. Deployed and verified per §6 on 2026-09-16. Still to do by hand, in the
    app: WhatsApp → Campaigns shows "My first campaign"
    holding the existing leads and the operator's own templates (rename it);
@@ -404,7 +476,7 @@ items:
 
 **Still deliberately deferred** (reasons in the WhatsApp handover §6): renaming
 the `/api/contacts/*` URLs (the worker posts to them), `.xlsx` import, a
-rendered-browser worker for "unclear" signals, a WhatsApp number pre-check.
+WhatsApp number pre-check, auditing leads in bulk.
 
 **Noticed, not fixed:** the admin Database viewer's table list still names the
 retired `contacts` table.
@@ -419,15 +491,16 @@ retired `contacts` table.
   `worker_owner` are near the top; the worker's routes are under
   `# ── API: scrape worker`.
 - `scheduler.py` — the single background thread: sends, reply and bounce
-  checks, the WhatsApp signal scan.
+  checks.
 - `scraper_worker.py`, `gmaps_email_scraper.py`, `email_validator.py` — the
   laptop worker.
 - `static/js/tables.js` — shared frontend pieces: tabs (`setTab`/`onTab`),
   `createLeadTable` (every leads table), `chooseDialog` (replaces `prompt()`),
-  pills, `fillPlaceholders`. One JS file per page: `contacts.js` (businesses),
-  `email_leads.js` (Email → Leads and suppression), `calling.js`,
-  `whatsapp.js`, `dashboard.js`.
-- `wa_signal.py` — booking-gap detection.
+  pills, `fillPlaceholders`. `static/js/lead_panel.js` — the lead side panel,
+  the country picker, opening WhatsApp, the audit section. One JS file per
+  page: `contacts.js` (businesses, "Add all to…"), `email_leads.js` (Email →
+  Leads and suppression), `calling.js`, `whatsapp.js`, `dashboard.js`.
+- `audit.py` — the lead audit's automatic checks.
 - `reset_password.py` — shell password reset.
 - `tests/test_ownership.py`, `tests/test_whatsapp.py`,
   `tests/test_worker_api.py` — the best description of intended behaviour.

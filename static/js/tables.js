@@ -41,9 +41,6 @@ function pill(text, tone = '', title = '') {
 }
 
 const WA_STAGE_META = {
-  checking: ['Checking website', ''],
-  review:   ['Needs review', 'amber'],
-  writing:  ['Being written', 'blue'],
   ready:    ['Ready to send', 'blue'],
   due:      ['Follow-up due', 'amber'],
   waiting:  ['Waiting for reply', ''],
@@ -65,7 +62,18 @@ function prettyWaNumber(n) {
   if (d.startsWith('971') && d.length === 12) return `+971 ${d.slice(3, 5)} ${d.slice(5, 8)} ${d.slice(8)}`;
   if (d.startsWith('971') && d.length === 11) return `+971 ${d.slice(3, 4)} ${d.slice(4, 7)} ${d.slice(7)}`;
   if (d.startsWith('974') && d.length === 11) return `+974 ${d.slice(3, 7)} ${d.slice(7)}`;
-  return `+${d}`;
+  // Anywhere else: split off the country code (known once the country list has
+  // loaded) and group the rest in threes, the last group taking up to four.
+  const list = (typeof _countries !== 'undefined' && _countries) ? _countries.list : [];
+  const dial = list.map(c => String(c.dial)).filter(code => d.startsWith(code))
+    .sort((a, b) => b.length - a.length)[0];
+  if (!dial) return `+${d}`;
+  const rest = d.slice(dial.length);
+  const groups = [];
+  let i = 0;
+  while (rest.length - i > 4) { groups.push(rest.slice(i, i + 3)); i += 3; }
+  groups.push(rest.slice(i));
+  return `+${dial} ${groups.join(' ')}`;
 }
 
 function shortDate(s) {
@@ -108,7 +116,6 @@ function waFieldsFor(lead, variables = {}) {
   });
   f.business_name = lead.company || lead.name || '';
   f.company = f.business_name;
-  f.signal_detail = lead.signal_detail || '';
   return f;
 }
 

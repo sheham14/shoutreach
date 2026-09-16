@@ -5,19 +5,13 @@
 // place to send a business to a channel it isn't on yet.
 
 let _ctView = 'all';
-let _ctDetailId = null;
 let _ctEditId = null;
+let _ctSources = [];
 
 const CT_VIEW_HINTS = {
   unassigned: 'Businesses on no channel — taken off one, scraped with nothing to reach them on, or added by hand. Tick some and send them to a channel.',
   dnc: 'Businesses that asked not to be contacted or unsubscribed. They stay here so a later scrape or import can never put them back on a list.',
 };
-
-function callOutcomeLabel(key) {
-  if (!key) return 'never called';
-  const meta = (typeof CALL_STATUS_META !== 'undefined') && CALL_STATUS_META[key];
-  return meta ? meta.label.toLowerCase() : String(key).replace(/_/g, ' ');
-}
 
 // Where a business is, as pills -- the "category" of each contact.
 function channelPills(r) {
@@ -106,13 +100,26 @@ onTab('contacts', name => {
 });
 
 async function loadContacts() {
-  const sources = await api('/api/contacts/sources') || [];
+  _ctSources = await api('/api/contacts/sources') || [];
   const sel = document.getElementById('ct-source');
-  const keep = sel.value;
+  const keep = window._contactsPresetSource ?? sel.value;
+  window._contactsPresetSource = undefined;
   sel.innerHTML = '<option value="">All lists</option>' +
-    sources.map(s => `<option value="${esc(String(s.job_id))}">${esc(s.label)} (${s.count})</option>`).join('');
-  sel.value = keep;
+    _ctSources.map(s => `<option value="${esc(String(s.job_id))}">${esc(s.label)} (${s.count})</option>`).join('');
+  sel.value = _ctSources.some(s => String(s.job_id) === String(keep)) ? keep : '';
+  document.getElementById('ct-add-list').style.display = sel.value ? '' : 'none';
   setTab('contacts', currentTab('contacts', 'all'));
+}
+
+function contactsSourceChanged() {
+  document.getElementById('ct-add-list').style.display = document.getElementById('ct-source').value ? '' : 'none';
+  LT.ct.filter();
+}
+
+function addSelectedListToChannel() {
+  const id = document.getElementById('ct-source').value;
+  const list = _ctSources.find(s => String(s.job_id) === id);
+  if (list) addListToChannel(id, list.label, list.count);
 }
 
 // From anywhere in the app: jump to one business in Contacts.
@@ -123,103 +130,21 @@ async function openBusiness(id) {
 
 // ── Detail panel ─────────────────────────────────────────────────────────────
 
-function closeContactDetail() {
-  _ctDetailId = null;
-  LT.ct.currentId = null;
-  LT.ct.render();
-  document.getElementById('ct-detail').style.display = 'none';
-  document.getElementById('ct-split').style.gridTemplateColumns = '1fr';
-}
+function closeContactDetail() { closeLeadPanel('ct-detail'); }
 
-async function openContactDetail(id) {
-  const d = await api(`/api/businesses/${id}`);
-  if (!d || d.error) { toast((d && d.error) || 'Could not open that contact', 'err'); return; }
-  _ctDetailId = id;
+function openContactDetail(id) {
   LT.ct.currentId = id;
   LT.ct.render();
-  const panel = document.getElementById('ct-detail');
-  document.getElementById('ct-split').style.gridTemplateColumns = '';
-  panel.style.display = 'block';
-
-  const links = [];
-  if (d.phone) links.push(`<a href="tel:${esc(d.phone)}" style="color:var(--blue)">${esc(d.phone)}</a>`);
-  if (d.website) links.push(`<a href="${esc(d.website)}" target="_blank" rel="noopener" style="color:var(--blue)">${esc(d.domain || d.website)}</a>`);
-  const facts = [d.category, d.city || d.address, d.rating != null ? `${d.rating}★ (${d.review_count ?? 0})` : '']
-    .filter(Boolean).map(esc).join(' · ');
-
-  const where = [];
-  (d.enrollments || []).slice(0, 3).forEach(e =>
-    where.push(`<div>${pill('Email', 'green')} ${esc(e.campaign)} — ${esc(e.status === 'queued' ? `step ${e.current_step}` : e.status)}</div>`));
-  if ((d.emails || []).length && !(d.enrollments || []).length) {
-    where.push(`<div>${pill('Email', 'green')} not in a campaign yet</div>`);
-  }
-  if (d.call && !d.call.removed_at) {
-    const camps = (d.call.campaigns || []).map(c => esc(c.name)).join(', ');
-    where.push(`<div>${pill('Calling', 'blue')} ${esc(callOutcomeLabel(d.call.call_status))}${
-      d.call.next_call_at ? ` · next ${esc(d.call.next_call_at.substring(0, 16))}` : ''}${camps ? ` · ${camps}` : ''}</div>`);
-  }
-  if (d.whatsapp) {
-    const w = d.whatsapp;
-    const off = w.moved_to || w.removed_at;
-    where.push(`<div>${pill('WhatsApp', off ? 'dashed' : 'purple')} ${
-      off ? (w.moved_to ? 'not on WhatsApp' : 'taken off') : esc(w.campaign_name || 'no campaign')}${
-      w.replied ? ' · replied' : ''}</div>`);
-  }
-  if (d.do_not_contact) where.push(`<div>${pill('Do not contact', 'red')} asked to be left alone</div>`);
-  if (!where.length) where.push(`<div>${pill('Unassigned', 'dashed')} not on any channel</div>`);
-
-  const onWa = d.whatsapp && !d.whatsapp.moved_to && !d.whatsapp.removed_at;
-  const canWa = !onWa && !(d.whatsapp && d.whatsapp.moved_to) && !d.do_not_contact;
-  const onCall = d.call && !d.call.removed_at;
-
-  panel.innerHTML = `
-    <div class="flex items-center gap-2" style="justify-content:space-between">
-      <h3>${esc(d.company || 'Unnamed business')}</h3>
-      <button class="btn btn-ghost btn-sm" onclick="closeContactDetail()" title="Close">✕</button>
-    </div>
-    <div class="text-small" style="display:flex;gap:10px;flex-wrap:wrap">${links.join('')}</div>
-    ${facts ? `<div class="text-muted text-small" style="margin-top:2px">${facts}</div>` : ''}
-
-    <span class="field-label">Where it is</span>
-    <div style="display:flex;flex-direction:column;gap:6px;font-size:12.5px">${where.join('')}</div>
-    <div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px">
-      ${(d.emails || []).length ? `<button class="btn btn-ghost btn-sm" onclick="contactsToEmail([${d.id}])">+ Email campaign</button>` : ''}
-      ${!onCall && !d.do_not_contact ? `<button class="btn btn-ghost btn-sm" onclick="contactsToCalling([${d.id}])">+ Calling</button>` : ''}
-      ${canWa ? `<button class="btn btn-ghost btn-sm" onclick="contactsToWhatsApp([${d.id}])">+ WhatsApp</button>` : ''}
-      <button class="btn btn-ghost btn-sm" onclick="openBusinessForm(${d.id})">✎ Edit</button>
-    </div>
-
-    ${(d.emails || []).length ? `<span class="field-label">Email addresses</span>
-      <div style="display:flex;flex-direction:column;gap:4px">${d.emails.map(e =>
-        `<div class="text-small"><span class="mono">${esc(e.email)}</span> ${
-          e.status !== 'active' ? pill(e.status, 'red') : ''}${e.duplicate_of ? ' <span class="text-muted">(backup)</span>' : ''}</div>`).join('')}</div>` : ''}
-
-    <span class="field-label">Notes</span>
-    <textarea class="soft-input" id="ct-notes" style="min-height:70px"
-              placeholder="Anything worth remembering about this business…"
-              onchange="saveContactNotes(${d.id}, this.value)">${esc(d.notes || '')}</textarea>
-
-    <span class="field-label">History</span>
-    ${(d.timeline || []).length ? `<div class="timeline">${d.timeline.slice(0, 40).map(t => `
-      <div class="item">
-        <span class="when">${esc((t.at || '').substring(0, 16))}</span>
-        <span class="channel-${t.channel}">●</span> ${esc(t.text)}
-        ${t.detail ? `<div class="detail">${esc(t.detail.length > 240 ? t.detail.substring(0, 240) + '…' : t.detail)}</div>` : ''}
-      </div>`).join('')}</div>` : '<div class="text-muted text-small">Nothing sent, called or messaged yet.</div>'}
-  `;
+  return openLeadPanel(id, {
+    panelId: 'ct-detail', splitId: 'ct-split',
+    onClose: () => { LT.ct.currentId = null; LT.ct.render(); },
+  });
 }
 
-async function saveContactNotes(id, notes) {
-  const res = await api(`/api/businesses/${id}`, 'PUT', { notes });
-  if (!res || res.error) { toast((res && res.error) || 'Could not save the note', 'err'); return; }
-  toast('Note saved');
-}
-
+// After an edit anywhere, redraw whichever lists and lead panels are showing.
 function _refreshContactsAfterChange() {
-  if (document.getElementById('section-contacts').classList.contains('active')) {
-    LT.ct.load();
-    if (_ctDetailId) openContactDetail(_ctDetailId);
-  }
+  if (document.getElementById('section-contacts').classList.contains('active')) LT.ct.load();
+  Object.keys(LeadPanel.current).forEach(refreshLeadPanel);
 }
 
 // ── Add / edit ───────────────────────────────────────────────────────────────
@@ -327,23 +252,23 @@ async function contactsToCalling(ids, { onDone } = {}) {
 
 async function contactsToWhatsApp(ids, { onDone } = {}) {
   if (!ids.length) return;
-  const campaigns = (await api('/api/wa/campaigns') || []).filter(c => c.status !== 'archived');
+  const [all] = await Promise.all([api('/api/wa/campaigns'), loadCountries()]);
+  const campaigns = (all || []).filter(c => c.status !== 'archived');
   const picked = await chooseDialog({
     title: `Add ${ids.length} to WhatsApp`,
     body: `<label class="field-label">WhatsApp campaign</label>
       ${campaignSelectHtml('ct-wa-camp', campaigns, { selected: campaigns[0] ? campaigns[0].id : '' })}
       <label class="field-label">Country the numbers are in</label>
-      <select id="ct-wa-country" class="filter-select" style="max-width:100%;width:100%">
-        <option value="AE" ${campaigns[0] && campaigns[0].country === 'QA' ? '' : 'selected'}>United Arab Emirates</option>
-        <option value="QA" ${campaigns[0] && campaigns[0].country === 'QA' ? 'selected' : ''}>Qatar</option>
-      </select>
-      <div class="form-hint">Their messages are written from the campaign's templates. Businesses with no
+      ${countryPickerHtml('ct-wa-country', (campaigns[0] && campaigns[0].country) || _countries.used[0] || 'AE')}
+      <div class="form-hint">Their messages are written from the campaign's templates, ready to send. Businesses with no
       phone, already ruled out as not on WhatsApp, or who asked not to be contacted are skipped and counted.</div>`,
     confirm: 'Add to WhatsApp',
     collect: () => {
       const v = document.getElementById('ct-wa-camp').value;
       if (!v) { toast('Pick a campaign', 'err'); return null; }
-      return { country: document.getElementById('ct-wa-country').value };
+      const country = countryValue('ct-wa-country');
+      if (!country) { toast('Pick the country from the list', 'err'); return null; }
+      return { country };
     },
   });
   if (!picked) return;
@@ -366,7 +291,7 @@ async function contactsToWhatsApp(ids, { onDone } = {}) {
 function _sumCounts(first, final) {
   if (final === first) return first;
   const out = { ...first };
-  ['added', 'already', 'no_phone', 'opted_out', 'ruled_out', 'in_campaign'].forEach(k => {
+  ['added', 'already', 'no_phone', 'no_email', 'opted_out', 'ruled_out', 'in_campaign'].forEach(k => {
     out[k] = (first[k] || 0) + (final[k] || 0);
   });
   return out;
@@ -387,6 +312,75 @@ async function deleteBusinesses(ids) {
   if (!res || res.error) { toast((res && res.error) || 'Could not delete them', 'err'); return; }
   toast(`Deleted ${res.deleted}` + (res.kept ? ` — kept ${res.kept} who asked not to be contacted` : ''));
   LT.ct.clear();
-  if (ids.includes(_ctDetailId)) closeContactDetail();
+  Object.entries(LeadPanel.current).forEach(([panelId, cur]) => {
+    if (ids.includes(cur.businessId)) closeLeadPanel(panelId);
+  });
   LT.ct.load();
+}
+
+// ── A whole list to a channel ────────────────────────────────────────────────
+//
+// Everything one scrape found -- or everything added by hand -- into a channel
+// and campaign in one go. From the Scraper's "Your scrapes" and from Contacts
+// when a list is picked. Same rules as adding a selection: skips are counted,
+// and anyone already being worked on another channel is asked about first.
+
+async function addListToChannel(sourceJobId, label = '', count = null) {
+  const [emailCamps, callCamps, waAll] = await Promise.all([
+    api('/api/campaigns'), api('/api/call-campaigns'), api('/api/wa/campaigns'), loadCountries(),
+  ]);
+  const wa = (waAll || []).filter(c => c.status !== 'archived');
+  const emails = Array.isArray(emailCamps) ? emailCamps : [];
+  const box = 'onclick="event.stopPropagation()" style="margin-top:8px;display:flex;flex-direction:column;gap:8px"';
+  const picked = await chooseDialog({
+    title: `Add ${count != null ? `all ${count}` : 'everyone'} to a channel`,
+    width: 540,
+    body: `${label ? `<p class="text-muted text-small" style="margin-bottom:12px">${esc(label)}</p>` : ''}
+      ${choiceCard({ name: 'la-ch', value: 'whatsapp', title: 'WhatsApp', checked: true,
+        hint: 'Each lead gets its message written from the campaign, ready to send.',
+        extra: `<div ${box}>${campaignSelectHtml('la-wa-camp', wa, { selected: wa[0] ? wa[0].id : '' })}
+          ${countryPickerHtml('la-wa-country', (wa[0] && wa[0].country) || _countries.used[0] || 'AE')}</div>` })}
+      ${choiceCard({ name: 'la-ch', value: 'calling', title: 'Calling',
+        hint: 'Onto your call list, and into a campaign if you pick one.',
+        extra: `<div ${box}>${campaignSelectHtml('la-call-camp', callCamps || [],
+          { allowNone: true, noneLabel: 'No campaign — just add to Calling' })}</div>` })}
+      ${choiceCard({ name: 'la-ch', value: 'email', title: 'Email campaign', disabled: !emails.length,
+        hint: emails.length ? 'Enrolled by their best address.' : 'Create an email campaign first.',
+        extra: emails.length ? `<div ${box}>${campaignSelectHtml('la-email-camp', emails, { allowNew: false })}</div>` : '' })}
+      <div class="form-hint">Anyone with nothing to reach them on for that channel, already there, or who asked not to be
+        contacted is skipped and counted. Anyone already being worked on another channel is shown to you first.</div>`,
+    confirm: 'Add them',
+    collect: () => {
+      const channel = chosenRadio('la-ch');
+      if (channel !== 'whatsapp') return { channel };
+      if (!document.getElementById('la-wa-camp').value) { toast('Pick the WhatsApp campaign', 'err'); return null; }
+      const country = countryValue('la-wa-country');
+      if (!country) { toast('Pick the country from the list', 'err'); return null; }
+      return { channel, country };
+    },
+  });
+  if (!picked) return;
+
+  let campaignId = '';
+  if (picked.channel === 'whatsapp') {
+    campaignId = await resolveCampaignSelect('la-wa-camp', '/api/wa/campaigns', { country: picked.country });
+  } else if (picked.channel === 'calling') {
+    campaignId = await resolveCampaignSelect('la-call-camp', '/api/call-campaigns');
+  } else {
+    campaignId = document.getElementById('la-email-camp').value;
+  }
+  if (campaignId === null) return;
+
+  const body = { source_job_id: sourceJobId, channel: picked.channel, campaign_id: campaignId || null,
+                 country: picked.country || '' };
+  toast('Adding…');
+  const first = await api('/api/lists/add-to', 'POST', body);
+  if (!first || first.error) { toast((first && first.error) || 'Could not add them', 'err'); return; }
+  const final = await confirmChannelConflicts(first, () => api('/api/lists/add-to', 'POST', {
+    ...body, business_ids: first.conflicts.map(c => c.business_id), confirm_conflicts: true,
+  }));
+  const where = { whatsapp: 'WhatsApp', calling: 'Calling', email: 'Email' }[picked.channel];
+  toast(describeAdd(_sumCounts(first, final), `Added to ${where}:`));
+  loadCountries(true);
+  _refreshContactsAfterChange();
 }

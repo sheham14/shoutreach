@@ -33,18 +33,36 @@
         <p><strong>Email, Calling and WhatsApp</strong> are laid out the same way:</p>
         <table>
           <tr><th>Tab</th><th>What it's for</th></tr>
-          <tr><td><strong>To do</strong> (Calling, WhatsApp)</td><td>The work: a short list with the lead you're on beside it. Callbacks due and never-called leads; WhatsApp websites to review, messages ready to send, follow-ups due.</td></tr>
-          <tr><td><strong>Leads</strong></td><td>Every lead on that channel as a table. Search, filter, tick rows, then move, pause, enroll or take them off. The ⋯ at the end of a row has everything you can do to that one.</td></tr>
+          <tr><td><strong>To do</strong> (Calling, WhatsApp)</td><td>The work: a short list with the lead you're on beside it. Callbacks due and never-called leads; WhatsApp messages ready to send and follow-ups due, with how many you've sent today.</td></tr>
+          <tr><td><strong>Leads</strong></td><td>Every lead on that channel as a table. Search, filter, tick rows, then move, pause, enroll or take them off. Click a row to open that lead beside the table — edit it, add notes, run its audit — without leaving the page.</td></tr>
           <tr><td><strong>Campaigns</strong></td><td>Named batches. An email campaign sends a sequence; a call campaign is a list you've decided to work; a WhatsApp campaign carries its own message templates.</td></tr>
           <tr><td><strong>Templates / Script</strong></td><td>Your own words. Nobody else using the app can see them.</td></tr>
         </table>
 
         <h4>WhatsApp campaigns</h4>
-        <p>Every WhatsApp lead is in a campaign, and its messages are written from that campaign's templates, at
-        that campaign's follow-up gap. So leads for different services get different pitches. Templates can use
-        <code>{{business_name}}</code>, <code>{{signal_detail}}</code> (what you saw on their website),
-        <code>{{city}}</code>, <code>{{category}}</code> and any variables you add to the campaign, such as
-        <code>{{my_name}}</code>. Add a fallback for anything that might be missing: <code>{{city|your area}}</code>.</p>
+        <p>Every WhatsApp lead is in a campaign, and arrives in <strong>Ready to send</strong> with its message
+        already written from that campaign's template. Templates can use <code>{{business_name}}</code>,
+        <code>{{city}}</code>, <code>{{category}}</code>, <code>{{rating}}</code>, <code>{{review_count}}</code>,
+        <code>{{website}}</code> and any variables you add to the campaign, such as <code>{{my_name}}</code>. Add a
+        fallback for anything that might be missing: <code>{{city|your area}}</code>.</p>
+        <ul>
+          <li><strong>Changing a template</strong> changes every message still waiting to be sent. Messages you've
+          edited by hand or reworded with AI are kept, with a <strong>Reset to template</strong> link. Sent messages
+          never change.</li>
+          <li><strong>Versions A and B</strong>: add a second version to test wording. New leads take turns — A, B,
+          A, B — and each version's reply rate shows beside it.</li>
+          <li><strong>Open in WhatsApp</strong> opens WhatsApp Web in one tab that's reused for every lead on a
+          computer, or the WhatsApp app on a phone. You still tap Send yourself. It counts as sent when you click;
+          if you didn't send it, use "Didn't actually send?".</li>
+        </ul>
+
+        <h4>The audit</h4>
+        <p>Every lead's panel has an <strong>Audit</strong> section. It never has to be done before sending.
+        <strong>Run checks</strong> scores the website with Google PageSpeed (speed, SEO, a phone screenshot) and
+        looks at what it's built with, its analytics and ad pixels, email setup, SSL and how old it is — about a
+        minute. Below that are one-click links: Meta Ad Library, Google Ads Transparency, the Maps listing and
+        competitors, asking ChatGPT and Perplexity who they'd recommend, and more. Add your own links in
+        Settings → Lead audit.</p>
 
         <h4>When a number isn't on WhatsApp</h4>
         <p>Press <strong>Not on WhatsApp…</strong> and choose: move it to Calling (into a campaign if you like),
@@ -57,6 +75,9 @@
         <strong>Calling</strong> and <strong>WhatsApp</strong> only need the phone number from Google Maps, so they
         skip the websites and run much faster. Anything a scrape finds that can't go on its channel — no email,
         no phone — waits in Contacts under Unassigned.</p>
+        <p>Under <strong>Your scrapes</strong> on the Scraper page, <strong>Add all to…</strong> sends everything
+        one scrape found to a channel and campaign in one go — the same button appears in Contacts when you pick a
+        list. WhatsApp numbers work for any country: type to search for it.</p>
       </div>
     </div>
 

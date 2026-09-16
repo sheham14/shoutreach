@@ -111,6 +111,7 @@
 
   <!-- ── Leads: everyone on Calling ─────────────────────────────────────── -->
   <div class="tab-pane" data-pane-group="calling" data-pane="leads">
+    <div class="work-split" id="cl-split" style="grid-template-columns:1fr">
     <div class="card">
       <div class="lt-toolbar">
         <input id="cl-search" class="search-input" placeholder="Search name, phone, city…" oninput="LT.cl.search()" />
@@ -126,6 +127,8 @@
         <span class="lt-count" id="cl-count"></span>
       </div>
       <div id="cl-body"></div>
+    </div>
+    <div class="card work-panel" id="cl-panel" style="display:none"></div>
     </div>
   </div>
 

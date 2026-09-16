@@ -155,9 +155,14 @@ place:
 - **Calling** — skips the websites entirely, which makes it much faster, and
   uses the phone number from the listing. Leads land on Calling, optionally in
   a call campaign, and nowhere else.
-- **WhatsApp** — also phone-only. Pick the country the numbers are in (UAE or
-  Qatar) and the WhatsApp campaign they go into; their messages are written from
-  that campaign's templates.
+- **WhatsApp** — also phone-only. Pick the country the numbers are in (any
+  country — type to search) and the WhatsApp campaign they go into; each lead
+  arrives ready to send, its message written from that campaign's template.
+
+**Your scrapes**, under the scraper, lists every past scrape. **Add all to…**
+sends everything one found to a channel and campaign in one go — useful for a
+scrape run for another channel, or before the campaign existed. Contacts has
+the same button when you pick a list.
 
 **The scraper does not run on the server.** Google serves CAPTCHAs that a human
 has to see and solve, so the browser has to open on a screen you are actually
@@ -519,50 +524,66 @@ automatically** — the app prepares the message, and you tap Send yourself insi
 WhatsApp.
 
 **Campaigns.** Every WhatsApp lead is in a campaign, and a campaign carries its
-own templates, follow-up gap, default country and variables — so leads for
-different services get different pitches. Start a new one from the starter
-templates or as a copy of another. The **Campaigns** tab shows each one's
-leads, reviews waiting, follow-ups due and reply rate.
+own templates, follow-up gap, country and variables — so leads for different
+services get different pitches. Start a new one from the starter templates or
+as a copy of another. The **Campaigns** tab shows each one's leads, ready to
+send, follow-ups due and reply rate.
 
 **The flow.** Leads come in through **+ Add leads** into a campaign: pick from
 businesses you already have, paste or upload a CSV, or jump to the Lead Scraper
-already set to WhatsApp. For each lead, the app quietly checks the clinic's
-website for online booking. The **To do** tab lists what needs you, with the
-lead you're on beside the list:
+already set to WhatsApp. Each one lands **ready to send**, with its message
+already written. The **To do** tab is the work, with the lead you're on beside
+the list and a count of what you've sent today:
 
-- **Needs review** — say whether they can book online, tap a phrase for what
-  you saw (or type your own), and watch the message preview fill in. **Confirm
-  & next** moves to the next one.
-- **Write messages** drafts an opener for every confirmed lead at once
-  (optionally reworded by AI, so they don't all read the same).
-- **Ready to send** — edit if you like, then **Open in WhatsApp** opens the
-  chat with the message filled in.
+- **Ready to send** — edit the message if you like, then **Open in WhatsApp**
+  opens the chat with it typed in and moves you to the next lead. On a
+  computer that's WhatsApp Web, in one tab reused for every lead (or the
+  desktop app, if you switch to it); on a phone, the WhatsApp app.
+  **Reword with AI** is there if you want a message to read differently.
 - **Follow-up due** — the same, for follow-ups.
 
+Notes and the audit sit folded under every lead and never have to be done first.
+
 The **Leads** tab has every WhatsApp lead as a table, with its stage, campaign
-and version: move leads between campaigns, pause follow-ups, or take them off.
+and version. Click one to open it beside the table — edit it, send it, add
+notes, run its audit — or tick several to move them between campaigns, pause
+follow-ups, or take them off.
 
 **Follow-ups never stop on their own.** A lead you've messaged comes back under
 **Follow-up due** every few days — you set the interval — until they reply or
-you pause them. "Sent" only means you opened the link, because WhatsApp doesn't
+you pause them. "Sent" only means you opened the chat, because WhatsApp doesn't
 tell the app whether a message went, so a sent date can be corrected by hand.
 
-**Numbers that aren't on WhatsApp.** A link that goes nowhere is the check.
+**Numbers that aren't on WhatsApp.** A chat that won't open is the check.
 **Not on WhatsApp…** asks where the lead goes: Calling (into a campaign if you
 like), Email (if there's an address), or nowhere — it waits in Contacts under
 Unassigned. The number is never put back on WhatsApp by a later scrape. To drop
 a lead that *is* on WhatsApp, use **Take off WhatsApp**; that one can be added
 back.
 
-**Templates** belong to the campaign. Each of the three (no online booking,
-has online booking, follow-up) can hold up to four versions to test against
-each other. New leads are dealt between them in turn — continuing where the
-campaign left off, so small batches still alternate — a lead keeps its version
-through its follow-ups, and reply rates show under each version. Templates can
-use `{{business_name}}`, `{{signal_detail}}`, `{{city}}`, `{{category}}`,
-`{{rating}}` and your own campaign variables like `{{my_name}}`, with fallbacks
-(`{{city|your area}}`); the editor shows how many of the campaign's leads have
-each detail, and previews every version against a real lead.
+**Templates** belong to the campaign: an opening message and a follow-up, each
+with up to four versions to test against each other. New leads take turns — A,
+B, A, B — a lead keeps its letter through its follow-ups, and reply rates show
+under each version. Templates can use `{{business_name}}`, `{{city}}`,
+`{{category}}`, `{{rating}}`, `{{review_count}}`, `{{website}}` and your own
+campaign variables like `{{my_name}}`, with fallbacks (`{{city|your area}}`);
+the editor shows how many of the campaign's leads have each detail, and
+previews every version against a real lead.
+
+**Changing a template** changes every message still waiting to be sent. A
+message you edited by hand or had reworded is kept, with **Reset to template**
+beside it. Removing a version moves its waiting leads to another. Messages
+already sent never change.
+
+**The audit.** Every lead's panel has an **Audit** section. **Run checks** (about
+a minute, one lead at a time) gives Google PageSpeed's mobile speed and SEO
+scores with a phone screenshot, what the site is built with, its analytics and
+ad pixels, email provider, SSL, and how old the site and domain are, plus how
+its Google rating compares with your other leads nearby. Below that are
+one-click links — Meta Ad Library, Google Ads Transparency, the Maps listing
+and competitors, what ChatGPT and Perplexity recommend, BuiltWith and more.
+Add your own links in **Settings → Lead audit**; an admin can add a free Google
+API key there to lift PageSpeed's limit.
 
 ---
 
@@ -571,7 +592,7 @@ each detail, and previews every version against a real lead.
 **Contacts** is every business you have. Its **Channels** column shows where
 each one is ("Email · step 2", "Calling · callback", "WhatsApp · replied");
 tick rows to send them to Email, Calling or WhatsApp, and click one for its
-details, notes and a timeline of every email, call and WhatsApp message.
+details, notes, audit and a timeline of every email, call and WhatsApp message.
 
 - **Unassigned** lists businesses on no channel, with why: taken off WhatsApp or
   Calling, an email scrape that found no address, or added by hand.
@@ -586,11 +607,13 @@ or taken off (WhatsApp).
 **Email, Calling and WhatsApp** share one layout — **To do** (Calling and
 WhatsApp), **Leads**, **Campaigns**, and the copy (Templates, Script & outcomes).
 Every leads table works the same way: search and filter, sort by a column, tick
-rows (or "select all N matching") for bulk actions, and the **⋯** at the end of
-a row for everything you can do to that one.
+rows (or "select all N matching") for bulk actions, click a row to open that
+lead beside the table, and the **⋯** at the end of a row for everything you can
+do to that one.
 
-The **Dashboard** starts with today's to-do — reviews, messages ready, follow-ups
-and callbacks due, each opening the list it counts — then each channel's
+The **Dashboard** starts with today's to-do — messages ready, follow-ups due,
+WhatsApp messages sent today, callbacks due, never called — each opening the
+list it counts — then each channel's
 numbers, then every campaign on every channel in one table.
 
 ---
@@ -675,7 +698,7 @@ shoutreach/
 ├── sender.py                  # Email sending engine (SMTP + IMAP)
 ├── scheduler.py               # Background job runner — sends, replies, bounces
 ├── email_validator.py         # MX record validation
-├── wa_signal.py               # WhatsApp booking-gap check on a clinic's website
+├── audit.py                   # The lead audit's checks (PageSpeed, tech, pixels, SSL, email, age)
 ├── reset_password.py          # Reset a password from the server's shell
 │
 ├── gmaps_email_scraper.py     # Scraping logic (runs on YOUR machine)
@@ -776,7 +799,7 @@ python tests/test_calling.py          # Calling leads, queue, outcomes, email cr
 python tests/test_resilience.py       # worker batching and crash recovery
 python tests/test_security.py         # regression tests for closed audit findings
 python tests/test_cross_channel.py    # one business across email, calling and WhatsApp
-python tests/test_whatsapp.py         # WhatsApp campaigns, numbers, signals, drafts, A/B, cadence
+python tests/test_whatsapp.py         # WhatsApp campaigns, numbers, live messages, A/B, cadence
 python tests/test_contacts_hub.py     # Contacts as every business, Unassigned, the Dashboard
 python tests/test_ownership.py        # two accounts walled off from each other
 python tests/test_email_checking_toggle.py  # switching automatic reply checks off

@@ -501,7 +501,7 @@ def test_routes_enforce_the_wall(work):
     check("an operator can start their own WhatsApp campaign", made_wa.status_code == 200
           and a_wa_camp, f"got {made_wa.status_code} {made_wa.get_json()}")
     saved = ca.patch(f"/api/wa/campaigns/{a_wa_camp}", headers=hdr, json={
-        "templates": {"gap": ["Alice's own opener for {{business_name}}"]},
+        "templates": {"opener": ["Alice's own opener for {{business_name}}"]},
         "followup_days": 9, "variables": {"sender": "Alice"},
     })
     check("and write its copy",
@@ -509,8 +509,8 @@ def test_routes_enforce_the_wall(work):
 
     mine = ca.get(f"/api/wa/campaigns/{a_wa_camp}").get_json()
     check("their own copy is what they get back",
-          mine["templates"]["gap"] == ["Alice's own opener for {{business_name}}"],
-          f"got {mine['templates']['gap']}")
+          mine["templates"]["opener"] == ["Alice's own opener for {{business_name}}"],
+          f"got {mine['templates']['opener']}")
     theirs = cb.get("/api/wa/campaigns").get_json()
     check("the other operator's campaign list doesn't include it",
           all(c["id"] != a_wa_camp for c in theirs) and "Alice" not in json.dumps(theirs),
@@ -656,9 +656,9 @@ def test_wa_copy_is_not_inherited(work):
     first_campaigns = db.get_wa_campaigns(owner_id=a)
     check("the copy is carried into a first campaign, where it's edited now",
           len(first_campaigns) == 1
-          and first_campaigns[0]["templates"]["gap"] == ["First operator's own pitch"]
+          and first_campaigns[0]["templates"]["opener"] == ["First operator's own pitch"]
           and first_campaigns[0]["followup_days"] == 7,
-          f"got {[(c['name'], c['templates']['gap'], c['followup_days']) for c in first_campaigns]}")
+          f"got {[(c['name'], c['templates']['opener'], c['followup_days']) for c in first_campaigns]}")
     db.init_db()
     check("and a restart doesn't make a second one", len(db.get_wa_campaigns(owner_id=a)) == 1)
 

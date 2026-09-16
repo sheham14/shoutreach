@@ -11,6 +11,8 @@ import random
 import re
 import secrets
 from urllib.parse import urlsplit
+
+import phonenumbers
 import hashlib
 import hmac as _hmac
 import os as _os
@@ -119,6 +121,11 @@ def init_db():
                 -- sure of that.
                 do_not_contact   INTEGER NOT NULL DEFAULT 0,
                 notes            TEXT    NOT NULL DEFAULT '',
+                -- JSON from the operator's last "Run checks" (audit.py): site
+                -- speed and SEO scores, what the site runs on, pixels, email
+                -- provider, site age. Only ever filled on request.
+                audit            TEXT    NOT NULL DEFAULT '',
+                audit_at         TEXT    DEFAULT NULL,
                 created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -202,6 +209,11 @@ def init_db():
                 -- A label rather than an index: arms can be deleted, and a
                 -- number would silently re-point old leads at different copy.
                 template_variant TEXT    NOT NULL DEFAULT '',
+                -- 1 when draft_message holds the operator's own wording (or an
+                -- AI rewording). Otherwise the message is written live from
+                -- the campaign's current template, so a template edit reaches
+                -- every unsent lead -- see wa_message_for.
+                message_edited   INTEGER NOT NULL DEFAULT 0,
                 -- Whether the AI variety pass rewrote it. Kept apart from the
                 -- arm because a paraphrase is a different message: folding the
                 -- two together would credit an arm for copy it didn't write.
@@ -531,6 +543,9 @@ def init_db():
             # ALTER TABLE add with a REFERENCES clause.
             "ALTER TABLE wa_leads ADD COLUMN wa_campaign_id INTEGER DEFAULT NULL "
             "REFERENCES wa_campaigns(id) ON DELETE SET NULL",
+            "ALTER TABLE wa_leads   ADD COLUMN message_edited INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE businesses ADD COLUMN audit TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN audit_at TEXT DEFAULT NULL",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -553,6 +568,7 @@ def init_db():
         _backfill_owner_ids(conn)
         _make_calling_explicit(conn)
         _migrate_wa_campaigns(conn)
+        _migrate_wa_no_review(conn)
 
         # Uniqueness is per owner, not global. The old global index is dropped
         # rather than left in place: while it exists, a second operator
@@ -2273,6 +2289,9 @@ def get_lead_sources(owner_id=None):
                    j.niche                   AS niche,
                    j.city                    AS city,
                    j.created_at              AS scraped_at,
+                   j.destination             AS destination,
+                   j.country                 AS country,
+                   j.status                  AS status,
                    COUNT(*)                  AS count
               FROM businesses b
               -- The job has to be this operator's own. A row can name any job
@@ -2297,8 +2316,30 @@ def get_lead_sources(owner_id=None):
             "job_id": r["job_id"] if r["job_id"] is not None else SOURCE_MANUAL,
             "label":  label,
             "count":  r["count"],
+            "niche": r["niche"] or "",
+            "city": r["city"] or "",
+            "scraped_at": r["scraped_at"],
+            "destination": r["destination"] or "",
+            "country": r["country"] or "",
+            "status": r["status"] or "",
         })
     return out
+
+
+def get_list_business_ids(source_job_id, owner_id=None) -> list:
+    """Every business of this operator's that one lead list (a scrape, or the
+    hand-added bucket) produced -- what "Add all to..." acts on."""
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        if str(source_job_id) == SOURCE_MANUAL:
+            rows = conn.execute(
+                "SELECT id FROM businesses WHERE owner_id=? AND source_job_id IS NULL ORDER BY id",
+                (owner,))
+        else:
+            rows = conn.execute(
+                "SELECT id FROM businesses WHERE owner_id=? AND source_job_id=? ORDER BY id",
+                (owner, int(source_job_id)))
+        return [r["id"] for r in rows]
 
 
 def get_email_lead(email_lead_id: int):
@@ -4383,90 +4424,117 @@ def save_call_script(script_id: int, name: str, sections: list, owner_id=None):
 # ── WhatsApp ──────────────────────────────────────────────────────────────────
 #
 # Sending is manual by design -- see wa_leads' own comment in init_db. Nothing
-# below ever transmits anything; it stages a business as a lead, detects and
-# records a confirmable signal, drafts a message, and tracks that the
-# operator clicked Open in WhatsApp. The follow-up cadence is a live query
-# (get_wa_followups_due), not a scheduled job, on the same principle: no
-# background code path in this module touches the network unattended.
+# below ever transmits anything; it stages a business as a lead, keeps the
+# message it will be sent (written live from its campaign's template), and
+# tracks that the operator clicked Open in WhatsApp. The follow-up cadence is
+# a live query (get_wa_followups_due), not a scheduled job, on the same
+# principle: no background code path in this module touches the network.
 
-# Dialling codes for the numbers this module actually needs to format. Not a
-# general phone library -- normalize_phone is NANP-only for the same reason,
-# and Gulf numbers need a different rule (no NANP-style "drop everything but
-# the last 10 digits"; a UAE or Qatar number has no fixed total length once
-# the country code is included). Extend this as new countries come up.
-WA_COUNTRY_CODES = {"AE": "971", "QA": "974"}
+# Every country Google's phone-number metadata knows (the data Android uses).
+# Countries write local numbers differently -- the UAE drops a trunk 0, Qatar
+# has none, Italy keeps its leading 0 after the country code -- and a
+# hand-kept table of dialling codes would quietly build wa.me links that open
+# the wrong chat. Region -> dialling code, as a string.
+WA_COUNTRY_CODES = {
+    region: str(phonenumbers.country_code_for_region(region))
+    for region in phonenumbers.SUPPORTED_REGIONS
+}
+
+
+def is_supported_country(code) -> bool:
+    return (code or "").strip().upper() in WA_COUNTRY_CODES
+
+
+def list_countries() -> list:
+    """Every country a number can be formatted for. Names come from the
+    browser (Intl.DisplayNames), so nothing here needs translating or keeping
+    up to date."""
+    return [{"code": r, "dial": WA_COUNTRY_CODES[r]} for r in sorted(WA_COUNTRY_CODES)]
+
+
+def _parse_phone(raw: str, country: str = ""):
+    """A parsed number, or None. Without a known country the digits have to
+    carry their own country code already."""
+    digits = re.sub(r"\D", "", raw or "")
+    if not digits:
+        return None
+    country = (country or "").strip().upper()
+    try:
+        if country in WA_COUNTRY_CODES:
+            return phonenumbers.parse(raw, country)
+        text = raw.strip()
+        if text.startswith("00"):
+            digits = digits[2:]
+        return phonenumbers.parse("+" + digits, None)
+    except phonenumbers.NumberParseException:
+        return None
 
 
 def format_whatsapp_number(raw: str, country: str = "") -> str:
     """
     Digits only, full international form, ready to drop straight into a
-    wa.me link. wa.me rejects a leading + or a local trunk 0, and Google
-    Maps shows Gulf numbers in local format ("050 123 4567") with no country
-    code at all, so this has to add what Maps left out rather than just
-    stripping punctuation the way normalize_phone does for NANP numbers.
+    wa.me link. wa.me rejects a leading + or a local trunk prefix, and Google
+    Maps shows numbers in local format ("050 123 4567") with no country code
+    at all, so this has to add what Maps left out, following that country's
+    own rules.
 
-    Returns '' if there are no digits to work with. If `country` is
-    unrecognized, returns the digits as-is rather than guessing a country --
-    a wrong guess produces a wa.me link that silently opens the wrong chat,
-    which is worse than a lead the operator has to fix by hand.
+    Accepts any number of a plausible length for the country, not only numbers
+    in ranges the metadata already knows are assigned -- a new mobile range
+    would otherwise be refused until the library caught up.
+
+    Returns '' if there are no digits to work with. If the country is unknown
+    and the digits don't already start with a country code, returns the digits
+    as-is rather than guessing: a wrong guess opens the wrong chat, which is
+    worse than a lead the operator has to fix by hand.
     """
     digits = re.sub(r"\D", "", raw or "")
     if not digits:
         return ""
-    country = (country or "").strip().upper()
-    code = WA_COUNTRY_CODES.get(country)
-    if not code:
-        for c in WA_COUNTRY_CODES.values():
-            if digits.startswith(c):
-                return digits
-        return digits
-
-    if digits.startswith(code):
-        return digits
-    if digits.startswith("00" + code):
-        return digits[2:]
-    # UAE numbers are dialled with a leading trunk 0 ("050 123 4567") that
-    # the country code replaces; Qatar has no trunk prefix to strip at all.
-    if country == "AE" and digits.startswith("0"):
-        digits = digits[1:]
-    return code + digits
+    number = _parse_phone(raw, country)
+    if number is not None and phonenumbers.is_possible_number(number):
+        return phonenumbers.format_number(number, phonenumbers.PhoneNumberFormat.E164)[1:]
+    return digits
 
 
-def classify_number_type(raw: str, country: str = "") -> str:
-    """
-    'mobile' / 'landline' / 'unknown' from the dialling prefix.
-
-    A soft signal, not a filter: WhatsApp Business does run on landlines, so
-    this sorts the queue (mobiles first, since they're the likelier hit)
-    rather than hiding anything. Unrecognized country or prefix both fall
-    through to 'unknown' rather than a guess.
-    """
-    digits = re.sub(r"\D", "", raw or "")
-    country = (country or "").strip().upper()
-    if not digits:
-        return "unknown"
-
+def _prefix_number_type(digits: str, country: str) -> str:
+    """The old UAE/Qatar prefix rules, for numbers the metadata can't place --
+    usually example or not-yet-listed ranges where the prefix still says a lot."""
     if country == "AE":
-        local = digits
-        if local.startswith("971"):
-            local = local[3:]
-        elif local.startswith("0"):
-            local = local[1:]
+        local = digits[3:] if digits.startswith("971") else digits.lstrip("0")
         if local[:1] == "5":
             return "mobile"
         if local[:1] in "234679":
             return "landline"
-        return "unknown"
-
     if country == "QA":
         local = digits[3:] if digits.startswith("974") else digits
         if local[:1] in "3567":
             return "mobile"
         if local[:1] == "4":
             return "landline"
-        return "unknown"
-
     return "unknown"
+
+
+def classify_number_type(raw: str, country: str = "") -> str:
+    """
+    'mobile' / 'landline' / 'unknown'.
+
+    A soft signal, not a filter: WhatsApp Business does run on landlines, so
+    this only warns in the list rather than hiding anything.
+    """
+    digits = re.sub(r"\D", "", raw or "")
+    if not digits:
+        return "unknown"
+    country = (country or "").strip().upper()
+    number = _parse_phone(raw, country)
+    if number is not None:
+        kind = phonenumbers.number_type(number)
+        if kind == phonenumbers.PhoneNumberType.MOBILE:
+            return "mobile"
+        if kind == phonenumbers.PhoneNumberType.FIXED_LINE:
+            return "landline"
+        if kind == phonenumbers.PhoneNumberType.FIXED_LINE_OR_MOBILE:
+            return "unknown"
+    return _prefix_number_type(digits, country)
 
 
 # Filled in by the operator, not invented for them -- but unlike the call
@@ -4665,14 +4733,18 @@ def get_wa_variant_stats(owner_id=None, wa_campaign_id=None) -> list:
 
 # ── WhatsApp: templates and variables ────────────────────────────────────────
 
-WA_TEMPLATE_KINDS = ("gap", "no_gap", "followup")
+# One opener and one follow-up per campaign. The opener used to come in two
+# flavours chosen by an automatic booking check on the clinic's website; that
+# check is gone -- it could only see one narrow thing, and a lead now goes out
+# straight from its scrape, with any audit done later, by the operator.
+WA_TEMPLATE_KINDS = ("opener", "followup")
 
-# What a WhatsApp template can say about the lead, in the order the editor
-# lists them. Campaign variables add to these; a lead's own value wins over a
+# What a template can say about the lead, in the order the editor lists them.
+# All of it comes from the Maps listing, so every lead has it the moment it
+# arrives. Campaign variables add to these; a lead's own value wins over a
 # campaign variable of the same name, as it does for email.
 WA_TEMPLATE_FIELDS = [
     ("business_name", "Business name"),
-    ("signal_detail", "What you saw on their website"),
     ("city",          "City"),
     ("category",      "Business category"),
     ("rating",        "Google rating"),
@@ -4698,7 +4770,7 @@ def render_wa_message(template: str, lead: dict, variables: dict = None) -> str:
     """
     fields = {str(k): v for k, v in (variables or {}).items()}
     for key, _label in WA_TEMPLATE_FIELDS:
-        if key in ("business_name", "signal_detail"):
+        if key == "business_name":
             continue
         value = lead.get(key)
         if value not in (None, ""):
@@ -4706,6 +4778,8 @@ def render_wa_message(template: str, lead: dict, variables: dict = None) -> str:
     name = (lead.get("company") or lead.get("name") or "").strip()
     fields["business_name"] = name
     fields["company"] = name
+    # Old templates may still say {{signal_detail}}; it fills from whatever a
+    # lead had recorded before the automatic check was retired, else nothing.
     fields["signal_detail"] = lead.get("signal_detail") or ""
 
     def _resolve(match):
@@ -4726,8 +4800,16 @@ def _render_wa_template(template: str, business: dict, signal_detail: str) -> st
                                         "signal_detail": signal_detail})
 
 
+_DEFAULT_WA_TEMPLATE_OPENER = (
+    "Hi {{business_name}}! I came across your {{category|business}} in "
+    "{{city|town}} and had a quick look at how you show up online. I help "
+    "businesses like yours bring in more customers through their website, "
+    "Google and social media. Would you be open to a quick chat?"
+)
+
+
 def _wa_factory_templates() -> dict:
-    return {kind: [default] for kind, (_key, default) in _WA_TEMPLATE_SETTINGS_KEYS.items()}
+    return {"opener": [_DEFAULT_WA_TEMPLATE_OPENER], "followup": [_DEFAULT_WA_TEMPLATE_FOLLOWUP]}
 
 
 def _clean_wa_arms(value) -> list:
@@ -4747,6 +4829,18 @@ def _clean_wa_variables(value) -> dict:
     return out
 
 
+def _wa_label(index: int, arm_count: int) -> str:
+    """The version label a lead carries. '' while a campaign has one version,
+    which every rendering treats as the first."""
+    return WA_ARM_LABELS[index] if arm_count > 1 else ""
+
+
+def _wa_arm_index(label: str, arm_count: int) -> int:
+    label = (label or "").strip()
+    idx = WA_ARM_LABELS.index(label) if label in WA_ARM_LABELS else 0
+    return idx if idx < max(arm_count, 1) else idx % max(arm_count, 1)
+
+
 # ── WhatsApp: campaigns ───────────────────────────────────────────────────────
 
 def _parse_wa_campaign(row) -> dict:
@@ -4758,8 +4852,11 @@ def _parse_wa_campaign(row) -> dict:
     if not isinstance(raw, dict):
         raw = {}
     factory = _wa_factory_templates()
-    out["templates"] = {kind: (_clean_wa_arms(raw.get(kind)) or factory[kind])
-                        for kind in WA_TEMPLATE_KINDS}
+    out["templates"] = {
+        # "gap" was the opener's name while openers came in two flavours.
+        "opener": _clean_wa_arms(raw.get("opener")) or _clean_wa_arms(raw.get("gap")) or factory["opener"],
+        "followup": _clean_wa_arms(raw.get("followup")) or factory["followup"],
+    }
     try:
         out["variables"] = _clean_wa_variables(json.loads(out.get("variables") or "{}"))
     except (TypeError, ValueError):
@@ -4804,11 +4901,74 @@ def get_wa_campaign(cid: int):
         return _parse_wa_campaign(row) if row else None
 
 
-def update_wa_campaign(cid: int, **fields):
+def _deal_wa_label(conn, campaign_id, arm_count: int, exclude_lead_id=None) -> str:
+    """
+    The version the next lead in this campaign gets: whichever has the fewest
+    leads so far, first version on a tie. That alternates A, B, A, B on a fresh
+    campaign and quietly rebalances after leads are moved, removed, or a
+    version is deleted -- a strict turn counter would drift after any of those.
+    """
+    if not campaign_id or arm_count <= 1:
+        return ""
+    counts = [0] * arm_count
+    params = [int(campaign_id)]
+    extra = ""
+    if exclude_lead_id:
+        extra = "AND id != ?"
+        params.append(int(exclude_lead_id))
+    for r in conn.execute(f"""
+        SELECT template_variant AS label, COUNT(*) AS n FROM wa_leads
+         WHERE wa_campaign_id = ? AND moved_to = '' AND removed_at IS NULL {extra}
+         GROUP BY template_variant
+    """, params):
+        counts[_wa_arm_index(r["label"], arm_count)] += r["n"]
+    return WA_ARM_LABELS[counts.index(min(counts))]
+
+
+def _remap_wa_versions(conn, cid: int, old_count: int, new_count: int, opener_from=None):
+    """
+    After the opener's versions change, point every UNSENT lead at the version
+    it should now get. Sent leads keep their label: it records what they were
+    actually sent, and their reply counts belong to it.
+
+    `opener_from` lists, for each version as saved, the label it had before
+    (None for a new one). Without it, versions are assumed to have kept their
+    places. A lead whose version was deleted is dealt to whichever remaining
+    version has fewest leads.
+    """
+    if opener_from is None:
+        opener_from = [WA_ARM_LABELS[i] if i < old_count else None for i in range(new_count)]
+    mapping = {}
+    for new_idx, old_label in enumerate(opener_from[:new_count]):
+        if old_label in WA_ARM_LABELS:
+            mapping[old_label] = new_idx
+    unsent = conn.execute("""
+        SELECT id, template_variant FROM wa_leads
+         WHERE wa_campaign_id = ? AND sent_date IS NULL AND wa_status = 'drafted'
+         ORDER BY id
+    """, (cid,)).fetchall()
+    orphans = []
+    for lead in unsent:
+        old = lead["template_variant"] or "A"
+        if old in mapping:
+            conn.execute("UPDATE wa_leads SET template_variant=? WHERE id=?",
+                         (_wa_label(mapping[old], new_count), lead["id"]))
+        else:
+            orphans.append(lead["id"])
+    for lead_id in orphans:
+        conn.execute("UPDATE wa_leads SET template_variant=? WHERE id=?",
+                     (_deal_wa_label(conn, cid, new_count, exclude_lead_id=lead_id), lead_id))
+
+
+def update_wa_campaign(cid: int, opener_from=None, **fields):
     """
     Save whichever of name, notes, country, status, templates, followup_days
-    and variables were given. A template kind can't be saved empty -- a lead
-    confirmed later would have nothing to be written from.
+    and variables were given. A template can't be saved empty -- a lead added
+    later would have nothing to be written from.
+
+    Unsent leads always read the current template (see wa_message_for), so a
+    template edit reaches them with nothing to rewrite. Only a change in the
+    NUMBER of opener versions needs work here: see _remap_wa_versions.
     """
     updates = {}
     if "name" in fields:
@@ -4831,25 +4991,32 @@ def update_wa_campaign(cid: int, **fields):
             raise ValueError("The follow-up gap has to be a number of days")
     if "variables" in fields:
         updates["variables"] = json.dumps(_clean_wa_variables(fields["variables"]))
+
+    current = get_wa_campaign(cid)
+    old_count = len(current["templates"]["opener"]) if current else 1
+    new_count = old_count
     if "templates" in fields:
         given = fields["templates"]
         if not isinstance(given, dict):
             raise ValueError("templates must be an object")
-        current = get_wa_campaign(cid)
         merged = dict(current["templates"]) if current else _wa_factory_templates()
         for kind, value in given.items():
             if kind not in WA_TEMPLATE_KINDS:
                 continue
             arms = _clean_wa_arms(value)
             if not arms:
-                raise ValueError(f"The {kind.replace('_', ' ')} message needs at least one version")
+                label = "opener" if kind == "opener" else "follow-up"
+                raise ValueError(f"The {label} needs at least one version")
             merged[kind] = arms
+        new_count = len(merged["opener"])
         updates["templates"] = json.dumps(merged)
     if not updates:
         return
     with get_db() as conn:
         conn.execute(f"UPDATE wa_campaigns SET {', '.join(f'{k}=?' for k in updates)} WHERE id=?",
                      (*updates.values(), int(cid)))
+        if "templates" in fields and (new_count != old_count or opener_from is not None):
+            _remap_wa_versions(conn, int(cid), old_count, new_count, opener_from)
 
 
 def delete_wa_campaign(cid: int) -> int:
@@ -4889,14 +5056,8 @@ def get_wa_campaigns(owner_id=None) -> list:
         rows = conn.execute(f"""
             SELECT c.*,
               SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} THEN 1 ELSE 0 END) AS leads,
-              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} AND w.wa_status = ''
-                       THEN 1 ELSE 0 END)                                         AS checking,
-              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} AND w.wa_status = 'signal_ready'
-                       THEN 1 ELSE 0 END)                                         AS to_review,
-              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} AND w.wa_status = 'confirmed'
-                       THEN 1 ELSE 0 END)                                         AS to_write,
               SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} AND w.wa_status = 'drafted'
-                       THEN 1 ELSE 0 END)                                         AS ready,
+                        AND w.paused = 0 THEN 1 ELSE 0 END)                       AS ready,
               SUM(CASE WHEN w.wa_status IN ('sent','replied') THEN 1 ELSE 0 END)  AS messaged,
               SUM(CASE WHEN w.replied = 1 THEN 1 ELSE 0 END)                      AS replied,
               SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} AND w.wa_status = 'sent'
@@ -4911,7 +5072,7 @@ def get_wa_campaigns(owner_id=None) -> list:
     out = []
     for r in rows:
         c = _parse_wa_campaign(r)
-        for k in ("leads", "checking", "to_review", "to_write", "ready", "messaged", "replied", "due"):
+        for k in ("leads", "ready", "messaged", "replied", "due"):
             c[k] = c.get(k) or 0
         c["reply_rate"] = round(c["replied"] / c["messaged"] * 100, 1) if c["messaged"] else 0.0
         out.append(c)
@@ -4930,7 +5091,7 @@ def get_wa_variable_coverage(cid: int) -> dict:
         total = conn.execute(f"SELECT COUNT(*) {base}", (int(cid),)).fetchone()[0]
         pieces = []
         for key, _label in WA_TEMPLATE_FIELDS:
-            col = {"business_name": "b.name", "signal_detail": "w.signal_detail"}.get(key, f"b.{key}")
+            col = "b.name" if key == "business_name" else f"b.{key}"
             if key in ("rating", "review_count"):
                 expr = f"{col} IS NOT NULL"
             else:
@@ -4945,20 +5106,34 @@ def get_wa_variable_coverage(cid: int) -> dict:
 
 
 def set_wa_leads_campaign(wa_lead_ids, cid, owner_id=None) -> int:
-    """Move leads into a campaign. Both have to be this operator's."""
+    """
+    Move leads into a campaign. Both have to be this operator's. An unsent
+    lead is dealt a version in its new campaign; a sent one keeps the label it
+    was sent under.
+    """
     with get_db() as conn:
         owner = _resolve_owner_id(conn, owner_id)
-        if cid is not None and not conn.execute(
-            "SELECT 1 FROM wa_campaigns WHERE id=? AND owner_id=?", (int(cid), owner)
-        ).fetchone():
-            return 0
-        ids = _own_wa_lead_ids(conn, wa_lead_ids, owner)
-        if not ids:
-            return 0
-        return conn.execute(
-            f"UPDATE wa_leads SET wa_campaign_id=? WHERE id IN ({','.join('?' * len(ids))})",
-            (int(cid) if cid is not None else None, *ids),
-        ).rowcount
+        campaign = None
+        if cid is not None:
+            row = conn.execute("SELECT * FROM wa_campaigns WHERE id=? AND owner_id=?",
+                               (int(cid), owner)).fetchone()
+            if not row:
+                return 0
+            campaign = _parse_wa_campaign(row)
+        moved = 0
+        for lead_id in _own_wa_lead_ids(conn, wa_lead_ids, owner):
+            lead = conn.execute("SELECT sent_date, wa_campaign_id FROM wa_leads WHERE id=?",
+                                (lead_id,)).fetchone()
+            if campaign and lead["wa_campaign_id"] == campaign["id"]:
+                continue
+            conn.execute("UPDATE wa_leads SET wa_campaign_id=? WHERE id=?",
+                         (campaign["id"] if campaign else None, lead_id))
+            if campaign and lead["sent_date"] is None:
+                conn.execute("UPDATE wa_leads SET template_variant=? WHERE id=?", (
+                    _deal_wa_label(conn, campaign["id"], len(campaign["templates"]["opener"]),
+                                   exclude_lead_id=lead_id), lead_id))
+            moved += 1
+        return moved
 
 
 _WA_CAMPAIGNS_MARKER = "_migrated_wa_campaigns"
@@ -5023,6 +5198,85 @@ def _migrate_wa_campaigns(conn):
     conn.execute("INSERT INTO settings(key, value) VALUES(?, '1')", (_WA_CAMPAIGNS_MARKER,))
 
 
+_WA_NO_REVIEW_MARKER = "_migrated_wa_no_review"
+
+
+def _migrate_wa_no_review(conn):
+    """
+    One-shot: leads stop waiting for a website check and a review.
+
+    - Campaign templates: the "no booking" opener becomes the one opener. The
+      "has booking" copy is kept in the JSON under `retired_no_gap`, unread,
+      so it can still be recovered from the database.
+    - Leads that were waiting to be checked, reviewed or written move to
+      Ready to send, with no saved text -- their message reads the template.
+    - Leads that already had a written message keep that text only if it
+      differs from what the template gives now (a hand edit, an AI rewording,
+      or copy from the retired opener), marked as edited so a template change
+      won't overwrite it; otherwise they follow the template too.
+    - Unsent leads in a multi-version campaign that never got a version are
+      dealt one.
+    """
+    if conn.execute("SELECT 1 FROM settings WHERE key=?", (_WA_NO_REVIEW_MARKER,)).fetchone():
+        return
+    campaigns = {}
+    for row in conn.execute("SELECT * FROM wa_campaigns").fetchall():
+        try:
+            raw = json.loads(row["templates"] or "{}")
+        except (TypeError, ValueError):
+            raw = {}
+        if isinstance(raw, dict) and "opener" not in raw:
+            migrated = {"opener": _clean_wa_arms(raw.get("gap")) or [_DEFAULT_WA_TEMPLATE_OPENER],
+                        "followup": _clean_wa_arms(raw.get("followup")) or [_DEFAULT_WA_TEMPLATE_FOLLOWUP]}
+            if _clean_wa_arms(raw.get("no_gap")):
+                migrated["retired_no_gap"] = _clean_wa_arms(raw.get("no_gap"))
+            conn.execute("UPDATE wa_campaigns SET templates=? WHERE id=?",
+                         (json.dumps(migrated), row["id"]))
+        refreshed = conn.execute("SELECT * FROM wa_campaigns WHERE id=?", (row["id"],)).fetchone()
+        campaigns[row["id"]] = _parse_wa_campaign(refreshed)
+
+    moved = conn.execute("""
+        UPDATE wa_leads SET wa_status='drafted', draft_message='', message_edited=0
+         WHERE wa_status IN ('', 'signal_ready', 'confirmed')
+    """).rowcount
+
+    kept = 0
+    for lead in conn.execute(f"""
+        SELECT w.id, w.template_variant, w.draft_message, w.wa_campaign_id, w.signal_detail,
+               b.name AS company, b.city, b.category, b.rating, b.review_count, b.website, b.address
+          FROM wa_leads w JOIN businesses b ON b.id = w.business_id
+         WHERE w.wa_status = 'drafted' AND w.sent_date IS NULL AND w.draft_message != ''
+    """).fetchall():
+        campaign = campaigns.get(lead["wa_campaign_id"])
+        current = ""
+        if campaign:
+            arms = campaign["templates"]["opener"]
+            current = render_wa_message(arms[_wa_arm_index(lead["template_variant"], len(arms))],
+                                        dict(lead), campaign["variables"])
+        if lead["draft_message"].strip() == current.strip():
+            conn.execute("UPDATE wa_leads SET draft_message='', message_edited=0 WHERE id=?",
+                         (lead["id"],))
+        else:
+            conn.execute("UPDATE wa_leads SET message_edited=1 WHERE id=?", (lead["id"],))
+            kept += 1
+
+    for cid, campaign in campaigns.items():
+        count = len(campaign["templates"]["opener"])
+        if count <= 1:
+            continue
+        for lead in conn.execute("""
+            SELECT id FROM wa_leads WHERE wa_campaign_id=? AND sent_date IS NULL
+               AND wa_status='drafted' AND template_variant='' ORDER BY id
+        """, (cid,)).fetchall():
+            conn.execute("UPDATE wa_leads SET template_variant=? WHERE id=?",
+                         (_deal_wa_label(conn, cid, count, exclude_lead_id=lead["id"]), lead["id"]))
+
+    conn.execute("INSERT INTO settings(key, value) VALUES(?, '1')", (_WA_NO_REVIEW_MARKER,))
+    if moved or kept:
+        logger.info("WhatsApp: %d lead(s) moved to Ready to send; %d kept their written text",
+                    moved, kept)
+
+
 # ── WhatsApp: leads ───────────────────────────────────────────────────────────
 
 def _own_wa_lead_ids(conn, wa_lead_ids, owner_id=None) -> list:
@@ -5043,12 +5297,40 @@ def _own_wa_lead_ids(conn, wa_lead_ids, owner_id=None) -> list:
     return [i for i in ids if i in keep]
 
 
-def _own_wa_campaign_id(conn, wa_campaign_id, owner: int):
+def _own_wa_campaign(conn, wa_campaign_id, owner: int):
     if not wa_campaign_id:
         return None
-    row = conn.execute("SELECT id FROM wa_campaigns WHERE id=? AND owner_id=?",
+    row = conn.execute("SELECT * FROM wa_campaigns WHERE id=? AND owner_id=?",
                        (int(wa_campaign_id), owner)).fetchone()
-    return row["id"] if row else None
+    return _parse_wa_campaign(row) if row else None
+
+
+def _put_on_wa(conn, existing, business_id, phone, country, campaign):
+    """
+    Create or bring back one WhatsApp lead, ready to send. Shared by import and
+    add-existing so both deal versions the same way. `existing` is the lead's
+    current row, if it has one; the caller has already ruled out a number that
+    was ruled out.
+    """
+    cid = campaign["id"] if campaign else None
+    arm_count = len(campaign["templates"]["opener"]) if campaign else 1
+    if existing:
+        conn.execute("""
+            UPDATE wa_leads SET removed_at=NULL, wa_campaign_id=?,
+                   template_variant = CASE WHEN sent_date IS NULL THEN ? ELSE template_variant END,
+                   wa_status = CASE WHEN sent_date IS NULL AND wa_status IN ('','signal_ready','confirmed')
+                                    THEN 'drafted' ELSE wa_status END
+             WHERE id=?
+        """, (cid, _deal_wa_label(conn, cid, arm_count, exclude_lead_id=existing["id"]),
+              existing["id"]))
+        return existing["id"]
+    return conn.execute("""
+        INSERT INTO wa_leads(business_id, wa_number, country, number_type, wa_campaign_id,
+                             wa_status, template_variant)
+        VALUES(?,?,?,?,?,'drafted',?)
+    """, (business_id, format_whatsapp_number(phone, country), country,
+          classify_number_type(phone, country), cid,
+          _deal_wa_label(conn, cid, arm_count))).lastrowid
 
 
 def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
@@ -5057,24 +5339,25 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
     Import WhatsApp leads: resolve/create the business the same way any
     channel's import does (find_or_create_business, so a clinic already
     known from email or calling is recognised rather than duplicated), then
-    attach or update its wa_leads row.
+    attach or update its wa_leads row -- ready to send straight away.
 
     `country` on a row overrides `default_country` -- a CSV can carry a
     country column of its own; the picker in the import UI is the fallback
     for one that doesn't.
 
-    New leads go into `wa_campaign_id`. A lead already on WhatsApp keeps the
-    campaign it's in; one taken off by hand comes back, into this campaign; one
-    ruled out as not on WhatsApp stays ruled out.
+    A row with no phone number still creates its business (it lands in
+    Contacts) but can't go on WhatsApp. A lead already on WhatsApp keeps its
+    campaign; one taken off by hand comes back, into this campaign; one ruled
+    out as not on WhatsApp stays ruled out.
 
-    Returns (accepted, business_ids), same shape as upsert_businesses.
+    Returns (accepted, business_ids): accepted counts the rows now on WhatsApp.
     """
     with get_db() as conn:
         accepted = 0
         touched = set()
         ordered_ids = []
         owner_id = _resolve_owner_id(conn, owner_id)
-        campaign = _own_wa_campaign_id(conn, wa_campaign_id, owner_id)
+        campaign = _own_wa_campaign(conn, wa_campaign_id, owner_id)
 
         for r in rows:
             name = (r.get("company") or r.get("name") or "").strip()
@@ -5110,15 +5393,15 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
                     (business_id,),
                 )
 
+            if not phone:
+                continue
             country = (r.get("country") or default_country or "").strip().upper()
-            wa_number = format_whatsapp_number(phone, country) if phone else ""
-            number_type = classify_number_type(phone, country) if phone else "unknown"
-
             existing = conn.execute(
-                "SELECT id, wa_number, country, removed_at, moved_to, wa_campaign_id "
+                "SELECT id, wa_number, removed_at, moved_to, wa_campaign_id "
                 "FROM wa_leads WHERE business_id=?", (business_id,)
             ).fetchone()
             if existing:
+                wa_number = format_whatsapp_number(phone, country)
                 conn.execute("""
                     UPDATE wa_leads SET
                         wa_number   = COALESCE(NULLIF(wa_number,''), ?),
@@ -5126,18 +5409,14 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
                         number_type = CASE WHEN COALESCE(NULLIF(wa_number,''), ?) != wa_number
                                            THEN ? ELSE number_type END
                     WHERE id=?
-                """, (wa_number, country, wa_number, number_type, existing["id"]))
+                """, (wa_number, country, wa_number, classify_number_type(phone, country),
+                      existing["id"]))
                 if existing["removed_at"] is not None and not existing["moved_to"]:
-                    conn.execute("UPDATE wa_leads SET removed_at=NULL, wa_campaign_id=? WHERE id=?",
-                                 (campaign, existing["id"]))
+                    _put_on_wa(conn, existing, business_id, phone, country, campaign)
                 elif existing["wa_campaign_id"] is None and campaign:
-                    conn.execute("UPDATE wa_leads SET wa_campaign_id=? WHERE id=?",
-                                 (campaign, existing["id"]))
+                    _put_on_wa(conn, existing, business_id, phone, country, campaign)
             else:
-                conn.execute("""
-                    INSERT INTO wa_leads(business_id, wa_number, country, number_type, wa_campaign_id)
-                    VALUES(?,?,?,?,?)
-                """, (business_id, wa_number, country, number_type, campaign))
+                _put_on_wa(conn, None, business_id, phone, country, campaign)
             accepted += 1
 
         for business_id in touched:
@@ -5148,12 +5427,8 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
 
 def add_businesses_to_wa(business_ids, country: str, owner_id=None, wa_campaign_id=None) -> dict:
     """
-    Put leads this operator already has onto WhatsApp, into a campaign.
-
-    For businesses already in the database -- an earlier scrape, a clinic that
-    was emailed and never answered. Their identity is settled, so unlike
-    upsert_wa_leads this does no matching: it attaches a WhatsApp lead to each
-    business as it stands.
+    Put leads this operator already has onto WhatsApp, into a campaign, ready
+    to send.
 
     Anything skipped is counted, so the operator is told why rather than left
     wondering where their selection went:
@@ -5168,7 +5443,7 @@ def add_businesses_to_wa(business_ids, country: str, owner_id=None, wa_campaign_
     counts = {"added": 0, "already": 0, "no_phone": 0, "ruled_out": 0, "opted_out": 0}
     with get_db() as conn:
         owner = _resolve_owner_id(conn, owner_id)
-        campaign = _own_wa_campaign_id(conn, wa_campaign_id, owner)
+        campaign = _own_wa_campaign(conn, wa_campaign_id, owner)
         for business_id in _own_business_ids(conn, business_ids, owner):
             biz = conn.execute(
                 "SELECT phone, do_not_contact FROM businesses WHERE id=?", (business_id,)
@@ -5189,15 +5464,7 @@ def add_businesses_to_wa(business_ids, country: str, owner_id=None, wa_campaign_
             if not phone:
                 counts["no_phone"] += 1
                 continue
-            if existing:
-                conn.execute("UPDATE wa_leads SET removed_at=NULL, wa_campaign_id=? WHERE id=?",
-                             (campaign, existing["id"]))
-            else:
-                conn.execute("""
-                    INSERT INTO wa_leads(business_id, wa_number, country, number_type, wa_campaign_id)
-                    VALUES(?,?,?,?,?)
-                """, (business_id, format_whatsapp_number(phone, country), country,
-                      classify_number_type(phone, country), campaign))
+            _put_on_wa(conn, existing, business_id, phone, country, campaign)
             counts["added"] += 1
     return counts
 
@@ -5207,7 +5474,7 @@ def add_businesses_to_wa(business_ids, country: str, owner_id=None, wa_campaign_
 # no special-casing per channel.
 _WA_LEAD_COLUMNS = """
     w.id, w.business_id, w.wa_number, w.country, w.number_type, w.wa_status,
-    w.signal_type, w.signal_detail, w.signal_confirmed, w.draft_message,
+    w.signal_type, w.signal_detail, w.draft_message, w.message_edited,
     w.template_variant, w.paraphrased, w.sent_date, w.replied, w.followup_count, w.paused,
     w.moved_to, w.removed_at, w.notes, w.created_at, w.wa_campaign_id,
     c.name AS campaign_name, c.followup_days AS campaign_followup_days,
@@ -5218,24 +5485,54 @@ _WA_LEAD_JOIN = ("FROM wa_leads w JOIN businesses b ON b.id = w.business_id "
                  "LEFT JOIN wa_campaigns c ON c.id = w.wa_campaign_id")
 
 
-def get_wa_lead(wa_lead_id: int):
+def wa_message_for(lead: dict, campaign: dict = None, kind: str = "opener") -> str:
+    """
+    The message this lead would be sent right now.
+
+    The opener reads the campaign's CURRENT template for the lead's version,
+    so editing a template reaches every unsent lead at once -- unless the
+    operator edited this lead's message by hand (or had AI reword it), in
+    which case that text is kept. Follow-ups always read the template.
+    """
+    if kind == "opener" and lead.get("message_edited") and (lead.get("draft_message") or "").strip():
+        return lead["draft_message"]
+    if not campaign:
+        return (lead.get("draft_message") or "") if kind == "opener" else ""
+    arms = campaign["templates"]["followup" if kind == "followup" else "opener"]
+    return render_wa_message(arms[_wa_arm_index(lead.get("template_variant"), len(arms))],
+                             lead, campaign["variables"])
+
+
+def _attach_wa_messages(rows: list, kind: str = "opener") -> list:
+    cache = {}
+    for r in rows:
+        cid = r.get("wa_campaign_id")
+        if cid not in cache:
+            cache[cid] = get_wa_campaign(cid) if cid else None
+        r["message"] = wa_message_for(r, cache[cid], kind)
+    return rows
+
+
+def get_wa_lead(wa_lead_id: int, with_message: bool = False):
     with get_db() as conn:
         row = conn.execute(
             f"SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN} WHERE w.id=?", (wa_lead_id,)
         ).fetchone()
-        return dict(row) if row else None
+    if not row:
+        return None
+    lead = dict(row)
+    if with_message:
+        _attach_wa_messages([lead])
+    return lead
 
 
 def get_wa_leads(status: str = None, limit: int = 200, owner_id=None, wa_campaign_id=None,
-                 include_inactive: bool = False) -> list:
+                 include_inactive: bool = False, with_message: bool = False) -> list:
     """
     The WhatsApp list, optionally scoped to one lifecycle stage:
-    '' (imported, awaiting signal), 'signal_ready' (needs operator review),
-    'confirmed' (signal locked in, awaiting drafting), 'drafted' (ready to
-    open), 'sent' (in the cadence), 'replied' (terminal).
+    'drafted' (ready to send), 'sent' (in the follow-up cadence), 'replied'.
 
-    Leads taken off WhatsApp are left out unless asked for: a lead ruled out
-    mid-review would otherwise still be sitting in "Needs review".
+    Leads taken off WhatsApp are left out unless asked for.
     """
     clauses, params = ["b.owner_id = ?"], []
     with get_db() as conn:
@@ -5249,11 +5546,27 @@ def get_wa_leads(status: str = None, limit: int = 200, owner_id=None, wa_campaig
             clauses.append("w.wa_campaign_id = ?")
             params.append(int(wa_campaign_id))
         params.append(limit)
-        rows = conn.execute(
+        rows = [dict(r) for r in conn.execute(
             f"SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN} WHERE {' AND '.join(clauses)} "
             f"ORDER BY w.created_at DESC LIMIT ?", params,
-        ).fetchall()
-        return [dict(r) for r in rows]
+        ).fetchall()]
+    return _attach_wa_messages(rows) if with_message else rows
+
+
+def get_wa_ready(limit: int = 500, owner_id=None, wa_campaign_id=None) -> list:
+    """To do -> Ready to send: unsent leads, oldest first, messages filled in."""
+    with get_db() as conn:
+        where = ["w.wa_status = 'drafted'", "w.paused = 0", _WA_ACTIVE, "b.owner_id = ?"]
+        params = [_resolve_owner_id(conn, owner_id)]
+        if wa_campaign_id:
+            where.append("w.wa_campaign_id = ?")
+            params.append(int(wa_campaign_id))
+        rows = [dict(r) for r in conn.execute(f"""
+            SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN}
+             WHERE {' AND '.join(where)}
+             ORDER BY w.id ASC LIMIT ?
+        """, (*params, int(limit))).fetchall()]
+    return _attach_wa_messages(rows)
 
 
 def _wa_stage_sql() -> tuple:
@@ -5265,18 +5578,13 @@ def _wa_stage_sql() -> tuple:
           WHEN w.moved_to != ''         THEN 'moved'
           WHEN w.replied = 1            THEN 'replied'
           WHEN w.paused = 1             THEN 'paused'
-          WHEN w.wa_status = ''         THEN 'checking'
-          WHEN w.wa_status = 'signal_ready' THEN 'review'
-          WHEN w.wa_status = 'confirmed'    THEN 'writing'
-          WHEN w.wa_status = 'drafted'      THEN 'ready'
           WHEN w.wa_status = 'sent' AND w.sent_date IS NOT NULL AND {due} THEN 'due'
           WHEN w.wa_status = 'sent'     THEN 'waiting'
-          ELSE w.wa_status
+          ELSE 'ready'
         END""", params
 
 
-WA_STAGES = ("checking", "review", "writing", "ready", "due", "waiting", "replied", "paused",
-             "moved", "removed")
+WA_STAGES = ("ready", "due", "waiting", "replied", "paused", "moved", "removed")
 
 _WA_LEAD_SORT = {
     "company": "company", "campaign_name": "campaign_name", "stage": "stage",
@@ -5337,21 +5645,25 @@ def get_wa_leads_page(page=1, per_page=50, q="", stage="", wa_campaign_id=None,
             "per_page": per_page, "pages": max(1, (total + per_page - 1) // per_page)}
 
 
-def get_wa_summary(owner_id=None, wa_campaign_id=None) -> dict:
+def get_wa_summary(owner_id=None, wa_campaign_id=None, since=None) -> dict:
+    """
+    Counts for the WhatsApp page and the Dashboard. `since` (a UTC
+    'YYYY-MM-DD HH:MM:SS') is the start of the operator's own day, for the
+    sent-today counter -- the browser knows the local midnight, the server
+    doesn't.
+    """
     due, due_params = _wa_due_clause()
     with get_db() as conn:
-        where, params = ["b.owner_id = ?"], [_resolve_owner_id(conn, owner_id)]
+        owner = _resolve_owner_id(conn, owner_id)
+        where, params = ["b.owner_id = ?"], [owner]
         if wa_campaign_id:
             where.append("w.wa_campaign_id = ?")
             params.append(int(wa_campaign_id))
         row = conn.execute(f"""
             SELECT
-              SUM(CASE WHEN {_WA_ACTIVE} THEN 1 ELSE 0 END)                        AS total,
-              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status=''             THEN 1 ELSE 0 END) AS pending_signal,
-              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='signal_ready' THEN 1 ELSE 0 END) AS awaiting_review,
-              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='confirmed'    THEN 1 ELSE 0 END) AS awaiting_draft,
-              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='drafted'      THEN 1 ELSE 0 END) AS ready_to_send,
-              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='sent'         THEN 1 ELSE 0 END) AS in_cadence,
+              SUM(CASE WHEN {_WA_ACTIVE} THEN 1 ELSE 0 END)                                AS total,
+              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='drafted' AND w.paused=0 THEN 1 ELSE 0 END) AS ready_to_send,
+              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='sent' THEN 1 ELSE 0 END)         AS in_cadence,
               SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='sent' AND w.replied=0 AND w.paused=0
                         AND w.sent_date IS NOT NULL AND {due} THEN 1 ELSE 0 END)           AS due,
               SUM(CASE WHEN w.wa_status IN ('sent','replied') THEN 1 ELSE 0 END)           AS messaged,
@@ -5363,99 +5675,49 @@ def get_wa_summary(owner_id=None, wa_campaign_id=None) -> dict:
              WHERE {' AND '.join(where)}
         """, (*due_params, *params)).fetchone()
         out = {k: (row[k] or 0) for k in row.keys()}
+
+        log_where = ["b.owner_id = ?"]
+        log_params = [owner]
+        if wa_campaign_id:
+            log_where.append("w.wa_campaign_id = ?")
+            log_params.append(int(wa_campaign_id))
+        if since:
+            log_where.append("l.sent_at >= ?")
+            log_params.append(str(since).replace("T", " ")[:19])
+        else:
+            log_where.append("DATE(l.sent_at) = DATE('now')")
+        out["sent_today"] = conn.execute(f"""
+            SELECT COUNT(*) FROM wa_log l JOIN wa_leads w ON w.id = l.wa_lead_id
+              JOIN businesses b ON b.id = w.business_id
+             WHERE {' AND '.join(log_where)}
+        """, log_params).fetchone()[0]
     out["reply_rate"] = round(out["replied"] / out["messaged"] * 100, 1) if out["messaged"] else 0.0
     return out
 
 
-def get_wa_leads_pending_signal(limit: int = 5) -> list:
+def set_wa_message(wa_lead_id: int, message: str, paraphrased: bool = False):
     """
-    WhatsApp leads awaiting their first (and only) signal check. Consumed by
-    the background scan in scheduler.py, never by a request -- see that
-    module for why this can't run inline. A lead taken off WhatsApp before it
-    was checked isn't worth a fetch.
+    The operator's own wording for this lead (or an AI rewording of it). Marked
+    as edited, so a later template change doesn't overwrite it.
     """
-    with get_db() as conn:
-        rows = conn.execute(f"""
-            SELECT w.id, b.website FROM wa_leads w JOIN businesses b ON b.id = w.business_id
-             WHERE w.wa_status = '' AND {_WA_ACTIVE}
-             ORDER BY w.created_at ASC LIMIT ?
-        """, (limit,)).fetchall()
-        return [dict(r) for r in rows]
-
-
-def set_wa_signal(wa_lead_id: int, signal_type: str, signal_detail: str):
-    """Records a detected (not yet operator-confirmed) signal."""
     with get_db() as conn:
         conn.execute("""
-            UPDATE wa_leads SET signal_type=?, signal_detail=?, wa_status='signal_ready'
+            UPDATE wa_leads SET draft_message=?, message_edited=1, paraphrased=?
              WHERE id=?
-        """, (signal_type, signal_detail, wa_lead_id))
+        """, (message, 1 if paraphrased else 0, wa_lead_id))
 
 
-def confirm_wa_signal(wa_lead_id: int, signal_type: str, signal_detail: str):
-    """
-    The operator locks in a signal -- either as detected, or corrected by
-    hand. Nothing drafts from this lead until this has been called; that
-    gate is signal_confirmed, checked by get_wa_leads_ready_to_draft.
-    """
-    if signal_type not in ("gap_found", "no_gap", "unclear"):
-        raise ValueError(f"Unknown signal type: {signal_type}")
+def reset_wa_message(wa_lead_id: int):
+    """Back to following the campaign's template."""
     with get_db() as conn:
         conn.execute("""
-            UPDATE wa_leads SET
-                signal_type=?, signal_detail=?, signal_confirmed=1, wa_status='confirmed'
-             WHERE id=?
-        """, (signal_type, signal_detail, wa_lead_id))
-
-
-def get_wa_leads_ready_to_draft(limit: int = 200, owner_id=None, wa_campaign_id=None) -> list:
-    """Confirmed leads with no draft yet -- what the batch draft step processes."""
-    with get_db() as conn:
-        where = ["w.wa_status='confirmed'", "w.signal_confirmed=1", "b.owner_id = ?", _WA_ACTIVE]
-        params = [_resolve_owner_id(conn, owner_id)]
-        if wa_campaign_id:
-            where.append("w.wa_campaign_id = ?")
-            params.append(int(wa_campaign_id))
-        rows = conn.execute(f"""
-            SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN}
-             WHERE {' AND '.join(where)}
-             ORDER BY w.created_at ASC LIMIT ?
-        """, (*params, limit)).fetchall()
-        return [dict(r) for r in rows]
-
-
-def wa_arm_offset(wa_campaign_id: int, kind: str) -> int:
-    """
-    Where the next lead of this kind picks up in its campaign's rotation.
-
-    Counting from the leads already written means small batches still
-    alternate. Starting every batch at the first arm dealt every lead to arm A
-    whenever leads were written one or two at a time -- which is how most
-    review sessions go.
-    """
-    signal = "w.signal_type = 'gap_found'" if kind == "gap" else "COALESCE(w.signal_type,'') != 'gap_found'"
-    with get_db() as conn:
-        return conn.execute(f"""
-            SELECT COUNT(*) FROM wa_leads w
-             WHERE w.wa_campaign_id = ? AND {signal}
-               AND w.wa_status IN ('drafted','sent','replied')
-        """, (int(wa_campaign_id),)).fetchone()[0]
-
-
-def save_wa_draft(wa_lead_id: int, message: str, template_variant: str = "",
-                  paraphrased: bool = False):
-    with get_db() as conn:
-        conn.execute("""
-            UPDATE wa_leads SET draft_message=?, template_variant=?, paraphrased=?,
-                                wa_status='drafted'
-             WHERE id=?
-        """, (message, template_variant, 1 if paraphrased else 0, wa_lead_id))
+            UPDATE wa_leads SET draft_message='', message_edited=0, paraphrased=0 WHERE id=?
+        """, (wa_lead_id,))
 
 
 def update_wa_message(wa_lead_id: int, message: str):
-    """Inline edits to the draft before it's sent -- doesn't touch wa_status."""
-    with get_db() as conn:
-        conn.execute("UPDATE wa_leads SET draft_message=? WHERE id=?", (message, wa_lead_id))
+    """Older name for set_wa_message."""
+    set_wa_message(wa_lead_id, message)
 
 
 def mark_wa_sent(wa_lead_id: int, message: str, kind: str = "opener",
@@ -5489,11 +5751,16 @@ def correct_wa_sent_date(wa_lead_id: int, sent_date: str = None):
     """
     Manual fix for "I opened the link but didn't actually send." sent_date is
     never verified against WhatsApp itself -- there's no way to -- so this is
-    the one correction the operator has. sent_date=None clears it, which also
-    drops the lead out of the follow-up-due query until it's sent again.
+    the one correction the operator has. Clearing it on a lead that has only
+    had its opener opened puts it back in Ready to send.
     """
     with get_db() as conn:
         conn.execute("UPDATE wa_leads SET sent_date=? WHERE id=?", (sent_date, wa_lead_id))
+        if sent_date is None:
+            conn.execute("""
+                UPDATE wa_leads SET wa_status='drafted'
+                 WHERE id=? AND wa_status='sent' AND followup_count=0 AND replied=0
+            """, (wa_lead_id,))
 
 
 def mark_wa_replied(wa_lead_id: int, replied: bool = True):
@@ -5623,6 +5890,21 @@ def remove_wa_leads(wa_lead_ids, owner_id=None) -> int:
             f"UPDATE wa_leads SET removed_at=datetime('now') "
             f"WHERE removed_at IS NULL AND id IN ({','.join('?' * len(ids))})", ids,
         ).rowcount
+
+
+def get_wa_countries_used(owner_id=None) -> list:
+    """Countries this operator already works in, for the top of the picker."""
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        rows = conn.execute("""
+            SELECT country, COUNT(*) AS n FROM (
+                SELECT w.country FROM wa_leads w JOIN businesses b ON b.id = w.business_id
+                 WHERE b.owner_id = ? AND w.country != ''
+                UNION ALL
+                SELECT country FROM wa_campaigns WHERE owner_id = ? AND country != ''
+            ) GROUP BY country ORDER BY n DESC
+        """, (owner, owner)).fetchall()
+    return [r["country"] for r in rows if r["country"] in WA_COUNTRY_CODES]
 
 
 # ── Contacts: every business, on any channel or none ─────────────────────────
@@ -5814,11 +6096,8 @@ def get_business_detail(business_id: int, owner_id=None):
                 SELECT c.id, c.name FROM call_campaign_members m
                   JOIN call_campaigns c ON c.id = m.call_campaign_id WHERE m.call_lead_id=?
             """, (cl["id"],))]
-        wa = conn.execute("""
-            SELECT w.*, c.name AS campaign_name FROM wa_leads w
-              LEFT JOIN wa_campaigns c ON c.id = w.wa_campaign_id WHERE w.business_id=?
-        """, (business_id,)).fetchone()
-        out["whatsapp"] = dict(wa) if wa else None
+        wa = conn.execute("SELECT id FROM wa_leads WHERE business_id=?", (business_id,)).fetchone()
+        out["whatsapp"] = None
 
         timeline = []
         for r in conn.execute("""
@@ -5850,7 +6129,97 @@ def get_business_detail(business_id: int, owner_id=None):
                              "detail": r["message"] or ""})
     timeline.sort(key=lambda t: t["at"] or "", reverse=True)
     out["timeline"] = timeline
+    if wa:
+        lead = get_wa_lead(wa["id"], with_message=True)
+        stage_sql, stage_params = _wa_stage_sql()
+        with get_db() as conn:
+            lead["stage"] = conn.execute(
+                f"SELECT {stage_sql} FROM wa_leads w LEFT JOIN wa_campaigns c "
+                f"ON c.id = w.wa_campaign_id WHERE w.id = ?", (*stage_params, wa["id"])
+            ).fetchone()[0]
+        out["whatsapp"] = lead
+    try:
+        out["audit"] = json.loads(out.get("audit") or "null")
+    except (TypeError, ValueError):
+        out["audit"] = None
+    out["rating_context"] = get_rating_context(business_id, owner_id=owner)
     return out
+
+
+# ── Audit ─────────────────────────────────────────────────────────────────────
+
+def save_business_audit(business_id: int, results_json: str):
+    with get_db() as conn:
+        conn.execute("UPDATE businesses SET audit=?, audit_at=datetime('now') WHERE id=?",
+                     (results_json, int(business_id)))
+
+
+def get_rating_context(business_id: int, owner_id=None):
+    """
+    How a business's Google rating and review count compare with its peers:
+    the other businesses from the same scrape, or failing that, the same
+    category in the same city. Worked out from data already stored -- no
+    lookups -- so it's there before anyone runs a check.
+    """
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        b = conn.execute("SELECT * FROM businesses WHERE id=? AND owner_id=?",
+                         (int(business_id), owner)).fetchone()
+        if not b or b["rating"] is None:
+            return None
+        if b["source_job_id"]:
+            where, params, scope = "source_job_id = ?", [b["source_job_id"]], "from the same scrape"
+        elif b["category"] and b["city"]:
+            where, params, scope = "category = ? AND city = ?", [b["category"], b["city"]], \
+                f"{b['category']} in {b['city']}"
+        else:
+            return None
+        peers = conn.execute(f"""
+            SELECT rating, COALESCE(review_count, 0) AS reviews FROM businesses
+             WHERE owner_id = ? AND id != ? AND rating IS NOT NULL AND {where}
+        """, (owner, int(business_id), *params)).fetchall()
+    if len(peers) < 3:
+        return None
+    reviews = b["review_count"] or 0
+    return {
+        "rating": b["rating"], "reviews": reviews, "scope": scope, "peers": len(peers),
+        "avg_rating": round(sum(p["rating"] for p in peers) / len(peers), 1),
+        "avg_reviews": round(sum(p["reviews"] for p in peers) / len(peers)),
+        "rank_by_reviews": 1 + sum(1 for p in peers if p["reviews"] > reviews),
+    }
+
+
+def _audit_links_key(owner: int) -> str:
+    return f"audit_links:{int(owner)}"
+
+
+def get_audit_links(owner_id=None) -> list:
+    """This operator's own audit links: [{label, url}], with {domain}-style
+    fill-ins. Per operator -- they're part of how each person works."""
+    owner = _owner_or_default(owner_id)
+    raw = get_settings().get(_audit_links_key(owner)) or "[]"
+    try:
+        links = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return [l for l in links if isinstance(l, dict) and l.get("url")]
+
+
+def save_audit_links(links, owner_id=None) -> list:
+    owner = _owner_or_default(owner_id)
+    clean = []
+    for link in links or []:
+        if not isinstance(link, dict):
+            continue
+        url = str(link.get("url") or "").strip()
+        label = str(link.get("label") or "").strip()
+        if not url:
+            continue
+        if not url.startswith(("http://", "https://")):
+            raise ValueError(f"Links have to start with https:// ({label or url})")
+        clean.append({"label": (label or url)[:60], "url": url[:500]})
+    save_settings({_audit_links_key(owner): json.dumps(clean[:40])})
+    return clean
 
 
 _BUSINESS_EDITABLE = ("name", "phone", "website", "address", "city", "category", "notes")
@@ -5982,15 +6351,16 @@ def enroll_businesses(campaign_id: int, business_ids, owner_id=None) -> dict:
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
-def get_dashboard(owner_id=None) -> dict:
+def get_dashboard(owner_id=None, since=None) -> dict:
     """
     Every channel's headline numbers, what's waiting on the operator today,
-    and all their campaigns in one list.
+    and all their campaigns in one list. `since` is the start of the
+    operator's own day, for "sent today".
     """
     owner = _owner_or_default(owner_id)
     email = get_stats(owner_id=owner)
     calling = get_call_summary(owner_id=owner)
-    whatsapp = get_wa_summary(owner_id=owner)
+    whatsapp = get_wa_summary(owner_id=owner, since=since)
 
     campaigns = []
     with get_db() as conn:
@@ -6024,10 +6394,9 @@ def get_dashboard(owner_id=None) -> dict:
         "calling": calling,
         "whatsapp": whatsapp,
         "todo": {
-            "wa_review": whatsapp["awaiting_review"],
-            "wa_to_write": whatsapp["awaiting_draft"],
             "wa_ready": whatsapp["ready_to_send"],
             "wa_due": whatsapp["due"],
+            "wa_sent_today": whatsapp["sent_today"],
             "calls_due": calling["due"],
             "calls_new": calling["uncalled"],
         },

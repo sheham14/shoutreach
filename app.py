@@ -32,6 +32,7 @@ from flask import (
     redirect, url_for, make_response, Response, session, abort, g
 )
 
+import audit
 import db
 import scheduler
 import sender as email_sender
@@ -1589,6 +1590,7 @@ def _import_scraped_whatsapp(rows, job, owner):
     """
     rows = [{k: v for k, v in r.items() if k not in _SCRAPE_EMAIL_FIELDS} for r in rows]
     with_phone = [r for r in rows if (r.get("phone") or "").strip()]
+    no_phone = len(rows) - len(with_phone)
     conflicts = db.find_cross_channel_conflicts(with_phone, channel="whatsapp", owner_id=owner)
     overlaps = db.find_cross_owner_matches(rows, owner_id=owner)
     inserted, business_ids = db.upsert_wa_leads(
@@ -1597,6 +1599,8 @@ def _import_scraped_whatsapp(rows, job, owner):
     )
 
     notes = []
+    if no_phone:
+        notes.append(f"  {no_phone} had no phone number - kept in Contacts, not added to WhatsApp")
     if conflicts:
         notes.append(f"  {len(conflicts)} of these were already on another channel "
                      f"- added to WhatsApp as well")
@@ -2100,7 +2104,160 @@ def api_enroll_businesses():
 @app.route("/api/dashboard", methods=["GET"])
 @login_required
 def api_dashboard():
-    return jsonify(db.get_dashboard(owner_id=me()))
+    return jsonify(db.get_dashboard(owner_id=me(), since=request.args.get("since") or None))
+
+
+# ── API: Lead lists (one per scrape) ──────────────────────────────────────────
+
+@app.route("/api/lists/add-to", methods=["POST"])
+@login_required
+def api_list_add_to():
+    """
+    Add every lead from one list -- a scrape, or everything added by hand --
+    to a channel, into a campaign. The same rules as adding a selection: who
+    gets skipped and why is counted, and anyone already being worked on
+    another channel is held for a yes.
+    """
+    d = request.json or {}
+    source = d.get("source_job_id")
+    channel = d.get("channel")
+    if source in (None, ""):
+        return jsonify({"ok": False, "error": "Pick a list"}), 400
+    if str(source) != db.SOURCE_MANUAL:
+        try:
+            source = int(source)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "Unknown list"}), 400
+        if not db.owns("scrape_job", source, me()):
+            return jsonify({"ok": False, "error": "Not found"}), 404
+    ids = d.get("business_ids") or db.get_list_business_ids(source, owner_id=me())
+    if not ids:
+        return jsonify({"ok": True, "added": 0, "total": 0, "conflicts": []})
+    campaign_id = d.get("campaign_id") or None
+    confirm = bool(d.get("confirm_conflicts"))
+
+    if channel == "email":
+        if not campaign_id or not db.owns("campaign", campaign_id, me()):
+            return jsonify({"ok": False, "error": "Pick the email campaign"}), 400
+        res = db.enroll_businesses(int(campaign_id), ids, owner_id=me())
+        skipped = sum((res.get("skipped") or {}).values())
+        return jsonify({"ok": True, "added": res["enrolled"], "no_email": res["no_email"],
+                        "already": skipped, "total": len(ids), "conflicts": []})
+
+    kind = {"calling": "call", "whatsapp": "whatsapp"}.get(channel)
+    if not kind:
+        return jsonify({"ok": False, "error": "Pick a channel"}), 400
+    conflicts = []
+    if not confirm:
+        conflicts = db.channel_conflicts_for_businesses(ids, channel=kind, owner_id=me())
+        flagged = {c["business_id"] for c in conflicts}
+        ids = [i for i in ids if int(i) not in flagged]
+
+    if channel == "calling":
+        if campaign_id and not db.owns("call_campaign", campaign_id, me()):
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        counts = db.add_to_calling(ids, owner_id=me(), call_campaign_id=campaign_id) if ids else \
+            {"added": 0, "already": 0, "no_phone": 0, "opted_out": 0, "in_campaign": 0}
+    else:
+        country = (d.get("country") or "").strip().upper()
+        if country not in db.WA_COUNTRY_CODES:
+            return jsonify({"ok": False, "error": "Pick the country these numbers are in"}), 400
+        if not campaign_id or not db.owns("wa_campaign", campaign_id, me()):
+            return jsonify({"ok": False, "error": "Pick the WhatsApp campaign"}), 400
+        counts = db.add_businesses_to_wa(ids, country, owner_id=me(), wa_campaign_id=campaign_id) \
+            if ids else {"added": 0, "already": 0, "no_phone": 0, "ruled_out": 0, "opted_out": 0}
+    return jsonify({
+        "ok": True, **counts, "total": len(ids) + len(conflicts),
+        "conflicts": [{"business_id": c["business_id"], "business_name": c["business_name"],
+                       "channels": c["channel_labels"]} for c in conflicts],
+    })
+
+
+# ── API: Countries ────────────────────────────────────────────────────────────
+
+@app.route("/api/countries", methods=["GET"])
+@login_required
+def api_countries():
+    """Every country a number can be formatted for, and the ones this operator
+    already uses, for the top of the picker. Names come from the browser."""
+    return jsonify({"countries": db.list_countries(), "used": db.get_wa_countries_used(owner_id=me())})
+
+
+# ── API: Audit ────────────────────────────────────────────────────────────────
+#
+# "Run checks" on one lead. The checks take up to a minute (PageSpeed does the
+# slow part on Google's side), and the server runs a single gunicorn worker,
+# so they run on a background thread and the page polls for the result.
+
+_audits_running = {}
+_audits_lock = threading.Lock()
+_AUDIT_MAX_RUNNING = 3
+
+
+def _run_audit(business_id, website, domain, api_key):
+    try:
+        results = audit.run_checks(website, domain, api_key)
+        db.save_business_audit(business_id, audit.to_json(results))
+    except Exception as exc:
+        logging.exception("Audit failed for business %s", business_id)
+        db.save_business_audit(business_id, audit.to_json({
+            "error": f"The checks failed ({type(exc).__name__})",
+            "checked_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")}))
+    finally:
+        with _audits_lock:
+            _audits_running.pop(business_id, None)
+
+
+@app.route("/api/businesses/<int:bid>/audit", methods=["POST"])
+@login_required
+@owned("business", "bid")
+def api_start_audit(bid):
+    business = db.get_business(bid)
+    if not (business.get("website") or "").strip():
+        return jsonify({"ok": False, "error": "There's no website on file to check"}), 400
+    with _audits_lock:
+        if bid in _audits_running:
+            return jsonify({"ok": True, "running": True})
+        if len(_audits_running) >= _AUDIT_MAX_RUNNING:
+            return jsonify({"ok": False, "error": "A few checks are already running — try again in a minute"}), 429
+        _audits_running[bid] = datetime.utcnow()
+    api_key = db.get_settings().get("google_api_key", "")
+    domain = business.get("domain") or db.canonical_domain(business.get("website") or "")
+    if app.config.get("TESTING") and app.config.get("AUDIT_INLINE"):
+        _run_audit(bid, business["website"], domain, api_key)
+        return jsonify({"ok": True, "running": False})
+    threading.Thread(target=_run_audit, args=(bid, business["website"], domain, api_key),
+                     daemon=True, name=f"audit-{bid}").start()
+    return jsonify({"ok": True, "running": True})
+
+
+@app.route("/api/businesses/<int:bid>/audit", methods=["GET"])
+@login_required
+@owned("business", "bid")
+def api_get_audit(bid):
+    detail = db.get_business_detail(bid, owner_id=me())
+    with _audits_lock:
+        running = bid in _audits_running
+    return jsonify({"running": running, "audit": detail.get("audit"),
+                    "audit_at": detail.get("audit_at"), "rating_context": detail.get("rating_context")})
+
+
+@app.route("/api/audit-links", methods=["GET"])
+@login_required
+def api_get_audit_links():
+    return jsonify(db.get_audit_links(owner_id=me()))
+
+
+@app.route("/api/audit-links", methods=["PUT"])
+@login_required
+def api_save_audit_links():
+    links = (request.json or {}).get("links")
+    if not isinstance(links, list):
+        return jsonify({"ok": False, "error": "links must be a list"}), 400
+    try:
+        return jsonify({"ok": True, "links": db.save_audit_links(links, owner_id=me())})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @app.route("/api/businesses/search", methods=["GET"])
@@ -2436,19 +2593,6 @@ def api_call_ics(cid):
 # here ever needs this app to reach WhatsApp on its own, stop and flag it
 # rather than build it; see docs/WhatsApp Module Handover.md.
 
-def _wa_arm_position(lead) -> int:
-    """
-    Which A/B arm this lead already belongs to, as an index.
-
-    Follow-ups look this up rather than re-cycling, so a lead stays with the
-    arm its opener came from. Anything unrecognised -- a lead drafted before
-    A/B existed, or one whose arm has since been deleted -- falls to the first
-    arm, which is the closest thing to "the template" there is.
-    """
-    label = (lead.get("template_variant") or "").strip()
-    return db.WA_ARM_LABELS.index(label) if label in db.WA_ARM_LABELS else 0
-
-
 def _wa_campaign_arg(value, required=True):
     """
     A WhatsApp campaign id from a request, checked to be the caller's own.
@@ -2541,7 +2685,29 @@ def api_wa_leads():
     status = request.args.get("status")
     limit = min(int(request.args.get("limit", 200)), 1000)
     return jsonify(db.get_wa_leads(status=status, limit=limit, owner_id=me(),
+                                   wa_campaign_id=request.args.get("wa_campaign_id") or None,
+                                   with_message=request.args.get("with_message") == "1"))
+
+
+@app.route("/api/wa/ready", methods=["GET"])
+@login_required
+def api_wa_ready():
+    """To do -> Ready to send, oldest first, each with the message it would get now."""
+    return jsonify(db.get_wa_ready(owner_id=me(),
                                    wa_campaign_id=request.args.get("wa_campaign_id") or None))
+
+
+@app.route("/api/wa/leads/<int:wid>", methods=["GET"])
+@login_required
+@owned("wa_lead", "wid")
+def api_wa_lead(wid):
+    """One lead with the opener it would get now, and the follow-up it would
+    get next -- the side panel shows whichever applies."""
+    lead = db.get_wa_lead(wid, with_message=True)
+    campaign = db.get_wa_campaign(lead["wa_campaign_id"]) if lead.get("wa_campaign_id") else \
+        {"templates": db._wa_factory_templates(), "variables": {}}
+    lead["followup_message"] = db.wa_message_for(lead, campaign, "followup")
+    return jsonify(lead)
 
 
 @app.route("/api/wa/leads/page", methods=["GET"])
@@ -2564,7 +2730,8 @@ def api_wa_leads_page():
 @login_required
 def api_wa_summary():
     return jsonify(db.get_wa_summary(owner_id=me(),
-                                     wa_campaign_id=request.args.get("wa_campaign_id") or None))
+                                     wa_campaign_id=request.args.get("wa_campaign_id") or None,
+                                     since=request.args.get("since") or None))
 
 
 def _campaign_cache():
@@ -2589,140 +2756,74 @@ def api_wa_followups_due():
     # own campaign; a lead whose campaign was deleted gets the factory copy
     # rather than nothing, since a follow-up is already owed.
     campaign_for = _campaign_cache()
-    factory = db._wa_factory_templates()["followup"]
+    factory = {"templates": db._wa_factory_templates(), "variables": {}}
     for lead in due:
-        campaign = campaign_for(lead.get("wa_campaign_id"))
-        arms = campaign["templates"]["followup"] if campaign else factory
-        _label, text = db.pick_wa_arm(arms, _wa_arm_position(lead))
-        lead["followup_draft"] = db.render_wa_message(
-            text, {**lead, "signal_detail": ""}, campaign["variables"] if campaign else {})
+        campaign = campaign_for(lead.get("wa_campaign_id")) or factory
+        lead["followup_draft"] = db.wa_message_for(lead, campaign, "followup")
     return jsonify(due)
 
 
-@app.route("/api/wa/leads/<int:wid>/confirm", methods=["POST"])
-@login_required
-@owned("wa_lead", "wid")
-def api_wa_confirm(wid):
-    """
-    Locks in a signal -- as detected, or corrected by the operator first.
-    Nothing downstream (drafting) will touch this lead until this has run.
-    """
-    d = request.json or {}
-    signal_type = (d.get("signal_type") or "").strip()
-    signal_detail = (d.get("signal_detail") or "").strip()
-    if not signal_detail:
-        return jsonify({"ok": False, "error": "A signal detail is required"}), 400
-    try:
-        db.confirm_wa_signal(wid, signal_type, signal_detail)
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    return jsonify({"ok": True})
-
-
-# One call, not one per lead: every confirmed-but-undrafted lead's templated
-# base message is built first, then handed to the AI provider together for a
-# single paraphrase pass. Keeps cost and latency per lead near zero and stays
-# well clear of anything resembling a research step per lead.
-_WA_PARAPHRASE_PROMPT = """You are helping a small business paraphrase a batch of short WhatsApp opener messages so they don't all read identically to different recipients.
+# One call per rewording, on the operator's click. Only ever a variety pass
+# over a message already written from the template: it must not add, remove or
+# soften any fact.
+_WA_PARAPHRASE_PROMPT = """You are helping a small business reword a short WhatsApp opener so it doesn't read identically to others they send.
 
 Rules:
-- Preserve every factual claim in each message EXACTLY — do not invent, embellish, remove, or soften any detail.
-- Keep each message under 300 characters, friendly and casual in tone, no emojis unless the original already has them.
-- Return ONLY a JSON array of strings, the same length and in the same order as the input. No markdown fences, no commentary, no extra keys.
+- Preserve every factual claim EXACTLY — do not invent, embellish, remove, or soften any detail.
+- Keep it under 400 characters, friendly and casual, no emojis unless the original has them.
+- Return ONLY the reworded message. No quotes, no commentary.
 
-Messages:
-{messages}"""
-
-
-@app.route("/api/wa/draft-batch", methods=["POST"])
-@login_required
-def api_wa_draft_batch():
-    """
-    Drafts every confirmed-but-undrafted lead in one pass: render each from
-    its own campaign's template, then one AI call to paraphrase the whole
-    batch for variety. If AI is off, unconfigured, or the call fails, every
-    lead still gets its plain templated message — drafting must never block on
-    the AI being available, it's a variety pass, not the source of the content.
-
-    A lead with no campaign (its campaign was deleted) is skipped and counted:
-    there's no copy to write it from until it's moved into one.
-    """
-    d = request.json or {}
-    limit = min(int(d.get("limit", 50)), 200)
-    campaign_filter, err = _wa_campaign_arg(d.get("wa_campaign_id"), required=False)
-    if err:
-        return err
-    leads = db.get_wa_leads_ready_to_draft(limit=limit, owner_id=me(),
-                                           wa_campaign_id=campaign_filter)
-    no_campaign = [l for l in leads if not l.get("wa_campaign_id")]
-    leads = [l for l in leads if l.get("wa_campaign_id")]
-    if not leads:
-        result = {"ok": True, "drafted": 0}
-        if no_campaign:
-            result["no_campaign"] = len(no_campaign)
-            result["note"] = (f"{len(no_campaign)} confirmed lead(s) have no campaign — "
-                              f"move them into one to write their messages")
-        return jsonify(result)
-
-    campaign_for = _campaign_cache()
-    # Arms are cycled per campaign and per signal type, picking up where that
-    # campaign's rotation left off: a batch that happened to be mostly
-    # gap_found would otherwise deal the gap template's arms unevenly, and
-    # small batches would all start on arm A.
-    position = {}
-    base_messages, arm_labels = [], []
-    for lead in leads:
-        campaign = campaign_for(lead["wa_campaign_id"])
-        kind = "gap" if lead["signal_type"] == "gap_found" else "no_gap"
-        key = (lead["wa_campaign_id"], kind)
-        if key not in position:
-            position[key] = db.wa_arm_offset(lead["wa_campaign_id"], kind)
-        label, text = db.pick_wa_arm(campaign["templates"][kind], position[key])
-        position[key] += 1
-        arm_labels.append(label)
-        base_messages.append(db.render_wa_message(text, lead, campaign["variables"]))
-
-    final_messages = base_messages
-    paraphrase_error = None
-    try:
-        prompt = _WA_PARAPHRASE_PROMPT.format(messages=json.dumps(base_messages))
-        raw = _call_configured_ai_text(prompt)
-        parsed = json.loads(_strip_code_fence(raw.strip()))
-        if isinstance(parsed, list) and len(parsed) == len(base_messages) and all(
-            isinstance(m, str) and m.strip() for m in parsed
-        ):
-            final_messages = parsed
-        else:
-            paraphrase_error = "AI response shape didn't match — used the plain template instead"
-    except ValueError as exc:
-        paraphrase_error = str(exc)
-    except Exception as exc:
-        logging.warning("WhatsApp paraphrase batch failed: %s", exc)
-        paraphrase_error = "Paraphrase call failed — used the plain template instead"
-
-    paraphrased = final_messages is not base_messages
-    for lead, message, label in zip(leads, final_messages, arm_labels):
-        db.save_wa_draft(lead["id"], message, label, paraphrased=paraphrased)
-
-    result = {"ok": True, "drafted": len(leads),
-              "variant": "paraphrased" if paraphrased else "template",
-              "arms": sorted({a for a in arm_labels if a})}
-    if no_campaign:
-        result["no_campaign"] = len(no_campaign)
-    if paraphrase_error:
-        result["note"] = paraphrase_error
-    return jsonify(result)
+Message:
+{message}"""
 
 
 @app.route("/api/wa/leads/<int:wid>/message", methods=["PUT"])
 @login_required
 @owned("wa_lead", "wid")
 def api_wa_update_message(wid):
+    """The operator's own wording for this lead. It stops following the
+    template until reset, so a template change won't overwrite it."""
     message = ((request.json or {}).get("message") or "").strip()
     if not message:
         return jsonify({"ok": False, "error": "Message cannot be empty"}), 400
-    db.update_wa_message(wid, message)
+    db.set_wa_message(wid, message)
     return jsonify({"ok": True})
+
+
+@app.route("/api/wa/leads/<int:wid>/message", methods=["DELETE"])
+@login_required
+@owned("wa_lead", "wid")
+def api_wa_reset_message(wid):
+    """Back to the campaign's template."""
+    db.reset_wa_message(wid)
+    return jsonify({"ok": True, "message": db.get_wa_lead(wid, with_message=True)["message"]})
+
+
+@app.route("/api/wa/leads/<int:wid>/reword", methods=["POST"])
+@login_required
+@owned("wa_lead", "wid")
+def api_wa_reword(wid):
+    """
+    Have the configured AI reword this lead's message, for variety. Needs AI
+    switched on in Settings. The result is saved like a hand edit, so it
+    stays put when the template changes; Reset brings the template back.
+    """
+    lead = db.get_wa_lead(wid, with_message=True)
+    current = ((request.json or {}).get("message") or lead["message"] or "").strip()
+    if not current:
+        return jsonify({"ok": False, "error": "There's no message to reword"}), 400
+    try:
+        reworded = _call_configured_ai_text(_WA_PARAPHRASE_PROMPT.format(message=current))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        logging.warning("WhatsApp reword failed: %s", exc)
+        return jsonify({"ok": False, "error": "The AI call failed — try again"}), 502
+    reworded = _strip_code_fence((reworded or "").strip()).strip().strip('"').strip()
+    if not reworded:
+        return jsonify({"ok": False, "error": "The AI came back empty — try again"}), 502
+    db.set_wa_message(wid, reworded, paraphrased=True)
+    return jsonify({"ok": True, "message": reworded})
 
 
 @app.route("/api/wa/leads/<int:wid>/sent", methods=["POST"])
@@ -2739,10 +2840,10 @@ def api_wa_mark_sent(wid):
     kind = d.get("kind", "opener")
     if kind not in ("opener", "followup"):
         return jsonify({"ok": False, "error": "kind must be 'opener' or 'followup'"}), 400
-    lead = db.get_wa_lead(wid)
+    lead = db.get_wa_lead(wid, with_message=True)
     if not lead:
         return jsonify({"ok": False, "error": "Not found"}), 404
-    message = (d.get("message") or lead.get("draft_message") or "").strip()
+    message = (d.get("message") or lead.get("message") or "").strip()
     db.mark_wa_sent(wid, message, kind=kind,
                     template_variant=lead.get("template_variant", ""),
                     paraphrased=bool(lead.get("paraphrased")))
@@ -2922,8 +3023,11 @@ def api_wa_update_campaign(cid):
     if "country" in d and d["country"] and str(d["country"]).upper() not in db.WA_COUNTRY_CODES:
         return jsonify({"ok": False, "error": "Unknown country"}), 400
     allowed = ("name", "notes", "country", "status", "templates", "followup_days", "variables")
+    opener_from = d.get("opener_from")
+    if opener_from is not None and not isinstance(opener_from, list):
+        return jsonify({"ok": False, "error": "opener_from must be a list"}), 400
     try:
-        db.update_wa_campaign(cid, **{k: d[k] for k in allowed if k in d})
+        db.update_wa_campaign(cid, opener_from=opener_from, **{k: d[k] for k in allowed if k in d})
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True})

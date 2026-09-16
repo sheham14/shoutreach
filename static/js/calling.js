@@ -202,6 +202,10 @@ createLeadTable({
     { key: 'last_called_at', label: 'Last called', sort: true, cls: 'num',
       render: r => esc(shortDate(r.last_called_at)) },
   ],
+  onRowClick: r => openLeadPanel(r.id, {
+    channel: 'calling', panelId: 'cl-panel', splitId: 'cl-split',
+    onClose: () => { LT.cl.currentId = null; LT.cl.render(); },
+  }),
   bulk: () => `
     <button class="btn btn-ghost btn-sm" onclick="callLeadsToCampaign(LT.cl.selectedIds())">Add to campaign</button>
     ${document.getElementById('cl-campaign')?.value && document.getElementById('cl-campaign')?.value !== 'none'
@@ -213,7 +217,6 @@ createLeadTable({
     { label: 'Add to a campaign…', run: `callLeadsToCampaign([${r.id}])` },
     ...(r.campaigns || []).map(c => ({ label: `Remove from “${c.name}”`, run: `callLeadsOutOfCampaign([${r.id}], ${c.id})` })),
     r.call_status && { label: 'Reopen (put back in the queue)', run: `reopenCallLead(${r.id})` },
-    { label: 'Open in Contacts', run: `openBusiness(${r.id})` },
     { label: 'Take off Calling', run: `removeFromCalling([${r.id}])`, danger: true },
   ],
   onLoad: data => setTabCount('calling', 'leads', data.total),
@@ -234,6 +237,7 @@ async function loadCallLeads() {
   }
   await loadCallCampaigns();
   LT.cl.load();
+  refreshLeadPanel('cl-panel');
 }
 
 function openInDialler(businessId) {
@@ -724,7 +728,8 @@ async function reopenCallLead(id) {
   const res = await api(`/api/calls/${id}/reopen`, 'POST');
   if (!res || res.error) { toast((res && res.error) || 'Could not reopen', 'err'); return; }
   toast('Back in the queue');
-  loadCallQueue();
+  if (currentTab('calling', 'todo') === 'leads') loadCallLeads();
+  else loadCallQueue();
 }
 
 function skipCallLead() {

@@ -95,12 +95,49 @@ async function loadSettings() {
   document.getElementById("cfg-openai-key").value = s.openai_api_key
     ? "●●●●●●●●●●●●"
     : "";
+  document.getElementById("cfg-google-key").value = s.google_api_key
+    ? "●●●●●●●●●●●●"
+    : "";
+  renderAuditLinks(await loadAuditLinks(true));
+}
+
+// ── Audit links ───────────────────────────────────────────────────────────────
+
+function renderAuditLinks(links) {
+  const wrap = document.getElementById("cfg-audit-links");
+  wrap.innerHTML = "";
+  links.forEach(l => addAuditLinkRow(l.label, l.url, false));
+  if (!links.length) addAuditLinkRow("", "", false);
+}
+
+function addAuditLinkRow(label = "", url = "", focus = true) {
+  const row = document.createElement("div");
+  row.className = "audit-link-row";
+  row.style.cssText = "display:flex;gap:6px;align-items:center";
+  row.innerHTML = `
+    <input class="al-label soft-input" placeholder="Semrush" value="${esc(label)}" style="flex:1" />
+    <input class="al-url soft-input mono" placeholder="https://…{domain}" value="${esc(url)}" style="flex:3;font-size:12.5px" />
+    <button class="btn btn-ghost btn-sm" onclick="this.closest('.audit-link-row').remove()" title="Remove">✕</button>`;
+  document.getElementById("cfg-audit-links").appendChild(row);
+  if (focus) row.querySelector(".al-label").focus();
+}
+
+async function saveAuditLinks() {
+  const links = [...document.querySelectorAll("#cfg-audit-links .audit-link-row")]
+    .map(r => ({ label: r.querySelector(".al-label").value.trim(), url: r.querySelector(".al-url").value.trim() }))
+    .filter(l => l.label || l.url);
+  const res = await api("/api/audit-links", "PUT", { links });
+  if (!res || res.error) { toast((res && res.error) || "Could not save the links", "err"); return; }
+  _auditLinks = res.links;
+  renderAuditLinks(res.links);
+  toast("Audit links saved ✓");
 }
 
 async function saveSettings() {
   const claudeKey = document.getElementById("cfg-anthropic-key").value;
   const geminiKey = document.getElementById("cfg-gemini-key").value;
   const openaiKey = document.getElementById("cfg-openai-key").value;
+  const googleKey = document.getElementById("cfg-google-key").value;
   const payload = {
     global_daily_cap: document.getElementById("cfg-global-cap").value,
     app_base_url: document.getElementById("cfg-base-url").value,
@@ -122,6 +159,8 @@ async function saveSettings() {
     payload.gemini_api_key = geminiKey.trim();
   if (openaiKey && !openaiKey.startsWith("●"))
     payload.openai_api_key = openaiKey.trim();
+  if (googleKey && !googleKey.startsWith("●"))
+    payload.google_api_key = googleKey.trim();
   await api("/api/settings", "POST", payload);
   toast("Settings saved ✓");
 }

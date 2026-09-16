@@ -88,7 +88,7 @@ def main():
         check("an email lead shows its address", rows["Email Only"]["email"] == "hi@emailonly.ae")
         check("a calling lead shows it's on Calling", rows["Calling Only"]["call_lead_id"] is not None)
         check("a WhatsApp lead shows its stage and campaign",
-              rows["On WhatsApp"]["wa_stage"] == "checking" and rows["On WhatsApp"]["wa_campaign"] == "Dubai",
+              rows["On WhatsApp"]["wa_stage"] == "ready" and rows["On WhatsApp"]["wa_campaign"] == "Dubai",
               str(rows["On WhatsApp"]))
         check("a lead taken off Calling no longer shows as on it",
               rows["Off Calling"]["call_lead_id"] is None)
@@ -192,7 +192,7 @@ def main():
         dash = client.get("/api/dashboard").get_json()
         check("it has all three channels", all(k in dash for k in ("email", "calling", "whatsapp")),
               str(list(dash)))
-        check("and today's to-do", {"wa_review", "wa_due", "calls_due"} <= set(dash["todo"]),
+        check("and today's to-do", {"wa_ready", "wa_due", "wa_sent_today", "calls_due"} <= set(dash["todo"]),
               str(dash["todo"]))
         channels = {c["channel"] for c in dash["campaigns"]}
         check("every campaign is in one list, tagged by channel",
@@ -213,6 +213,154 @@ def main():
         check("per-operator settings are not in the shared settings response",
               not any(":" in k for k in settings) and "my private pitch" not in json.dumps(settings),
               str(sorted(settings))[:160])
+
+        print("\n9. ADD A WHOLE SCRAPE TO A CAMPAIGN IN ONE GO")
+        scrape = db.create_scrape_job("physios", "Doha", owner_id=me, destination="email")
+        db.upsert_businesses([{"company": f"Physio {i}", "phone": f"5512 30{i:02d}", "source_job_id": scrape}
+                              for i in range(5)] +
+                             [{"company": "Physio No Phone", "website": "https://pnp.qa", "source_job_id": scrape},
+                              {"company": "Physio Emailed", "email": "hi@physio.qa", "phone": "5512 3099",
+                               "source_job_id": scrape}], owner_id=me)
+        sources = {s["job_id"]: s for s in client.get("/api/contacts/sources").get_json()}
+        check("the list knows what the scrape was", sources[scrape]["count"] == 7
+              and sources[scrape]["niche"] == "physios", str(sources.get(scrape)))
+        doha = db.create_wa_campaign("Doha physios", owner_id=me, country="QA")
+        r = client.post("/api/lists/add-to", headers=hdr, json={
+            "source_job_id": scrape, "channel": "whatsapp", "campaign_id": doha, "country": "QA"})
+        body = r.get_json()
+        check("every phone lead in the scrape goes to WhatsApp in one call",
+              r.status_code == 200 and body["added"] == 5, str(body))
+        check("the one without a phone is counted", body["no_phone"] == 1, str(body))
+        check("the one already on Email is held for a yes",
+              [c["business_name"] for c in body["conflicts"]] == ["Physio Emailed"], str(body))
+        r = client.post("/api/lists/add-to", headers=hdr, json={
+            "source_job_id": scrape, "channel": "whatsapp", "campaign_id": doha, "country": "QA",
+            "business_ids": [c["business_id"] for c in body["conflicts"]], "confirm_conflicts": True})
+        check("and goes in once confirmed", r.get_json()["added"] == 1, str(r.get_json()))
+        check("they're all ready to send", len(db.get_wa_ready(owner_id=me, wa_campaign_id=doha)) == 6)
+        r = client.post("/api/lists/add-to", headers=hdr, json={
+            "source_job_id": scrape, "channel": "calling", "confirm_conflicts": True})
+        check("the same list can go to Calling", r.get_json()["added"] == 6, str(r.get_json()))
+        r = theirs.post("/api/lists/add-to", headers=hdr, json={
+            "source_job_id": scrape, "channel": "calling", "confirm_conflicts": True})
+        check("another operator can't use your scrape", r.status_code == 404, str(r.status_code))
+        r = client.post("/api/lists/add-to", headers=hdr, json={
+            "source_job_id": scrape, "channel": "whatsapp", "campaign_id": doha})
+        check("WhatsApp needs a country", r.status_code == 400)
+
+        print("\n10. RUN CHECKS: ONE LEAD, ON A CLICK, SAVED FOR LATER")
+        import http.server
+        import socket
+        import threading
+        page = (b'<html><head><title>Pearl Dental Doha</title>'
+                b'<meta name="viewport" content="width=device-width">'
+                b'<meta name="generator" content="WordPress 6.2">'
+                b'<script async src="https://www.googletagmanager.com/gtag/js?id=G-ABC123"></script>'
+                b'<script>fbq("init", "123");</script>'
+                b'<script type="application/ld+json">{"@type": "Dentist"}</script></head>'
+                b'<body><h1>Pearl</h1><a href="https://www.instagram.com/pearldental/">IG</a>'
+                b'<a href="https://wa.me/97455123456">Chat</a>'
+                b'<link href="/wp-content/themes/x.css">'
+                b'<footer>&copy; 2019 Pearl Dental</footer></body></html>')
+
+        class Site(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(page)
+
+            def log_message(self, *a):
+                pass
+
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Site)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            import audit
+            scan = audit.scan_site(f"http://127.0.0.1:{port}")
+        finally:
+            srv.shutdown()
+        check("the scan reads the page", scan["ok"] and scan["title"] == "Pearl Dental Doha", str(scan)[:160])
+        check("what it's built on", "WordPress" in scan["built_with"], str(scan["built_with"]))
+        check("analytics and pixels", {"Google Analytics", "Meta Pixel"} <= set(scan["tracking"]),
+              str(scan["tracking"]))
+        check("mobile-ready, structured data, social links",
+              scan["mobile_viewport"] and scan["schema_types"] == ["Dentist"]
+              and scan["socials"].get("Instagram") == "https://www.instagram.com/pearldental",
+              f"{scan['mobile_viewport']} {scan['schema_types']} {scan['socials']}")
+        check("a WhatsApp chat link and how old the footer is",
+              "WhatsApp chat link" in scan["engagement"] and scan["copyright_year"] == 2019,
+              f"{scan['engagement']} {scan['copyright_year']}")
+        check("it isn't mistaken for https", scan["https"] is False)
+        check("no website means nothing to fetch", audit.scan_site("")["ok"] is False)
+
+        class FakeResponse:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"lighthouseResult": {
+                    "categories": {"performance": {"score": 0.42}, "seo": {"score": 0.8},
+                                   "accessibility": {"score": 0.9}, "best-practices": {"score": 0.75}},
+                    "audits": {"largest-contentful-paint": {"displayValue": "6.1 s"},
+                               "final-screenshot": {"details": {"data": "data:image/jpeg;base64,AAAA"}}}}}
+        real_get = audit.requests.get
+        audit.requests.get = lambda *a, **k: FakeResponse()
+        try:
+            speed = audit.pagespeed("https://pearl.qa", "key")
+        finally:
+            audit.requests.get = real_get
+        check("PageSpeed scores come back as 0-100",
+              speed["performance"] == 42 and speed["seo"] == 80 and speed["largest_paint"] == "6.1 s"
+              and speed["screenshot"].startswith("data:image/"), str(speed))
+
+        target = biz("Calling Only")
+        with db.get_db() as conn:
+            conn.execute("UPDATE businesses SET website='https://callingonly.ae' WHERE id=?", (target,))
+        calls = []
+        real_run = app_mod.audit.run_checks
+        app_mod.audit.run_checks = lambda website, domain, key: calls.append((website, domain)) or {
+            "site": {"ok": True, "title": "Calling Only"}, "checked_at": "2026-09-16 10:00:00"}
+        app_mod.app.config["AUDIT_INLINE"] = True
+        try:
+            r = client.post(f"/api/businesses/{target}/audit", headers=hdr)
+            check("Run checks starts", r.status_code == 200, str(r.get_json()))
+            check("it checks the business's own site", calls == [("https://callingonly.ae", "callingonly.ae")],
+                  str(calls))
+            saved = client.get(f"/api/businesses/{target}/audit").get_json()
+            check("the results are saved onto the business",
+                  saved["audit"]["site"]["title"] == "Calling Only" and saved["audit_at"], str(saved)[:160])
+            check("and come back with the contact's details",
+                  client.get(f"/api/businesses/{target}").get_json()["audit"]["site"]["title"] == "Calling Only")
+            r = theirs.post(f"/api/businesses/{target}/audit", headers=hdr)
+            check("nobody else can run checks on it", r.status_code == 404)
+            r = client.post(f"/api/businesses/{biz('Off Calling')}/audit", headers=hdr)
+            check("a business with no website says so", r.status_code == 400, str(r.get_json()))
+        finally:
+            app_mod.audit.run_checks = real_run
+
+        ctx = db.get_rating_context(db.get_list_business_ids(scrape, owner_id=me)[0], owner_id=me)
+        check("no rating means no comparison", ctx is None)
+        with db.get_db() as conn:
+            for i, bid in enumerate(db.get_list_business_ids(scrape, owner_id=me)):
+                conn.execute("UPDATE businesses SET rating=?, review_count=? WHERE id=?",
+                             (4.0 + i / 10, 10 * (i + 1), bid))
+        ctx = db.get_rating_context(db.get_list_business_ids(scrape, owner_id=me)[0], owner_id=me)
+        check("a rating is compared with the rest of its scrape",
+              ctx and ctx["peers"] == 6 and ctx["rank_by_reviews"] == 7 and ctx["avg_reviews"] == 45, str(ctx))
+
+        print("\n11. YOUR OWN AUDIT LINKS")
+        r = client.put("/api/audit-links", headers=hdr, json={"links": [
+            {"label": "Semrush", "url": "https://www.semrush.com/analytics/overview/?q={domain}"}]})
+        check("a link saves", r.status_code == 200 and len(r.get_json()["links"]) == 1, str(r.get_json()))
+        check("it comes back", client.get("/api/audit-links").get_json()[0]["label"] == "Semrush")
+        check("the other operator doesn't get it", theirs.get("/api/audit-links").get_json() == [])
+        r = client.put("/api/audit-links", headers=hdr, json={"links": [{"label": "x", "url": "javascript:alert(1)"}]})
+        check("only web links are allowed", r.status_code == 400, str(r.get_json()))
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

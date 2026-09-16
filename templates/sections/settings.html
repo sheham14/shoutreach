@@ -136,6 +136,35 @@
     <button class="btn btn-primary" onclick="saveSettings()">Save</button>
   </div>
 
+  <!-- The audit on a lead's panel: the Google key behind its speed and SEO
+       scores, and each operator's own one-click links. -->
+  <div class="card" style="padding:24px;margin-top:24px">
+    <div class="card-title" style="margin-bottom:4px">Lead audit</div>
+    <p class="text-muted text-small" style="margin-bottom:16px">"Run checks" on a lead's panel scores its website with
+      Google PageSpeed and looks at its tech, tracking, email setup and age. Nothing runs until you click it.</p>
+
+    <div class="form-group">
+      <label>Google API key (optional)</label>
+      <input id="cfg-google-key" type="password" placeholder="AIza..." autocomplete="off" />
+      <div class="form-hint">PageSpeed works without one, but Google limits how often. A free key from
+        <strong>console.cloud.google.com</strong> (enable "PageSpeed Insights API") lifts that to 25,000 checks a day.
+        Shared by everyone on this server.</div>
+    </div>
+    <button class="btn btn-primary" onclick="saveSettings()" style="margin-bottom:22px">Save key</button>
+
+    <div class="card-title" style="font-size:13px;margin-bottom:4px">Your audit links</div>
+    <p class="text-muted text-small" style="margin-bottom:10px">Tools you check every lead with, one click from any lead's panel.
+      Fill-ins: <span class="mono">{domain}</span> <span class="mono">{website}</span> <span class="mono">{name}</span>
+      <span class="mono">{city}</span> <span class="mono">{country}</span> <span class="mono">{category}</span>
+      <span class="mono">{phone}</span> — e.g. <span class="mono">https://www.semrush.com/analytics/overview/?q={domain}</span>.
+      Only you see yours.</p>
+    <div id="cfg-audit-links" style="display:flex;flex-direction:column;gap:6px"></div>
+    <div class="flex gap-2" style="margin-top:10px">
+      <button class="btn btn-ghost btn-sm" onclick="addAuditLinkRow()">+ Add link</button>
+      <button class="btn btn-primary btn-sm" onclick="saveAuditLinks()">Save links</button>
+    </div>
+  </div>
+
   <div id="settings-worker-card" class="card" style="padding:24px;margin-top:24px">
     <div class="card-title" style="margin-bottom:6px">Lead Scraper Worker</div>
     <div class="form-hint" style="margin-bottom:16px">

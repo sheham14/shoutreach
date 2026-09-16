@@ -32,9 +32,11 @@
           <option value="calling">On Calling</option>
           <option value="whatsapp">On WhatsApp</option>
         </select>
-        <select id="ct-source" class="filter-select" onchange="LT.ct.filter()" title="Which scrape found them">
+        <select id="ct-source" class="filter-select" onchange="contactsSourceChanged()" title="Which scrape found them">
           <option value="">All lists</option>
         </select>
+        <button class="btn btn-ghost btn-sm" id="ct-add-list" style="display:none" onclick="addSelectedListToChannel()"
+                title="Send every business in this list to a channel and campaign">Add all in this list to…</button>
         <span class="lt-count" id="ct-count"></span>
       </div>
       <div class="text-muted text-small" id="ct-view-hint" style="display:none;padding:10px 16px;border-bottom:1px solid var(--border)"></div>

@@ -61,7 +61,7 @@ function _todoTile(channel, n, what, go) {
 
 function updateSidebarCounts(todo) {
   if (!todo) return;
-  const wa = (todo.wa_review || 0) + (todo.wa_ready || 0) + (todo.wa_due || 0);
+  const wa = (todo.wa_ready || 0) + (todo.wa_due || 0);
   const calls = todo.calls_due || 0;
   const waEl = document.getElementById('nav-count-whatsapp');
   const callEl = document.getElementById('nav-count-calling');
@@ -70,15 +70,15 @@ function updateSidebarCounts(todo) {
 }
 
 async function refreshDashboard() {
-  const d = await api('/api/dashboard');
+  const d = await api(`/api/dashboard?since=${encodeURIComponent(startOfLocalDay())}`);
   if (!d || d.error) { toast((d && d.error) || 'Could not load the dashboard', 'err'); return; }
   const t = d.todo || {};
   updateSidebarCounts(t);
 
   document.getElementById('dash-todo').innerHTML = [
-    _todoTile('whatsapp', t.wa_review, 'websites to review', "openWhatsAppTodo('review')"),
     _todoTile('whatsapp', t.wa_ready, 'messages ready to send', "openWhatsAppTodo('ready')"),
     _todoTile('whatsapp', t.wa_due, 'follow-ups due', "openWhatsAppTodo('due')"),
+    _todoTile('whatsapp', t.wa_sent_today, 'sent today', "openWhatsAppTodo('ready')"),
     _todoTile('calling', t.calls_due, 'callbacks due now', "openCallingTodo('today')"),
     _todoTile('calling', t.calls_new, 'never called', "openCallingTodo('new')"),
   ].join('');
