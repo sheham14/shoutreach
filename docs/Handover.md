@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-09-16 (lean WhatsApp flow, not yet deployed) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-09-16 (lean WhatsApp flow is live) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -22,11 +22,12 @@ fix this file.
   database built by the previously-live code (`076b20c`) — templates, leads,
   call history and campaigns all carried over. No fresh backup was taken for
   this deploy; the newest on the VM is `~/outreach.db.bak-2026-09-15`.
-- **Committed locally, NOT deployed: the lean WhatsApp flow** (§5). No
-  website check or review step — leads land ready to send; an optional,
-  on-click audit; every country; a side panel on every Leads tab; "Add all
-  to…" for a whole scrape. Its deploy runs one more one-shot migration,
-  `_migrate_wa_no_review` (§9) — back up first.
+- **Live since 2026-09-16 18:51 UTC: the lean WhatsApp flow** (`cf49426`,
+  deployed with `be439b5`, §5). No website check or review step — leads land
+  ready to send; an optional, on-click audit; every country; a side panel on
+  every Leads tab; "Add all to…" for a whole scrape. The restart ran
+  `_migrate_wa_no_review`. No backup was taken: the operator said the
+  WhatsApp leads were only a test run and free to lose.
 - **Two people use this install, walled off from each other.** Almost every
   query is scoped to an owner, and a handful deliberately aren't. Read §3
   before adding a query, a route, or a background job.
@@ -41,7 +42,8 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
-| (local) | 09-16 | Lean WhatsApp flow, lead audit, every country, lead side panels, add a whole scrape | **No** |
+| `be439b5` | 09-16 | Operator's own files (reference pages, AGENTS.md, the full audit doc) | Yes |
+| `cf49426` | 09-16 | Lean WhatsApp flow, lead audit, every country, lead side panels, add a whole scrape | Yes |
 | `bed7f2a` | 09-16 | Contacts hub, Leads tabs on every channel, WhatsApp campaigns, explicit Calling, Dashboard | Yes |
 | `bfe08c7` | 09-15 | Each account gets its own scrape worker | Yes |
 | `076b20c` | 09-15 | Scrapes can feed WhatsApp; add existing leads to WhatsApp | Yes |
@@ -283,7 +285,7 @@ CSV already holds.
 
 ## 5. WhatsApp additions since the module handover
 
-**The lean flow (local, not deployed).** The booking-gap check, the review step
+**The lean flow (live 2026-09-16).** The booking-gap check, the review step
 and the "write messages" batch are gone (`wa_signal.py` deleted, its scheduler
 job removed). The focus is volume.
 
@@ -446,13 +448,13 @@ disposable** — importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
-0. **Deploy the lean WhatsApp flow** once the operator says so. Back up the
-   database first (§6). The restart installs `phonenumbers` and runs
-   `_migrate_wa_no_review`. Afterwards: WhatsApp → To do shows the old
-   review/confirmed leads under Ready to send with messages filled in, and
-   each campaign's Templates tab shows one opening message (take
-   `{{signal_detail}}` out of it). A Google API key (Settings → Lead audit) is
-   optional.
+0. The lean WhatsApp flow is deployed and the app is up (`/login` 200,
+   `/api/users/me` 401, run log `Updating 4f7ea0f..be439b5`). Still to check
+   by hand, in the app: WhatsApp → To do shows the old review/confirmed leads
+   under Ready to send with messages filled in; each campaign's Templates tab
+   shows one opening message (take `{{signal_detail}}` out of it); Run checks
+   on a lead with a website returns scores. A Google API key (Settings → Lead
+   audit) is optional.
 1. Deployed and verified per §6 on 2026-09-16. Still to do by hand, in the
    app: WhatsApp → Campaigns shows "My first campaign"
    holding the existing leads and the operator's own templates (rename it);
