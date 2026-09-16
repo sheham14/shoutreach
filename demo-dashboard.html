@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ShoutReach — Dashboard Demo</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📣</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg:      #080c10;
+  --bg2:     #0e1419;
+  --bg3:     #141c24;
+  --border:  #1e2c38;
+  --border2: #243444;
+  --text:    #c8d8e8;
+  --muted:   #5a7a90;
+  --green:   #00e87a;
+  --green-d: #00a855;
+  --amber:   #f5a623;
+  --red:     #ff4c4c;
+  --blue:    #4da6ff;
+  --purple:  #a78bfa;
+  --font:    'Space Grotesk', sans-serif;
+  --mono:    'JetBrains Mono', monospace;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+.shell { display: flex; min-height: 100vh; }
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--bg2);
+  border-right: 1px solid var(--border);
+  padding: 24px 0;
+  position: fixed;
+  top: 0; bottom: 0; left: 0;
+  display: flex; flex-direction: column;
+  z-index: 100;
+}
+.logo {
+  padding: 0 20px 24px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.logo-mark {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--green);
+  letter-spacing: .15em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.logo h1 { font-size: 16px; font-weight: 700; color: #fff; letter-spacing: -.3px; }
+nav a {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 20px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  border-left: 2px solid transparent;
+  transition: all .15s;
+}
+nav a.active {
+  color: var(--text);
+  background: var(--bg3);
+  border-left-color: var(--green);
+}
+nav a .icon { font-size: 15px; width: 18px; text-align: center; }
+.run-now-btn {
+  margin: 8px 12px;
+  width: calc(100% - 24px);
+  padding: 7px 12px;
+  background: transparent;
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--font);
+  cursor: pointer;
+  text-align: left;
+}
+.sidebar-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  margin-top: auto;
+}
+.sidebar-footer .username { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.sidebar-footer .signout { font-size: 12px; color: var(--muted); text-decoration: none; display: flex; align-items: center; gap: 6px; }
+.main {
+  margin-left: 220px;
+  flex: 1;
+  padding: 32px 36px;
+  min-width: 0;
+}
+.page-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 28px;
+}
+.page-title { font-size: 22px; font-weight: 700; color: #fff; }
+.page-sub   { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 14px;
+  margin-bottom: 32px;
+}
+.stat-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 20px;
+}
+.stat-label {
+  font-size: 11px; font-family: var(--mono); color: var(--muted);
+  letter-spacing: .08em; text-transform: uppercase; margin-bottom: 8px;
+}
+.stat-value { font-size: 28px; font-weight: 700; color: #fff; font-family: var(--mono); }
+.stat-value.green { color: var(--green); }
+.stat-value.amber { color: var(--amber); }
+.stat-value.red   { color: var(--red);   }
+.stat-value.blue  { color: var(--blue);  }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn-primary { background: var(--green); color: #000; }
+.btn-ghost   { background: transparent; color: var(--text); border: 1px solid var(--border2); }
+.btn-sm      { padding: 5px 10px; font-size: 12px; }
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.card-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.card-title { font-size: 14px; font-weight: 600; color: #fff; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left; font-family: var(--mono); font-size: 11px;
+  color: var(--muted); letter-spacing: .08em; text-transform: uppercase;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  vertical-align: middle;
+}
+tr:last-child td { border-bottom: none; }
+.mono { font-family: var(--mono); }
+.badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-family: var(--mono);
+  font-weight: 500;
+}
+.badge-green  { background: rgba(0,232,122,.12); color: var(--green); }
+.badge-amber  { background: rgba(245,166,35,.12); color: var(--amber); }
+.badge-gray   { background: rgba(90,122,144,.12); color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <aside class="sidebar">
+    <div class="logo">
+      <h1>ShoutReach</h1>
+      <div class="logo-mark">◈ Powered by Hexiv</div>
+    </div>
+    <nav>
+      <a href="#" class="active"><span class="icon">◉</span> Dashboard</a>
+      <a href="#"><span class="icon">⚡</span> Campaigns</a>
+      <a href="#"><span class="icon">⊕</span> Contacts</a>
+      <a href="#"><span class="icon">▤</span> Activity Log</a>
+      <a href="#"><span class="icon">⚙</span> Settings</a>
+      <a href="#"><span class="icon">⊗</span> Scraper</a>
+      <a href="#"><span class="icon">◧</span> Database</a>
+      <a href="#"><span class="icon">?</span> Help &amp; Guide</a>
+    </nav>
+    <button class="run-now-btn">⟳ Run Now</button>
+    <div class="sidebar-footer">
+      <div class="username">admin</div>
+      <a href="#" class="signout">⎋ Sign out</a>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Dashboard</div>
+        <div class="page-sub">Overview across all campaigns</div>
+      </div>
+      <button class="btn btn-ghost btn-sm">↻ Refresh</button>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Contacts</div>
+        <div class="stat-value blue">3,847</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Emails Sent</div>
+        <div class="stat-value">2,614</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Replies</div>
+        <div class="stat-value green">187</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Reply Rate</div>
+        <div class="stat-value green">7.2%</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Sent Today</div>
+        <div class="stat-value amber">48</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Bounced</div>
+        <div class="stat-value red">31</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Active Campaigns</div>
+        <button class="btn btn-primary btn-sm">View All →</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Campaign</th>
+              <th>Status</th>
+              <th>Contacts</th>
+              <th>Sent</th>
+              <th>Reply Rate</th>
+              <th>Daily Limit</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>SaaS Founders — Q2</strong></td>
+              <td><span class="badge badge-green">active</span></td>
+              <td class="mono">1,240</td>
+              <td class="mono">893</td>
+              <td class="mono">8.4%</td>
+              <td class="mono">50/day</td>
+              <td><button class="btn btn-ghost btn-sm">Open →</button></td>
+            </tr>
+            <tr>
+              <td><strong>E-commerce DTC Brands</strong></td>
+              <td><span class="badge badge-green">active</span></td>
+              <td class="mono">974</td>
+              <td class="mono">761</td>
+              <td class="mono">6.8%</td>
+              <td class="mono">40/day</td>
+              <td><button class="btn btn-ghost btn-sm">Open →</button></td>
+            </tr>
+            <tr>
+              <td><strong>Agency Outreach — NYC</strong></td>
+              <td><span class="badge badge-green">active</span></td>
+              <td class="mono">618</td>
+              <td class="mono">512</td>
+              <td class="mono">7.0%</td>
+              <td class="mono">30/day</td>
+              <td><button class="btn btn-ghost btn-sm">Open →</button></td>
+            </tr>
+            <tr>
+              <td><strong>Series A Startups</strong></td>
+              <td><span class="badge badge-amber">paused</span></td>
+              <td class="mono">1,015</td>
+              <td class="mono">448</td>
+              <td class="mono">5.9%</td>
+              <td class="mono">50/day</td>
+              <td><button class="btn btn-ghost btn-sm">Open →</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+</div>
+</body>
+</html>

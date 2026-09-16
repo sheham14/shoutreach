@@ -1,0 +1,750 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShoutReach: Project Deep Dive</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b0f14;--bg2:#111827;--bg3:#1a2435;
+  --border:#1e2a38;--border2:#253345;
+  --green:#00e5a0;--green-dim:rgba(0,229,160,.1);
+  --text:#e2e8f0;--muted:#6b7280;--sub:#94a3b8;
+  --blue:#3b82f6;--amber:#f59e0b;--red:#ef4444;--purple:#a78bfa;
+  --font:'Inter',system-ui,sans-serif;
+  --mono:'JetBrains Mono',monospace;
+}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:var(--font);line-height:1.6;font-size:15px}
+
+/* ── Nav ── */
+nav{position:sticky;top:0;z-index:100;display:flex;align-items:center;
+  padding:0 48px;height:60px;background:rgba(11,15,20,.9);
+  backdrop-filter:blur(14px);border-bottom:1px solid var(--border)}
+.nav-logo{display:flex;align-items:center;gap:10px;text-decoration:none}
+.nav-dot{width:8px;height:8px;background:var(--green);border-radius:50%;box-shadow:0 0 8px var(--green)}
+.nav-word{font-size:16px;font-weight:800;color:var(--text)}
+.nav-tag{margin-left:12px;padding:2px 10px;border-radius:999px;font-size:11px;font-weight:600;
+  background:var(--green-dim);color:var(--green);border:1px solid rgba(0,229,160,.2)}
+.nav-right{margin-left:auto;display:flex;gap:10px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 16px;border-radius:6px;
+  font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;border:none;font-family:var(--font)}
+.btn-primary{background:var(--green);color:#0b0f14}
+.btn-ghost{background:transparent;color:var(--sub);border:1px solid var(--border)}
+.btn-ghost:hover{color:var(--text);border-color:var(--border2)}
+
+/* ── Layout ── */
+.wrap{max-width:900px;margin:0 auto;padding:0 48px}
+section{padding:80px 48px;max-width:900px;margin:0 auto}
+.sec-label{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:700;
+  color:var(--green);text-transform:uppercase;letter-spacing:.1em;margin-bottom:12px}
+.sec-label::before{content:'';width:16px;height:1px;background:var(--green)}
+h2{font-size:clamp(24px,3vw,36px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:14px}
+h3{font-size:17px;font-weight:700;color:var(--text);margin-bottom:8px}
+p{color:var(--sub);line-height:1.75}
+.divider{border:none;border-top:1px solid var(--border);max-width:900px;margin:0 auto}
+
+/* ── Hero ── */
+#hero{padding:88px 48px 72px;max-width:900px;margin:0 auto}
+.hero-eyebrow{display:flex;align-items:center;gap:10px;margin-bottom:20px}
+.live-pill{display:flex;align-items:center;gap:7px;padding:5px 13px;border-radius:999px;
+  background:rgba(0,229,160,.08);border:1px solid rgba(0,229,160,.25);
+  font-size:12px;font-weight:600;color:var(--green)}
+.live-dot{width:6px;height:6px;background:var(--green);border-radius:50%;animation:blink 2s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
+.project-tag{font-size:12px;color:var(--muted);font-family:var(--mono)}
+#hero h1{font-size:clamp(36px,5vw,58px);font-weight:900;line-height:1.06;letter-spacing:-1.5px;margin-bottom:18px}
+#hero h1 span{color:var(--green)}
+.hero-desc{font-size:17px;color:var(--sub);max-width:640px;line-height:1.75;margin-bottom:30px}
+.hero-links{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:48px}
+.stack-row{display:flex;flex-wrap:wrap;gap:8px}
+.stack-badge{padding:4px 11px;border-radius:5px;font-size:12px;font-family:var(--mono);font-weight:500;
+  background:var(--bg3);border:1px solid var(--border2);color:var(--sub)}
+
+/* ── Dashboard mockup ── */
+.mock-wrap{margin:0 auto 0;perspective:1400px;max-width:820px}
+.mock-tilt{transform:rotateX(5deg);transition:transform .4s}
+.mock-tilt:hover{transform:rotateX(2deg)}
+.dmock{background:#0d1117;border:1px solid #2a3747;border-radius:10px;overflow:hidden;
+  display:flex;font-size:11px;
+  box-shadow:0 32px 80px rgba(0,0,0,.7),0 0 0 1px rgba(255,255,255,.03)}
+.msb{width:140px;background:#0d1117;border-right:1px solid #1a2538;
+  display:flex;flex-direction:column;flex-shrink:0;padding:12px 0}
+.msb-top{padding:0 12px 12px;border-bottom:1px solid #1a2538;margin-bottom:8px}
+.msb-sys{font-size:8.5px;color:#00e5a0;font-family:monospace;letter-spacing:.06em;margin-bottom:2px}
+.msb-name{font-size:14px;font-weight:700;color:#e2e8f0}
+.mni{display:flex;align-items:center;gap:7px;padding:5px 12px;font-size:10.5px;color:#6b7280}
+.mni.on{background:#151c25;color:#e2e8f0;border-right:2px solid #00e5a0}
+.mni-ic{width:11px;text-align:center;font-size:9px;flex-shrink:0}
+.msb-foot{margin-top:auto;padding:8px 12px;border-top:1px solid #1a2538}
+.sched{display:flex;align-items:center;gap:5px;background:rgba(0,229,160,.1);
+  border-radius:4px;padding:4px 8px;font-size:8.5px;color:#00e5a0;font-family:monospace}
+.sched-dot{width:5px;height:5px;background:#00e5a0;border-radius:50%;animation:blink 2s infinite}
+.mmain{flex:1;min-width:0;padding:13px;background:#10161f}
+.mm-hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}
+.mm-title{font-size:16px;font-weight:700;color:#e2e8f0}
+.mm-sub{font-size:8.5px;color:#6b7280;margin-top:2px}
+.mm-btn{background:#1a2435;border:1px solid #1e2a38;border-radius:4px;padding:3px 9px;color:#94a3b8;font-size:8.5px}
+.stat-row{display:grid;grid-template-columns:repeat(6,1fr);gap:5px;margin-bottom:11px}
+.sc{background:#151c25;border:1px solid #1e2a38;border-radius:6px;padding:7px 6px}
+.sc-l{font-size:7px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
+.sc-v{font-size:16px;font-weight:800;line-height:1;font-family:monospace}
+.mc{background:#151c25;border:1px solid #1e2a38;border-radius:6px;padding:9px}
+.mc-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}
+.mc-t{font-size:10.5px;font-weight:600;color:#e2e8f0}
+.mc-va{background:#00e5a0;color:#0b0f14;border-radius:3px;padding:2px 7px;font-size:8px;font-weight:700}
+.mt{width:100%;border-collapse:collapse}
+.mt th{font-size:7px;color:#6b7280;text-align:left;padding:3px 5px;
+  border-bottom:1px solid #1e2a38;text-transform:uppercase;letter-spacing:.04em}
+.mt td{font-size:9px;color:#94a3b8;padding:5px 5px;border-bottom:1px solid #161e2a}
+.mt tr:last-child td{border:none}
+.mb{display:inline-block;padding:1px 6px;border-radius:3px;font-size:7.5px;font-weight:600}
+.mb-g{background:rgba(0,229,160,.15);color:#00e5a0}
+.mb-a{background:rgba(245,158,11,.15);color:#f59e0b}
+.mo{background:#1a2435;border:1px solid #1e2a38;border-radius:3px;padding:2px 6px;color:#94a3b8;font-size:8px}
+
+/* ── Backstory ── */
+.backstory-body{display:flex;flex-direction:column;gap:18px;max-width:680px}
+.backstory-body p{font-size:16px;color:var(--sub);line-height:1.8}
+.backstory-body .backstory-closer{font-size:16px;font-weight:600;color:var(--text)}
+
+/* ── Tool replacement ── */
+.tools-intro{font-size:16px;color:var(--sub);line-height:1.75;margin-bottom:36px;max-width:680px}
+.tool-table-wrap{border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:28px}
+.tool-table{width:100%;border-collapse:collapse}
+.tool-table th{font-size:11px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;
+  letter-spacing:.06em;padding:10px 18px;border-bottom:1px solid var(--border);background:var(--bg2);text-align:left}
+.tool-table td{padding:12px 18px;border-bottom:1px solid var(--border);font-size:14px;color:var(--sub)}
+.tool-table tr:last-child td{border-bottom:none;background:rgba(0,229,160,.04)}
+.tool-table tr:last-child td{font-weight:700}
+.tool-name{color:var(--text);font-weight:600}
+.tool-cost{font-family:var(--mono);color:var(--red)}
+.tool-cost.total{color:var(--green)}
+.vs-row{display:flex;align-items:center;gap:16px;padding:16px 20px;background:var(--green-dim);
+  border:1px solid rgba(0,229,160,.2);border-radius:10px}
+.vs-left{flex:1;font-size:14px;color:var(--muted);text-decoration:line-through}
+.vs-arrow{font-size:20px;color:var(--green)}
+.vs-right{flex:1;font-size:15px;font-weight:700;color:var(--green)}
+
+/* ── Tech stack ── */
+.stack-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:36px}
+.stack-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:20px}
+.stack-card-top{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.stack-icon{font-size:18px}
+.stack-name{font-size:14px;font-weight:700;color:var(--text)}
+.stack-why{font-size:13px;color:var(--muted);line-height:1.6}
+
+/* ── Architecture ── */
+.arch-diagram{background:var(--bg2);border:1px solid var(--border);border-radius:12px;
+  padding:32px;margin:36px 0;display:flex;flex-direction:column;align-items:center;gap:0}
+.arch-node{background:var(--bg3);border:1px solid var(--border2);border-radius:8px;
+  padding:10px 22px;font-family:var(--mono);font-size:12px;color:var(--text);
+  text-align:center;white-space:nowrap}
+.arch-node.green{border-color:rgba(0,229,160,.4);color:var(--green);background:rgba(0,229,160,.06)}
+.arch-node.blue{border-color:rgba(59,130,246,.4);color:#3b82f6;background:rgba(59,130,246,.06)}
+.arch-node.amber{border-color:rgba(245,158,11,.4);color:var(--amber);background:rgba(245,158,11,.06)}
+.arch-row{display:flex;align-items:center;gap:16px}
+.arch-arrow{color:var(--muted);font-size:12px;font-family:var(--mono);padding:6px 0;text-align:center}
+.arch-arrow.down::after{content:'↓';display:block;color:var(--muted)}
+.arch-split{display:flex;gap:20px;align-items:flex-start;margin-top:4px}
+.arch-branch{display:flex;flex-direction:column;align-items:center;gap:0}
+.arch-branch-label{font-size:10px;color:var(--muted);font-family:var(--mono);margin-bottom:6px}
+.arch-connector{width:1px;height:20px;background:var(--border2);margin:0 auto}
+.arch-decisions{display:flex;flex-direction:column;gap:16px;margin-top:28px}
+.arch-decision{display:flex;gap:16px;padding:18px;background:var(--bg2);border:1px solid var(--border);border-radius:10px}
+.arch-dec-num{width:28px;height:28px;border-radius:50%;background:var(--green-dim);border:1px solid rgba(0,229,160,.3);
+  color:var(--green);font-size:12px;font-weight:700;font-family:var(--mono);
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px}
+.arch-dec-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:5px}
+.arch-dec-body{font-size:13px;color:var(--muted);line-height:1.65}
+
+/* ── Hard problems ── */
+.problems-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:36px}
+.prob-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:24px;
+  transition:border-color .2s}
+.prob-card:hover{border-color:var(--border2)}
+.prob-icon{font-size:22px;margin-bottom:14px;display:block}
+.prob-title{font-size:15px;font-weight:700;color:var(--text);margin-bottom:16px}
+.prob-section{margin-bottom:12px}
+.prob-section:last-child{margin-bottom:0}
+.prob-section-label{font-size:10px;font-family:var(--mono);font-weight:700;text-transform:uppercase;
+  letter-spacing:.07em;margin-bottom:5px}
+.prob-section-label.problem{color:var(--red)}
+.prob-section-label.why{color:var(--amber)}
+.prob-section-label.solution{color:var(--green)}
+.prob-section p{font-size:13px;color:var(--muted);line-height:1.65}
+code{font-family:var(--mono);font-size:12px;background:rgba(0,229,160,.08);
+  color:var(--green);padding:1px 6px;border-radius:4px;border:1px solid rgba(0,229,160,.15)}
+
+/* ── DevOps ── */
+.devops-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:36px}
+.devops-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:20px}
+.devops-card-title{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:700;
+  color:var(--text);margin-bottom:10px}
+.devops-icon{font-size:16px}
+.devops-list{list-style:none;display:flex;flex-direction:column;gap:6px}
+.devops-list li{font-size:13px;color:var(--muted);display:flex;gap:8px;line-height:1.5}
+.devops-list li::before{content:'›';color:var(--green);flex-shrink:0;font-weight:700}
+.cicd-flow{margin-top:32px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:22px}
+.cicd-title{font-size:13px;font-weight:700;color:var(--text);margin-bottom:14px}
+.cicd-steps{display:flex;align-items:center;flex-wrap:wrap;gap:0}
+.cicd-step{display:flex;flex-direction:column;align-items:center;gap:4px}
+.cicd-step-box{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+  padding:7px 14px;font-size:11px;font-family:var(--mono);color:var(--sub);white-space:nowrap}
+.cicd-step-label{font-size:9.5px;color:var(--muted)}
+.cicd-arrow{color:var(--muted);font-size:14px;margin:0 6px;padding-bottom:16px}
+
+/* ── Decisions ── */
+.decisions-grid{display:flex;flex-direction:column;gap:16px;margin-top:36px}
+.decision-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;
+  padding:24px;display:flex;gap:20px}
+.dec-icon{font-size:24px;flex-shrink:0;margin-top:2px}
+.dec-title{font-size:15px;font-weight:700;color:var(--text);margin-bottom:8px}
+.dec-body{font-size:13.5px;color:var(--muted);line-height:1.7}
+
+/* ── Differently ── */
+.diff-list{display:flex;flex-direction:column;gap:14px;margin-top:32px}
+.diff-item{display:flex;gap:16px;padding:18px;background:var(--bg2);border:1px solid var(--border);border-radius:10px}
+.diff-num{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--muted);flex-shrink:0;margin-top:1px}
+.diff-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:5px}
+.diff-body{font-size:13px;color:var(--muted);line-height:1.65}
+
+/* ── Footer ── */
+footer{max-width:900px;margin:0 auto;padding:36px 48px;
+  display:flex;justify-content:space-between;align-items:center;
+  border-top:1px solid var(--border)}
+.foot-left{display:flex;align-items:center;gap:10px}
+.foot-dot{width:7px;height:7px;background:var(--green);border-radius:50%}
+.foot-word{font-size:15px;font-weight:800;color:var(--text)}
+.foot-tag{font-size:12px;color:var(--muted);margin-top:2px}
+.foot-links{display:flex;gap:20px;list-style:none}
+.foot-links a{color:var(--muted);text-decoration:none;font-size:13px;transition:color .15s}
+.foot-links a:hover{color:var(--text)}
+
+/* ── Responsive ── */
+@media(max-width:720px){
+  nav,section,#hero{padding-left:20px;padding-right:20px}
+  .stack-grid,.problems-grid,.devops-grid{grid-template-columns:1fr}
+  .msb{display:none}
+  footer{flex-direction:column;gap:20px;text-align:center}
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="#" class="nav-logo">
+    <div class="nav-dot"></div>
+    <span class="nav-word">ShoutReach</span>
+    <span class="nav-tag">Project Deep Dive</span>
+  </a>
+  <div class="nav-right">
+    <a href="https://github.com/sheham14/shoutreach" class="btn btn-ghost">GitHub</a>
+    <a href="https://shoutreach.hexiv.co" class="btn btn-primary">Live App →</a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section id="hero">
+  <div class="hero-eyebrow">
+    <div class="live-pill"><div class="live-dot"></div>Live in production</div>
+  </div>
+  <h1>A cold email platform<br><span>I built from scratch.</span></h1>
+  <p class="hero-desc">
+    ShoutReach is a self-hosted outreach platform, sequences, reply detection, A/B testing,
+    multi-inbox rotation, lead scraping, and AI copy review, all in one app running on a $5 VPS.
+  </p>
+  <div class="hero-links">
+    <a href="https://github.com/sheham14/shoutreach" class="btn btn-primary">View on GitHub →</a>
+    <a href="https://shoutreach.hexiv.co" class="btn btn-ghost">Live App</a>
+    <a href="shoutreach-landing.html" class="btn btn-ghost">Landing Page</a>
+  </div>
+  <div class="stack-row">
+    <span class="stack-badge">Python</span>
+    <span class="stack-badge">Flask</span>
+    <span class="stack-badge">SQLite</span>
+    <span class="stack-badge">APScheduler</span>
+    <span class="stack-badge">smtplib / imaplib</span>
+    <span class="stack-badge">Playwright</span>
+    <span class="stack-badge">GCP</span>
+    <span class="stack-badge">nginx</span>
+    <span class="stack-badge">GitHub Actions</span>
+  </div>
+</section>
+
+<!-- DASHBOARD MOCKUP -->
+<div style="max-width:900px;margin:0 auto;padding:0 48px 80px">
+  <div class="mock-wrap">
+    <div class="mock-tilt">
+      <div class="dmock">
+        <div class="msb">
+          <div class="msb-top">
+            <div class="msb-sys">◆ HEXIV</div>
+            <div class="msb-name">ShoutReach</div>
+          </div>
+          <div class="mni on"><span class="mni-ic">◎</span> Dashboard</div>
+          <div class="mni"><span class="mni-ic">⚡</span> Campaigns</div>
+          <div class="mni"><span class="mni-ic">⊕</span> Contacts</div>
+          <div class="mni"><span class="mni-ic">≡</span> Activity Log</div>
+          <div class="mni"><span class="mni-ic">◌</span> Settings</div>
+          <div class="mni"><span class="mni-ic">⊗</span> Scraper</div>
+          <div class="mni"><span class="mni-ic">▣</span> Database</div>
+          <div class="mni"><span class="mni-ic">?</span> Help</div>
+          <div class="msb-foot">
+            <div class="sched"><div class="sched-dot"></div>Scheduler running</div>
+          </div>
+        </div>
+        <div class="mmain">
+          <div class="mm-hdr">
+            <div>
+              <div class="mm-title">Dashboard</div>
+              <div class="mm-sub">Overview across all campaigns</div>
+            </div>
+            <div class="mm-btn">↺ Refresh</div>
+          </div>
+          <div class="stat-row">
+            <div class="sc"><div class="sc-l">Total Contacts</div><div class="sc-v" style="color:#3b82f6">3,847</div></div>
+            <div class="sc"><div class="sc-l">Emails Sent</div><div class="sc-v" style="color:#e2e8f0">2,614</div></div>
+            <div class="sc"><div class="sc-l">Replies</div><div class="sc-v" style="color:#00e5a0">187</div></div>
+            <div class="sc"><div class="sc-l">Reply Rate</div><div class="sc-v" style="color:#00e5a0">7.2%</div></div>
+            <div class="sc"><div class="sc-l">Sent Today</div><div class="sc-v" style="color:#f59e0b">48</div></div>
+            <div class="sc"><div class="sc-l">Bounced</div><div class="sc-v" style="color:#ef4444">31</div></div>
+          </div>
+          <div class="mc">
+            <div class="mc-hdr">
+              <div class="mc-t">Active Campaigns</div>
+              <div class="mc-va">View All →</div>
+            </div>
+            <table class="mt">
+              <thead><tr>
+                <th>Campaign</th><th>Status</th><th>Contacts</th>
+                <th>Sent</th><th>Reply Rate</th><th>Daily Limit</th><th></th>
+              </tr></thead>
+              <tbody>
+                <tr>
+                  <td style="color:#e2e8f0;font-weight:600">SaaS Founders Q2</td>
+                  <td><span class="mb mb-g">active</span></td>
+                  <td>1,240</td><td>893</td>
+                  <td style="color:#00e5a0">8.4%</td><td>50/day</td>
+                  <td><div class="mo">Open →</div></td>
+                </tr>
+                <tr>
+                  <td style="color:#e2e8f0;font-weight:600">E-commerce DTC Brands</td>
+                  <td><span class="mb mb-g">active</span></td>
+                  <td>974</td><td>761</td>
+                  <td style="color:#00e5a0">6.8%</td><td>40/day</td>
+                  <td><div class="mo">Open →</div></td>
+                </tr>
+                <tr>
+                  <td style="color:#e2e8f0;font-weight:600">Agency Outreach NYC</td>
+                  <td><span class="mb mb-g">active</span></td>
+                  <td>618</td><td>512</td>
+                  <td style="color:#00e5a0">7.0%</td><td>30/day</td>
+                  <td><div class="mo">Open →</div></td>
+                </tr>
+                <tr>
+                  <td style="color:#e2e8f0;font-weight:600">Series A Startups</td>
+                  <td><span class="mb mb-a">paused</span></td>
+                  <td>1,015</td><td>448</td>
+                  <td style="color:#94a3b8">5.9%</td><td>50/day</td>
+                  <td><div class="mo">Open →</div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- VIDEO -->
+<section id="demo">
+  <div class="sec-label">Demo</div>
+  <h2>See it in action.</h2>
+  <div style="margin-top:28px;border-radius:12px;overflow:hidden;border:1px solid var(--border);aspect-ratio:16/9;max-width:820px">
+    <iframe width="100%" height="100%" src="https://www.youtube.com/embed/EE0lV-Mt078" title="ShoutReach Demo" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display:block"></iframe>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- BACKSTORY -->
+<section id="backstory">
+  <div class="sec-label">Background</div>
+  <h2>Why I built this.</h2>
+  <div class="backstory-body">
+    <p>I joined Hexiv as the founding developer after a single phone call. The ask was simple: build an outreach system. I had no idea what outreach was.</p>
+    <p>The first version was a stack of third-party tools: expensive, rigid, and not ours. After losing about $1,000 on failed campaigns and months waiting on a work permit with savings draining, we had to get creative. I rebuilt the workflow manually and cut monthly expenses from $800 to around $100. It worked, but manual outreach at the volume we needed wasn't sustainable.</p>
+    <p>Then Python came up in a brainstorming session. I shrugged it off. Sounded like one of those things that works in theory. My co-founder pushed anyway. So I built the scraper. It worked better than expected, and more importantly, I could make it do exactly what we needed.</p>
+    <p>The only problem: my co-founder wasn't technical. A terminal script wasn't going to cut it. So I wrapped it in a UI. And as I built, I kept realizing I could add more: lead management, email sequences, campaign tracking, reply detection.</p>
+    <p class="backstory-closer">That's how ShoutReach came together. Not planned. Built out of necessity, one problem at a time.</p>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- TOOL REPLACEMENT -->
+<section id="problem">
+  <div class="sec-label">The Problem</div>
+  <h2>One app. Replaced a whole stack.</h2>
+  <p class="tools-intro">
+    Running a cold outreach operation used to mean stitching together four or five separate tools,
+    each with its own subscription, its own login, and its own point of failure.
+    ShoutReach collapses all of it into one self-hosted app.
+  </p>
+  <div class="tool-table-wrap">
+    <table class="tool-table">
+      <thead>
+        <tr>
+          <th>Tool</th>
+          <th>What it did</th>
+          <th>Monthly cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="tool-name">Instantly (Premium)</td>
+          <td>Email sequences, multi-inbox rotation</td>
+          <td class="tool-cost">~$97–358/mo</td>
+        </tr>
+        <tr>
+          <td class="tool-name">make.com</td>
+          <td>Automation glue between tools</td>
+          <td class="tool-cost">~$100/mo</td>
+        </tr>
+        <tr>
+          <td class="tool-name">PhantomBuster</td>
+          <td>Lead scraping from Google Maps, LinkedIn</td>
+          <td class="tool-cost">~$100/mo</td>
+        </tr>
+        <tr>
+          <td class="tool-name">AnyMailFinder</td>
+          <td>Email finding and validation</td>
+          <td class="tool-cost">~$100+/mo</td>
+        </tr>
+        <tr>
+          <td class="tool-name" style="color:var(--green)">ShoutReach</td>
+          <td style="color:var(--text)">All of the above, self-hosted</td>
+          <td class="tool-cost total">~$5/mo VPS</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="vs-row">
+    <span class="vs-left">4 tools · 4 subscriptions · 4 points of failure · $800+/mo</span>
+    <span class="vs-arrow">→</span>
+    <span class="vs-right">1 app · 1 server · $5/mo · you own everything</span>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- TECH STACK -->
+<section id="stack">
+  <div class="sec-label">Tech Stack</div>
+  <h2>What it's built with, and why.</h2>
+  <div class="stack-grid">
+    <div class="stack-card">
+      <div class="stack-card-top">
+        <span class="stack-icon">🐍</span>
+        <span class="stack-name">Python / Flask</span>
+      </div>
+      <p class="stack-why">Flask's minimal footprint meant I could keep the entire app as a single process, web server and background scheduler living together without orchestration overhead.</p>
+    </div>
+    <div class="stack-card">
+      <div class="stack-card-top">
+        <span class="stack-icon">🗄️</span>
+        <span class="stack-name">SQLite (WAL mode)</span>
+      </div>
+      <p class="stack-why">Single-user app, single server. WAL mode handles the concurrent reads from the scheduler thread without locking. No separate database process, no connection pooling, trivially backupable.</p>
+    </div>
+    <div class="stack-card">
+      <div class="stack-card-top">
+        <span class="stack-icon">⏱️</span>
+        <span class="stack-name">APScheduler</span>
+      </div>
+      <p class="stack-why">Runs as a background thread inside the Flask process. Handles the send queue and reply checks on a fixed interval, no Redis, no Celery, no separate worker to manage.</p>
+    </div>
+    <div class="stack-card">
+      <div class="stack-card-top">
+        <span class="stack-icon">📨</span>
+        <span class="stack-name">smtplib / imaplib</span>
+      </div>
+      <p class="stack-why">Standard library email clients. SMTP for sending with full header control (List-Unsubscribe, Message-ID), IMAP for polling replies and classifying bounces, no third-party email SDK needed.</p>
+    </div>
+    <div class="stack-card">
+      <div class="stack-card-top">
+        <span class="stack-icon">🎭</span>
+        <span class="stack-name">Playwright + Stealth</span>
+      </div>
+      <p class="stack-why">Google Maps scraper. playwright-stealth patches fingerprinting vectors that trigger CAPTCHAs. Runs locally only, headless servers get flagged; scraped CSVs are imported to the server manually.</p>
+    </div>
+    <div class="stack-card">
+      <div class="stack-card-top">
+        <span class="stack-icon">🔍</span>
+        <span class="stack-name">dnspython</span>
+      </div>
+      <p class="stack-why">MX record lookups on every imported email address. Validates that the domain can actually receive mail before a contact enters the sequence, and flags missing MX records as a sales signal.</p>
+    </div>
+    <div class="stack-card">
+      <div class="stack-card-top">
+        <span class="stack-icon">🖥️</span>
+        <span class="stack-name">Jinja2 + Vanilla JS</span>
+      </div>
+      <p class="stack-why">Server-rendered HTML shell, section-switched in the browser via vanilla JS. No frontend framework, the UI is simple enough that React would've been pure overhead.</p>
+    </div>
+    <div class="stack-card">
+      <div class="stack-card-top">
+        <span class="stack-icon">☁️</span>
+        <span class="stack-name">GCP Compute Engine</span>
+      </div>
+      <p class="stack-why">e2-medium in us-central1, enough CPU for Playwright runs, cheap at ~$30/mo on-demand or ~$10/mo committed. nginx in front, gunicorn behind, systemd keeping it alive.</p>
+    </div>
+    <div class="stack-card">
+      <div class="stack-card-top">
+        <span class="stack-icon">⚙️</span>
+        <span class="stack-name">GitHub Actions</span>
+      </div>
+      <p class="stack-why">Push to master → SSH into the server → pull latest → restart the systemd service. Simple, zero-cost CI/CD that keeps deploys from being a manual process.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ARCHITECTURE -->
+<section id="architecture">
+  <div class="sec-label">Architecture</div>
+  <h2>How it all fits together.</h2>
+
+  <div class="arch-diagram">
+    <div class="arch-node green">Browser</div>
+    <div class="arch-arrow down"></div>
+    <div class="arch-node blue">nginx (SSL termination, port 443)</div>
+    <div class="arch-arrow down"></div>
+    <div class="arch-node blue">gunicorn (1 worker, port 8000)</div>
+    <div class="arch-arrow down"></div>
+    <div class="arch-node" style="border-color:rgba(167,139,250,.4);color:#a78bfa;background:rgba(167,139,250,.06)">Flask Application</div>
+    <div class="arch-arrow down"></div>
+    <div style="display:flex;gap:28px;align-items:flex-start;margin-top:4px">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:0">
+        <div style="font-size:9.5px;color:var(--muted);font-family:var(--mono);margin-bottom:6px">Web routes / API</div>
+        <div class="arch-node">Routes &amp; API handlers</div>
+        <div class="arch-arrow down"></div>
+        <div class="arch-node amber">SQLite (WAL)</div>
+      </div>
+      <div style="width:1px;background:var(--border);margin-top:20px;align-self:stretch"></div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:0">
+        <div style="font-size:9.5px;color:var(--muted);font-family:var(--mono);margin-bottom:6px">Background thread</div>
+        <div class="arch-node">APScheduler</div>
+        <div class="arch-arrow down"></div>
+        <div style="display:flex;gap:10px">
+          <div class="arch-node" style="font-size:11px;padding:8px 12px">smtplib sender</div>
+          <div class="arch-node" style="font-size:11px;padding:8px 12px">imaplib reply checker</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arch-decisions">
+    <div class="arch-decision">
+      <div class="arch-dec-num">1</div>
+      <div>
+        <div class="arch-dec-title">Why SQLite instead of Postgres</div>
+        <div class="arch-dec-body">This is a single-user app on a single server. Postgres would've added a separate process, a connection pool, and a more complex backup story, for no real benefit. SQLite in WAL mode handles concurrent reads from the scheduler thread and web handlers without locking, and the entire database is a single file I can copy to back up. The right tool for the actual scale.</div>
+      </div>
+    </div>
+    <div class="arch-decision">
+      <div class="arch-dec-num">2</div>
+      <div>
+        <div class="arch-dec-title">Why exactly one gunicorn worker</div>
+        <div class="arch-dec-body">The scheduler runs inside the Flask process as a background thread. If I spun up two workers, I'd have two schedulers running simultaneously, both scanning the send queue, both trying to send the same emails. One worker is intentional, not a limitation. The app doesn't need to handle concurrent web requests at a scale that would require more.</div>
+      </div>
+    </div>
+    <div class="arch-decision">
+      <div class="arch-dec-num">3</div>
+      <div>
+        <div class="arch-dec-title">APScheduler over Celery + Redis</div>
+        <div class="arch-dec-body">A job queue like Celery requires Redis as a broker and a separate worker process, that's two more things to run, monitor, and restart on the server. APScheduler as an in-process thread keeps the entire app as one deployable unit. For a send interval of 5 minutes and a daily cap of a few hundred emails, the simpler approach is the right one.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- HARD PROBLEMS -->
+<section id="problems">
+  <div class="sec-label">Engineering Challenges</div>
+  <h2>The problems that actually took time to solve.</h2>
+  <div class="problems-grid">
+
+    <div class="prob-card">
+      <span class="prob-icon">↩️</span>
+      <div class="prob-title">Reply detection that actually works</div>
+      <div class="prob-section">
+        <div class="prob-section-label problem">The problem</div>
+        <p>When someone replies, the sequence should stop. Sounds simple, but the naive approach of matching the incoming email's "From" address against your contact list breaks constantly. Replies come from aliases, mobile apps with different addresses, or auto-forwarders.</p>
+      </div>
+      <div class="prob-section">
+        <div class="prob-section-label solution">The fix</div>
+        <p>Match by <code>In-Reply-To</code> header, not email address. Every outbound email gets a unique <code>Message-ID</code>. When a reply comes in, it references that ID. That's the source of truth, immune to address variations. This was actually a bug I had to track down and fix after noticing sequences weren't stopping correctly.</p>
+      </div>
+    </div>
+
+    <div class="prob-card">
+      <span class="prob-icon">🔗</span>
+      <div class="prob-title">Tamper-proof unsubscribe links</div>
+      <div class="prob-section">
+        <div class="prob-section-label problem">The problem</div>
+        <p>Unsubscribe links need to be unforgeable. A naive link like <code>/unsubscribe?id=123</code> lets anyone unsubscribe anyone else by guessing IDs, and storing a token in the database means a DB lookup on every click.</p>
+      </div>
+      <div class="prob-section">
+        <div class="prob-section-label solution">The fix</div>
+        <p>Sign the contact ID with HMAC-SHA256 using a server secret. The link becomes <code>/unsubscribe?id=123&sig=…</code>. On click, recompute the signature and compare, no database lookup, no token table, and the link is mathematically unforgeable without the secret key. Also sets the <code>List-Unsubscribe</code> header for inbox providers.</p>
+      </div>
+    </div>
+
+    <div class="prob-card">
+      <span class="prob-icon">🏖️</span>
+      <div class="prob-title">Filtering out-of-office auto-replies</div>
+      <div class="prob-section">
+        <div class="prob-section-label problem">The problem</div>
+        <p>If someone's on vacation, their email server sends back an auto-reply. That should not count as a real reply and should not stop the sequence. Keyword-matching the subject line ("Out of office", "I'm away") misses too many cases and catches false positives.</p>
+      </div>
+      <div class="prob-section">
+        <div class="prob-section-label solution">The fix</div>
+        <p>Check for the <code>Auto-Submitted: auto-replied</code> header first, that's the RFC 3834 standard for automated messages. Fall back to subject-line keyword matching only as a secondary signal. Compliant mail servers always set that header; the keyword check catches older or non-compliant ones.</p>
+      </div>
+    </div>
+
+    <div class="prob-card">
+      <span class="prob-icon">⚠️</span>
+      <div class="prob-title">Classifying email bounces</div>
+      <div class="prob-section">
+        <div class="prob-section-label problem">The problem</div>
+        <p>When an email bounces, the mail server sends back a DSN (Delivery Status Notification), a structured failure report. You need to tell the difference between a permanent failure (bad address, stop trying) and a temporary one (mailbox full, maybe retry).</p>
+      </div>
+      <div class="prob-section">
+        <div class="prob-section-label solution">The fix</div>
+        <p>Parse the SMTP status codes out of the DSN body. A <code>5.x.x</code> code is a hard bounce, the address is permanently invalid, contact is flagged and removed from the sequence. A <code>4.x.x</code> code is a soft bounce, temporary delivery failure, retried on the next send cycle.</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- DEVOPS -->
+<section id="devops">
+  <div class="sec-label">Deployment</div>
+  <h2>Production setup, end to end.</h2>
+  <div class="devops-grid">
+    <div class="devops-card">
+      <div class="devops-card-title"><span class="devops-icon">☁️</span>Server</div>
+      <ul class="devops-list">
+        <li>GCP e2-medium, us-central1, Debian 12</li>
+        <li>2 vCPU, 4GB RAM + 2GB swap (Playwright needs headroom)</li>
+        <li>gunicorn with 1 worker, intentional, keeps scheduler single-instance</li>
+        <li>systemd service with auto-restart on crash</li>
+      </ul>
+    </div>
+    <div class="devops-card">
+      <div class="devops-card-title"><span class="devops-icon">🌐</span>Networking &amp; SSL</div>
+      <ul class="devops-list">
+        <li>nginx reverse proxy, SSL termination on 443, forwards to gunicorn on 8000</li>
+        <li>Let's Encrypt certificate via certbot</li>
+        <li>Auto-renews on a cron before expiry, zero manual cert management</li>
+        <li>HTTP → HTTPS redirect enforced at nginx level</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="cicd-flow">
+    <div class="cicd-title">Deploy pipeline: GitHub Actions on push to master</div>
+    <div class="cicd-steps">
+      <div class="cicd-step">
+        <div class="cicd-step-box">git push master</div>
+        <div class="cicd-step-label">trigger</div>
+      </div>
+      <div class="cicd-arrow">→</div>
+      <div class="cicd-step">
+        <div class="cicd-step-box">Actions runner</div>
+        <div class="cicd-step-label">GitHub-hosted</div>
+      </div>
+      <div class="cicd-arrow">→</div>
+      <div class="cicd-step">
+        <div class="cicd-step-box">SSH into GCP</div>
+        <div class="cicd-step-label">via secret key</div>
+      </div>
+      <div class="cicd-arrow">→</div>
+      <div class="cicd-step">
+        <div class="cicd-step-box">git pull origin master</div>
+        <div class="cicd-step-label">on server</div>
+      </div>
+      <div class="cicd-arrow">→</div>
+      <div class="cicd-step">
+        <div class="cicd-step-box">systemctl restart shoutreach</div>
+        <div class="cicd-step-label">zero manual steps</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- WHAT I'D DO DIFFERENTLY -->
+<section id="differently">
+  <div class="sec-label">Reflection</div>
+  <h2>What I'd do differently.</h2>
+  <div class="diff-list">
+    <div class="diff-item">
+      <div class="diff-num">01</div>
+      <div>
+        <div class="diff-title">Postgres if this were multi-tenant</div>
+        <div class="diff-body">SQLite was the right call for a single-user self-hosted app, but if ShoutReach needed to support multiple teams or users on shared infrastructure, I'd switch to Postgres. The WAL mode concurrency ceiling would become a real constraint, and connection pooling across workers would matter.</div>
+      </div>
+    </div>
+    <div class="diff-item">
+      <div class="diff-num">02</div>
+      <div>
+        <div class="diff-title">A dedicated job queue at higher volume</div>
+        <div class="diff-body">The scheduler is tied to the web process, restarting the app for a deploy also interrupts any in-flight send cycles. At higher send volumes, I'd move to a proper job queue (Redis + RQ or similar) with a standalone worker that survives web restarts independently.</div>
+      </div>
+    </div>
+    <div class="diff-item">
+      <div class="diff-num">03</div>
+      <div>
+        <div class="diff-title">Automated tests for the email pipeline</div>
+        <div class="diff-body">The sending, reply detection, and bounce classification logic is currently verified manually. I'd add integration tests against a local SMTP server (Mailpit is good for this) to catch regressions automatically, especially around the edge cases in reply matching and OOO detection that are easy to break silently.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div>
+    <div class="foot-left">
+      <div class="foot-dot"></div>
+      <div class="foot-word">ShoutReach</div>
+    </div>
+    <div class="foot-tag" style="margin-top:4px">Built by Sheham Shahid · Hexiv</div>
+  </div>
+  <ul class="foot-links">
+    <li><a href="https://github.com/sheham14/shoutreach">GitHub</a></li>
+    <li><a href="https://shoutreach.hexiv.co">Live App</a></li>
+    <li><a href="shoutreach-landing.html">Landing Page</a></li>
+  </ul>
+</footer>
+
+</body>
+</html>
