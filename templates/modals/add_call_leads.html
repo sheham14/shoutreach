@@ -5,7 +5,11 @@
 <div class="modal-overlay" id="modal-add-call-leads">
   <div class="modal" style="max-width:720px">
     <button class="modal-close" onclick="closeModal('modal-add-call-leads')">✕</button>
-    <h2>Add leads to <span id="acl-campaign-name"></span></h2>
+    <h2>Add leads to Calling</h2>
+    <div class="form-group" style="margin-bottom:6px">
+      <label>Call campaign</label>
+      <div id="acl-campaign-wrap"></div>
+    </div>
 
     <div class="flex gap-2" style="margin:12px 0 16px;flex-wrap:wrap">
       <button class="btn btn-primary btn-sm" id="acl-tab-existing" onclick="setAddLeadsTab('existing')">From contacts</button>
@@ -31,7 +35,7 @@
         </select>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
           <input type="checkbox" id="acl-uncalled" checked onchange="aclSearch()" style="cursor:pointer" />
-          Never called only
+          Not on Calling yet
         </label>
       </div>
       <div class="flex gap-2 items-center" style="margin-bottom:8px">
@@ -46,7 +50,7 @@
         </table>
       </div>
       <div class="form-hint" style="margin-top:8px">
-        Leads with no phone number can still be added, but won't appear in the call queue.
+        Leads with no phone number are skipped, and you're told how many.
       </div>
     </div>
 
@@ -70,14 +74,14 @@
         <input type="file" id="acl-csv" accept=".csv" />
         <div class="form-hint">
           Uses the same importer as Contacts, so the usual columns work —
-          <span class="mono">company, phone, website, email, address</span>. Anything
-          imported is added to this campaign as well as to Contacts.
+          <span class="mono">company, phone, website, email, address</span>. Everything
+          imported lands in Contacts; the ones with a phone number go on Calling.
         </div>
       </div>
     </div>
 
     <div class="flex gap-2" style="margin-top:18px">
-      <button class="btn btn-primary" onclick="submitAddLeads()">Add to campaign</button>
+      <button class="btn btn-primary" onclick="submitAddLeads()">Add to Calling</button>
       <button class="btn btn-ghost" onclick="closeModal('modal-add-call-leads')">Cancel</button>
     </div>
   </div>

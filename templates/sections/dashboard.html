@@ -2,50 +2,48 @@
   <div class="page-header">
     <div>
       <div class="page-title">Dashboard</div>
-      <div class="page-sub">Overview across all campaigns</div>
+      <div class="page-sub">What's waiting on you, and how each channel is doing</div>
     </div>
     <button class="btn btn-ghost btn-sm" onclick="refreshDashboard()">↻ Refresh</button>
   </div>
 
-  <!-- Reply/bounce checking logs in on IMAP every 5 minutes whether or not
-       any campaign is actually running, which costs real time on a small
-       server and fills the log table with nothing worth reading when
-       there's nothing to check. This turns off only the automatic timer --
-       the sidebar's "Check for replies & send" button still works right
-       through it, since clicking that is always a deliberate ask. -->
-  <div class="card" style="padding:14px 18px;margin-bottom:18px">
-    <label style="display:flex;align-items:center;gap:10px;cursor:pointer;flex-wrap:wrap">
-      <input type="checkbox" id="email-checking-toggle" onchange="toggleEmailChecking(this.checked)" style="cursor:pointer" />
-      <span style="font-size:13px;font-weight:600">Automatically check for replies &amp; bounces</span>
-      <button type="button" class="info-dot" onclick="event.preventDefault();toggleInfo(this)">ⓘ</button>
-      <div class="info-tip" style="flex-basis:100%">
-        Every 5 minutes this logs into your inbox to check for replies and bounces — useful while a
-        campaign is actively sending, pointless (and a little costly) while none are. Turning it off
-        doesn't stop anything already running; it just skips the automatic check. You can always run
-        one on demand with "Check for replies &amp; send" in the sidebar.
-      </div>
-    </label>
-  </div>
+  <!-- The work first: each tile opens the list it counts. -->
+  <div class="todo-grid" id="dash-todo"></div>
 
-  <div class="stat-grid" id="global-stats">
-    <div class="stat-card"><div class="stat-label">Total Contacts</div><div class="stat-value blue" id="s-total">—</div></div>
-    <div class="stat-card"><div class="stat-label">Emails Sent</div><div class="stat-value" id="s-sent">—</div></div>
-    <div class="stat-card"><div class="stat-label">Replies</div><div class="stat-value green" id="s-replied">—</div></div>
-    <div class="stat-card"><div class="stat-label">Reply Rate</div><div class="stat-value green" id="s-rrate">—</div></div>
-    <div class="stat-card"><div class="stat-label">Sent Today</div><div class="stat-value amber" id="s-today">—</div></div>
-    <div class="stat-card"><div class="stat-label">Bounced</div><div class="stat-value red" id="s-bounced">—</div></div>
+  <div class="channel-grid">
+    <div class="card channel-card">
+      <div class="card-header">
+        <div class="card-title"><span class="channel-email">✉</span> Email</div>
+        <button class="btn btn-ghost btn-sm" onclick="showSection('email')">Open →</button>
+      </div>
+      <div class="mini-stats" id="dash-email"></div>
+    </div>
+    <div class="card channel-card">
+      <div class="card-header">
+        <div class="card-title"><span class="channel-calling">☎</span> Calling</div>
+        <button class="btn btn-ghost btn-sm" onclick="showSection('calling')">Open →</button>
+      </div>
+      <div class="mini-stats" id="dash-calling"></div>
+    </div>
+    <div class="card channel-card">
+      <div class="card-header">
+        <div class="card-title"><span class="channel-whatsapp">💬</span> WhatsApp</div>
+        <button class="btn btn-ghost btn-sm" onclick="showSection('whatsapp')">Open →</button>
+      </div>
+      <div class="mini-stats" id="dash-whatsapp"></div>
+    </div>
   </div>
 
   <div class="card">
     <div class="card-header">
-      <div class="card-title">Active Campaigns</div>
-      <button class="btn btn-primary btn-sm" onclick="showSection('campaigns')">View All →</button>
+      <div class="card-title">All campaigns</div>
+      <span class="text-muted text-small">Every channel in one list</span>
     </div>
     <div class="table-wrap">
-      <table>
+      <table class="lead-table">
         <thead><tr>
-          <th>Campaign</th><th>Status</th><th>Contacts</th>
-          <th>Sent</th><th>Reply Rate</th><th>Daily Limit</th><th></th>
+          <th>Campaign</th><th>Channel</th><th>Status</th><th>Leads</th>
+          <th>Progress</th><th>Result</th><th></th>
         </tr></thead>
         <tbody id="dashboard-campaigns"></tbody>
       </table>

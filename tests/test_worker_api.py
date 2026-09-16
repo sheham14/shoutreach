@@ -196,9 +196,15 @@ def main():
 
         r = admin_post(client, "/api/scraper/start", {"niche": "dentists", "city": "Doha",
                                                       "destination": "whatsapp", "country": "QA"})
-        wa_job = (r.get_json() or {}).get("job_id")
-        check("a WhatsApp scrape with a country queues", r.status_code == 200 and wa_job,
+        check("a WhatsApp scrape needs a campaign too", r.status_code == 400,
               f"{r.status_code} {r.get_json()}")
+        wa_camp = db.create_wa_campaign("Doha dentists", country="QA")
+        r = admin_post(client, "/api/scraper/start", {"niche": "dentists", "city": "Doha",
+                                                      "destination": "whatsapp", "country": "QA",
+                                                      "campaign_id": wa_camp})
+        wa_job = (r.get_json() or {}).get("job_id")
+        check("a WhatsApp scrape with a country and campaign queues",
+              r.status_code == 200 and wa_job, f"{r.status_code} {r.get_json()}")
 
         spec = client.post("/api/scraper/claim", headers=wh).get_json() or {}
         check("the worker is told it's a WhatsApp scrape, and where",
@@ -225,6 +231,10 @@ def main():
                 "SELECT COUNT(*) FROM email_leads WHERE email='front@pearldental.qa'"
             ).fetchone()[0]
         check("both became WhatsApp leads", len(wa) == 2, f"got {len(wa)}")
+        check("in the campaign the scrape was aimed at",
+              {l["company"] for l in db.get_wa_leads(wa_campaign_id=wa_camp)}
+              == {"Pearl Dental", "Corniche Clinic"},
+              str([l["company"] for l in db.get_wa_leads(wa_campaign_id=wa_camp)]))
         check("with numbers formatted for Qatar",
               all(row["wa_number"].startswith("974") for row in wa), str([dict(x) for x in wa]))
         check("and the email a stale worker sent was not filed as an email lead",
@@ -247,6 +257,54 @@ def main():
         check("a CSV imported by hand through Contacts still goes to Contacts",
               westbay_email == 1 and westbay_wa == 0,
               f"email={westbay_email} whatsapp={westbay_wa} body={body}")
+
+        print("\n9b. A SCRAPE AIMED AT CALLING LANDS ON CALLING, IN ITS CAMPAIGN")
+        client.post(f"/api/scraper/jobs/{wa_job}/progress", headers=wh,
+                    json={"status": "done", "finished": True})
+        camp = db.create_call_campaign("Doha clinics")
+        r = admin_post(client, "/api/scraper/start", {"niche": "clinics", "city": "Doha",
+                                                      "destination": "calling",
+                                                      "campaign_id": camp})
+        call_job = (r.get_json() or {}).get("job_id")
+        check("a Calling scrape queues", r.status_code == 200 and call_job,
+              f"{r.status_code} {r.get_json()}")
+        spec = client.post("/api/scraper/claim", headers=wh).get_json() or {}
+        check("the worker is told it's a Calling scrape", spec.get("destination") == "calling",
+              str(spec))
+        r = client.post("/api/contacts/import", headers=wh, json={"rows": [
+            {"email": "desk@alsadd.qa", "company": "Al Sadd Clinic", "phone": "4435 7702",
+             "website": "http://alsadd.qa", "mx_valid": 1, "source_job_id": call_job},
+            {"email": "", "company": "No Number Clinic", "phone": "", "website": "http://nn.qa",
+             "source_job_id": call_job},
+        ]})
+        body = r.get_json() or {}
+        check("it is filed as Calling", body.get("destination") == "calling", str(body))
+        queue = {l["company"] for l in db.get_call_queue("new")}
+        check("the lead with a phone is on Calling", "Al Sadd Clinic" in queue, str(queue))
+        check("the one with no phone is not", "No Number Clinic" not in queue, str(queue))
+        in_camp = {l["company"] for l in db.get_call_queue("all", call_campaign_id=camp)}
+        check("and it went into the chosen campaign", in_camp == {"Al Sadd Clinic"}, str(in_camp))
+        with db.get_db() as conn:
+            stray = conn.execute(
+                "SELECT COUNT(*) FROM email_leads WHERE email='desk@alsadd.qa'").fetchone()[0]
+            no_wa = conn.execute("""SELECT COUNT(*) FROM wa_leads w JOIN businesses b
+                                     ON b.id = w.business_id WHERE b.name='Al Sadd Clinic'"""
+                                 ).fetchone()[0]
+        check("no email lead was filed on the side", stray == 0, str(stray))
+        check("and nothing went to WhatsApp", no_wa == 0, str(no_wa))
+        logs = db.get_scrape_job(call_job)["logs"]
+        check("the scrape's own log says one had no phone", "no phone number" in logs, logs[-200:])
+
+        other = db.create_user("carol", "test-password-789", is_admin=False)
+        theirs = db.create_call_campaign("Carol's list", owner_id=other)
+        client.post(f"/api/scraper/jobs/{call_job}/progress", headers=wh,
+                    json={"status": "done", "finished": True})
+        r = admin_post(client, "/api/scraper/start", {"niche": "clinics", "city": "Doha",
+                                                      "destination": "calling",
+                                                      "campaign_id": theirs})
+        check("a scrape can't be aimed at someone else's campaign", r.status_code == 400,
+              f"{r.status_code} {r.get_json()}")
+        db.delete_user(other)
 
         print("\n10. TWO OPERATORS, EACH WITH THEIR OWN WORKER")
         # Close out section 9's scrape so it isn't still counted as active.

@@ -26,6 +26,25 @@
 
     <div class="card" style="padding:24px">
       <div class="card-title" style="margin-bottom:20px">Global Sending Rules</div>
+      <!-- Reply/bounce checking logs in on IMAP every 5 minutes whether or not
+           any campaign is actually running, which costs real time on a small
+           server and fills the log table with nothing worth reading when
+           there's nothing to check. This turns off only the automatic timer --
+           the sidebar's "Check for email replies & send" button still works
+           right through it, since clicking that is always a deliberate ask.
+           Lives here rather than on the Dashboard: it's install-wide, and
+           only an admin can change it. -->
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;flex-wrap:wrap">
+          <input type="checkbox" id="email-checking-toggle" onchange="toggleEmailChecking(this.checked)" style="cursor:pointer;width:auto" />
+          Automatically check for email replies &amp; bounces
+        </label>
+        <div class="form-hint">
+          Every 5 minutes this logs into your inboxes to look for replies and bounces — useful while
+          a campaign is sending, a small waste while none are. Turning it off doesn't stop anything
+          already running; "Check for email replies &amp; send" in the sidebar still works any time.
+        </div>
+      </div>
       <div class="form-group">
         <label>Global Daily Cap (all campaigns combined)</label>
         <input id="cfg-global-cap" type="number" value="200" min="1" max="2000" />

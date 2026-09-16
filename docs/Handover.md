@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-09-16 · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-09-16 (channel redesign) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -11,11 +11,15 @@ fix this file.
 ## 0. Read this first
 
 - **Not everything is deployed.** Everything after `076b20c` is committed but
-  **not pushed** (`git log origin/master..HEAD` lists it) — most importantly
-  `bfe08c7`, each account getting its own scrape worker. The operator wanted to
-  run a test scrape first. Pushing deploys it (§6) and moves the old shared
-  worker key onto the founding admin account, so the worker already running on
-  their laptop keeps working.
+  **not pushed** (`git log origin/master..HEAD` lists it): per-account scrape
+  workers (`bfe08c7`), and the **channel redesign** — Contacts as every
+  business, a Leads table and tabs on every channel, WhatsApp campaigns,
+  explicit Calling membership, a three-channel Dashboard (§2a). Pushing deploys
+  all of it (§6) and runs three one-shot migrations against the live database:
+  the worker key moves to the founding admin; every lead that was implicitly
+  on Calling gets a real row, minus WhatsApp leads (`_make_calling_explicit`);
+  and each operator's WhatsApp leads and templates move into a campaign named
+  "My first campaign" (`_migrate_wa_campaigns`). **Take a backup first.**
 - **Two people use this install, walled off from each other.** Almost every
   query is scoped to an owner, and a handful deliberately aren't. Read §3
   before adding a query, a route, or a background job.
@@ -30,6 +34,7 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
+| (redesign) | 09-16 | Contacts hub, Leads tabs on every channel, WhatsApp campaigns, explicit Calling, Dashboard | **No — not pushed** |
 | `bfe08c7` | 09-15 | Each account gets its own scrape worker | **No — not pushed** |
 | `076b20c` | 09-15 | Scrapes can feed WhatsApp; add existing leads to WhatsApp | Yes |
 | `364857a` | 09-15 | `reset_password.py` for a locked-out admin | Yes |
@@ -53,27 +58,63 @@ wasn't explicitly confirmed back in the session.
 
 ## 2. What the app does now
 
-- **Email** (sidebar: *Contacts*, *Campaigns*) — multi-step sequences, A/B
+- **Contacts** — every business (`businesses`), whichever channel it's on, with
+  a Channels column, tabs for **All / Unassigned / Do not contact**, bulk
+  "send to a channel", and a detail panel with a cross-channel timeline.
+  Served by `/api/businesses*` (`db.get_businesses_page` and friends).
+- **Email** (sidebar *Email*, formerly *Campaigns*) — multi-step sequences, A/B
   variants per step, rotation across sending accounts, IMAP reply and bounce
-  detection, HMAC-signed unsubscribe links. Contacts are `email_leads` rows.
-- **Calling** (sidebar: *Cold Calling*) — a call queue by bucket, call
-  campaigns, operator-defined outcomes, a per-operator call script, `.ics`
-  invites for booked meetings.
-- **WhatsApp** — import → background "booking gap" check on the clinic's
-  website → the operator confirms the signal → a batch-drafted opener → the
-  operator taps *Open in WhatsApp* and sends it themselves → follow-ups forever
-  until replied or paused. Per-operator templates with up to four A/B versions.
+  detection, HMAC-signed unsubscribe links. Tabs: Campaigns, Leads (every
+  `email_leads` row — what the old Contacts page was), Unsubscribed & bad
+  addresses. `/api/contacts/*` still serves email leads; the URLs were kept
+  because the scrape worker posts to `/api/contacts/import`.
+- **Calling** — tabs: To do (the dialler: buckets, lead card, script), Leads
+  (`/api/calls/leads`), Campaigns, Script & outcomes. `.ics` invites for booked
+  meetings.
+- **WhatsApp** — import into a **campaign** → background "booking gap" check on
+  the clinic's website → the operator confirms the signal in the To do panel →
+  a batch-drafted opener from the campaign's templates → the operator taps
+  *Open in WhatsApp* and sends it themselves → follow-ups at the campaign's gap,
+  forever, until replied or paused. Tabs: To do, Leads, Campaigns, Templates.
   Design history: `docs/WhatsApp Module Handover.md`.
 - **Lead Scraper** — Google Maps, run by a worker on an operator's own laptop
-  (the server has no screen to show CAPTCHAs on). Each scrape targets Email or
-  WhatsApp.
-- **Settings** — admins: email accounts, sending rules, AI keys, users.
+  (the server has no screen to show CAPTCHAs on). Each scrape targets Email,
+  Calling or WhatsApp, optionally into a campaign (required for WhatsApp).
+- **Dashboard** — today's to-do across channels, each channel's numbers, every
+  campaign in one table (`/api/dashboard`, `db.get_dashboard`).
+- **Settings** — admins: email accounts, sending rules (including the automatic
+  reply-check switch, moved here from the Dashboard), AI keys, users.
   Everyone: their own scrape worker key.
 
-The sidebar still says *Contacts* and *Cold Calling*, and `/api/contacts/*`
-serves email leads. Renaming was deliberately deferred.
+## 2a. Channel membership — what "on a channel" means
 
----
+| Channel | On it when | Taken off by |
+|---|---|---|
+| Email | an `email_leads` row with `status != 'deleted'` | deleting the address |
+| Calling | a `call_leads` row with `removed_at IS NULL` | `remove_from_calling` (history kept; adding back clears `removed_at`) |
+| WhatsApp | a `wa_leads` row with `moved_to = ''` and `removed_at IS NULL` | `move_wa_lead` (rules the number out for good) or `remove_wa_leads` (can be re-added) |
+
+A business on none of them, and not `do_not_contact`, is **Unassigned**; the
+reason is derived in `_business_rows_sql`. Rules that are easy to break:
+
+- **Calling is explicit.** The queue reads `call_leads`, not every business with
+  a phone. Nothing but an operator's action (or a Calling scrape) puts a lead
+  on Calling. `get_or_create_call_lead` re-activates a removed lead, because
+  logging a call against it is as explicit as adding it.
+- **Every WhatsApp lead belongs to a campaign** (`wa_leads.wa_campaign_id`).
+  NULL only happens when a campaign is deleted; such leads are skipped by the
+  draft batch (`no_campaign` in the response) until moved.
+- **Templates live on `wa_campaigns`** (JSON `templates`, `followup_days`,
+  `variables`). The old per-operator settings keys (`wa_template_gap:<uid>`…)
+  are read only by `_migrate_wa_campaigns`, and `GET /api/settings` no longer
+  returns any `:`-suffixed or `_`-prefixed key.
+- **A/B arms rotate per campaign and signal kind, continuing from
+  `wa_arm_offset`**, so batches of one or two still alternate.
+- **Deleting a business keeps anyone who opted out, unsubscribed or bounced**
+  (`delete_businesses`), because that row is what suppresses a re-import.
+- The two one-shot migrations are guarded by settings markers
+  (`_migrated_calling_explicit`, `_migrated_wa_campaigns`), not by the absence
+  of rows — re-running them would undo operators' removals.
 
 ## 3. The multi-operator model
 
@@ -82,8 +123,9 @@ the sending infrastructure. They do **not** share leads.
 
 **Walled — every row belongs to one operator:** `businesses`, `email_leads`
 (owner copied onto the row, because the per-owner unique email index needs
-it), `campaigns`, `call_campaigns`, `scrape_jobs`, `call_scripts`,
-`call_outcome_types` (owner 0 = built-in and shared), `worker_keys`.
+it), `campaigns`, `call_campaigns`, `wa_campaigns`, `scrape_jobs`,
+`call_scripts`, `call_outcome_types` (owner 0 = built-in and shared),
+`worker_keys`.
 `wa_leads` and `call_leads` inherit ownership from their business. Two
 operators working the same clinic hold two separate `businesses` rows.
 
@@ -103,9 +145,13 @@ visibility into anyone else's leads.
   deliberate: a forgotten owner errors loudly instead of filing one person's
   leads under the other.
 - **Ids in the URL** are guarded by `@owned(kind, param)`. **Ids in the request
-  body are not** — filter them with `db._own_business_ids` or
-  `require_owned(...)`. That gap was a real, exploitable hole (fixed in
-  `61ae78f`).
+  body are not** — filter them with `db._own_business_ids`,
+  `db._own_wa_lead_ids` or `require_owned(...)`, and check a body campaign id
+  with `db.owns("wa_campaign"|"call_campaign"|"campaign", id, me())`. That gap
+  was a real, exploitable hole (fixed in `61ae78f`).
+- **`call_log` has no owner.** Anything counting calls joins through
+  `call_leads` → `businesses` (`get_call_summary` used to count both
+  operators' calls).
 - **Refuse another operator's row with 404, not 403**, so ids can't be probed.
 - **These deliberately span every operator — never add an owner filter:**
   - `unsubscribe_contact`, `mark_bounced`, `increment_soft_bounce`. They use
@@ -149,21 +195,27 @@ every key without stopping early). From there:
 **Until it's pushed, production still has one shared key, and any running
 worker takes the next scrape no matter who started it.**
 
-### Destinations — `076b20c`, live
+### Destinations
 
-A scrape targets `email` or `whatsapp` (`scrape_jobs.destination`, plus a
-required `country` — `AE` or `QA` — for WhatsApp). The **server** decides
-where rows land, from the job, and only for worker requests: a CSV imported by
-hand through Contacts still goes to Contacts. A WhatsApp scrape drops any
-emails rather than filing them as email leads. The updated worker skips the
-email search and the per-site delay for WhatsApp scrapes — the slow part — and
-leaves sites it didn't search unlabelled rather than marking them "no email".
+A scrape targets `email`, `calling` or `whatsapp` (`scrape_jobs.destination`;
+WhatsApp also needs a `country` — `AE` or `QA` — and a `campaign_id`; Calling
+takes an optional one). The **server** decides where rows land, from the job,
+and only for worker requests (`_scrape_job_for_import`): a CSV imported by hand
+still goes where the person importing it sent it. Calling and WhatsApp scrapes
+drop any emails rather than filing them as email leads; a Calling scrape's
+leads with no phone stay in Contacts and the count goes into the scrape log.
+The worker skips the email search and the per-site delay for anything that
+isn't an Email scrape — **the `calling` destination needs the updated
+`scraper_worker.py`** (an older worker would still work, just slowly, since the
+server does the routing).
 
-**Adding leads you already have to WhatsApp:** WhatsApp → *+ Add leads* →
-*From my leads* (`POST /api/wa/add-existing`). Anything already on another
-channel is held for confirmation. Leads with no phone, numbers already ruled
-out as not on WhatsApp, and opted-out businesses are counted and reported
-rather than silently dropped.
+**Adding leads you already have to a channel:** from Contacts (bulk or the
+detail panel), or each channel's *+ Add leads* (`POST /api/calls/add`,
+`POST /api/wa/add-existing` with a `wa_campaign_id`,
+`POST /api/businesses/enroll`). Anything already on another channel is held
+for confirmation. Leads with no phone, numbers already ruled out as not on
+WhatsApp, and opted-out businesses are counted and reported rather than
+silently dropped.
 
 ### Running a worker
 
@@ -195,8 +247,9 @@ Do this after `bfe08c7` is live:
 4. Start the worker once with the server and key. Optionally add a `.bat`
    shortcut to his Startup folder (`shell:startup`) so it launches at login.
 
-**Worker updates are copied to him by hand.** When any of those four files
-change, send him the new copies — and remind the operator that his copy won't
+**Worker updates are copied to him by hand.** `scraper_worker.py` changed in
+the redesign (Calling scrapes skip the email search), so the copy he gets must
+be current. When any of those four files change, send him the new copies — and remind the operator that his copy won't
 update itself. This was chosen over cloning the repo onto his laptop (it would
 put the whole private codebase there) and over the worker updating itself (his
 laptop would run whatever the server sent it).
@@ -210,9 +263,23 @@ CSV already holds.
 
 ## 5. WhatsApp additions since the module handover
 
-- **Templates and the follow-up interval are per operator.** A new operator
-  starts from the factory copy. The pre-multi-user shared copy was moved to
-  the founding admin by `_migrate_wa_settings`.
+- **Templates, the follow-up gap and variables are per campaign**
+  (`wa_campaigns`), replacing the per-operator settings. A new campaign starts
+  from the factory copy or a copy of one of the operator's own campaigns —
+  never anyone else's. Existing copy and leads were moved into "My first
+  campaign" by `_migrate_wa_campaigns` (which reads the per-operator keys that
+  `_migrate_wa_settings` produced earlier).
+- **Rendering** is `db.render_wa_message`: `{{key|fallback}}` like email copy;
+  fields are the business's (`business_name`, `city`, `category`, `rating`…),
+  `signal_detail`, and the campaign's variables (lowest priority). The browser
+  preview (`fillPlaceholders` in `tables.js`) follows the same rules.
+- **The review panel** offers a two-way choice (no online booking / has it)
+  and one-tap phrases for `signal_detail`. The API still accepts `unclear`,
+  but the UI asks the operator to open the site and pick one.
+- **"Not on WhatsApp"** is `POST /api/wa/leads/<id>/move` with destination
+  `call` (optional call campaign), `email` (needs an active address; optional
+  enrolment) or `none`. The other channel is set up first, so a refusal leaves
+  the lead on WhatsApp.
 - **A/B versions:** each template holds 1–4 versions, labelled A–D
   (`WA_ARM_LABELS`). New leads are dealt out round-robin *per signal type*,
   not randomly — on small batches, random assignment routinely puts every lead
@@ -286,7 +353,16 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-19 files, all passing as of `bfe08c7`.
+20 files, all passing as of the redesign. `tests/test_contacts_hub.py` covers
+Contacts, Unassigned, deletion guards and the Dashboard.
+
+**Browser smoke test.** There's no UI test in the repo, but the redesign was
+checked by serving the app against a seeded throwaway database and driving
+every page and tab with Playwright (installed locally for the worker),
+watching for JS errors and failed API calls. Import `scheduler` and replace
+`scheduler.start` with a no-op first, or the app starts sending and fetching
+websites. **Never import `app` without `DB_PATH` pointing somewhere
+disposable** — importing runs `init_db()` against `./outreach.db`.
 
 - **Create any user you fake a session for.** A fixture that sets
   `sess["user_id"] = 1` without creating user 1 breaks: rows get owner 0
@@ -306,10 +382,14 @@ for f in tests/test_*.py; do python "$f"; done
 
 **Immediately:**
 
-1. The operator's test scrape — WhatsApp destination, about 10 results.
-   Confirm leads land in WhatsApp with correctly formatted UAE or Qatar numbers.
-2. Push `bfe08c7` and verify it per §6.
-3. Create the cofounder's account and set up his laptop (§4).
+1. Back up the live database, then push and verify per §6.
+2. After deploying, check: WhatsApp → Campaigns shows "My first campaign"
+   holding the existing leads and the operator's own templates (rename it);
+   Calling → Leads still has the old call list minus WhatsApp leads; Contacts →
+   Unassigned looks sensible.
+3. A test scrape to each destination, with a campaign picked.
+4. Create the cofounder's account and set up his laptop (§4), with the current
+   `scraper_worker.py`.
 
 **From the full audit** — `docs/audits/Full App Audit 2026-09-09.md`, local and
 untracked on purpose; its status block says what's done. The biggest open
@@ -324,8 +404,11 @@ items:
 - Activating a campaign has no confirmation, though it starts real sending.
 
 **Still deliberately deferred** (reasons in the WhatsApp handover §6): renaming
-Contacts / Cold Calling, `.xlsx` import, a rendered-browser worker for
-"unclear" signals, a WhatsApp number pre-check.
+the `/api/contacts/*` URLs (the worker posts to them), `.xlsx` import, a
+rendered-browser worker for "unclear" signals, a WhatsApp number pre-check.
+
+**Noticed, not fixed:** the admin Database viewer's table list still names the
+retired `contacts` table.
 
 ---
 
@@ -340,6 +423,11 @@ Contacts / Cold Calling, `.xlsx` import, a rendered-browser worker for
   checks, the WhatsApp signal scan.
 - `scraper_worker.py`, `gmaps_email_scraper.py`, `email_validator.py` — the
   laptop worker.
+- `static/js/tables.js` — shared frontend pieces: tabs (`setTab`/`onTab`),
+  `createLeadTable` (every leads table), `chooseDialog` (replaces `prompt()`),
+  pills, `fillPlaceholders`. One JS file per page: `contacts.js` (businesses),
+  `email_leads.js` (Email → Leads and suppression), `calling.js`,
+  `whatsapp.js`, `dashboard.js`.
 - `wa_signal.py` — booking-gap detection.
 - `reset_password.py` — shell password reset.
 - `tests/test_ownership.py`, `tests/test_whatsapp.py`,

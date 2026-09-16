@@ -2,7 +2,7 @@
   <div class="page-header">
     <div>
       <div class="page-title">Lead Scraper</div>
-      <div class="page-sub">Google Maps → your email or WhatsApp leads</div>
+      <div class="page-sub">Google Maps → leads for Email, Calling or WhatsApp</div>
     </div>
   </div>
 
@@ -39,11 +39,17 @@
         <label>Send leads to</label>
         <select id="sc-destination" onchange="scraperDestinationChanged()">
           <option value="email">Email</option>
+          <option value="calling">Calling</option>
           <option value="whatsapp">WhatsApp</option>
         </select>
         <div class="form-hint" id="sc-destination-hint">
-          Visits each business's website looking for an email address. Leads go to Contacts.
+          Visits each business's website looking for an email address.
         </div>
+      </div>
+      <div class="form-group" id="sc-campaign-group" style="display:none">
+        <label id="sc-campaign-label">Campaign</label>
+        <select id="sc-campaign"></select>
+        <div class="form-hint" id="sc-campaign-hint"></div>
       </div>
       <div class="form-group" id="sc-country-group" style="display:none">
         <label>Country the numbers are in</label>

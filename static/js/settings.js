@@ -64,6 +64,8 @@ async function loadSettings() {
   });
 
   const s = await api("/api/settings");
+  document.getElementById("email-checking-toggle").checked =
+    (s.email_checking_enabled ?? "1") === "1";
   document.getElementById("cfg-global-cap").value = s.global_daily_cap || "200";
   document.getElementById("cfg-base-url").value =
     s.app_base_url || "http://localhost:5000";
@@ -530,4 +532,16 @@ async function rotateWorkerKey() {
   document.getElementById('cfg-worker-reveal').textContent = 'Hide';
   _workerKeyShown = true;
   toast('Key rotated — update your worker');
+}
+
+async function toggleEmailChecking(enabled) {
+  const res = await api("/api/settings", "POST", { email_checking_enabled: enabled ? "1" : "0" });
+  if (!res || res.error) {
+    toast((res && res.error) || "Could not save", "err");
+    document.getElementById("email-checking-toggle").checked = !enabled; // revert
+    return;
+  }
+  toast(enabled
+    ? "Will check for replies & bounces every 5 minutes"
+    : "Automatic checking off — the sidebar button still checks on demand");
 }

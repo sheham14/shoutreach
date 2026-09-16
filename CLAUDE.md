@@ -31,6 +31,11 @@ No pytest — each `tests/test_*.py` is a standalone script, exit 0 on pass:
 for f in tests/test_*.py; do python "$f"; done
 ```
 
+**Importing `app` (or calling `db.init_db()`) runs migrations against
+`./outreach.db`.** For a quick "does it load" check, point `DB_PATH` at a
+throwaway file first. There's no UI test in the repo; see Handover §8 for how
+the redesign was smoke-tested in a real browser.
+
 ## Other docs
 
 - `docs/WhatsApp Module Handover.md` — how the WhatsApp module and the

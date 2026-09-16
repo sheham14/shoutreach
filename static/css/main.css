@@ -12,6 +12,10 @@
     --red:      #ff4c4c;
     --blue:     #4da6ff;
     --purple:   #a78bfa;
+    /* Referenced by the help pages and some inline styles long before they
+       were defined here, so those silently fell back to nothing. */
+    --accent:   #4da6ff;
+    --text2:    #a9bccd;
     --font:     'Space Grotesk', sans-serif;
     --mono:     'JetBrains Mono', monospace;
   }
@@ -73,6 +77,17 @@
     border-left-color: var(--green);
   }
   nav a .icon { font-size: 15px; width: 18px; text-align: center; }
+  nav .nav-group {
+    padding: 14px 20px 4px; font: 500 10px var(--mono);
+    letter-spacing: .14em; text-transform: uppercase; color: var(--muted); opacity: .75;
+  }
+  /* What's waiting on that channel today -- the same numbers as the
+     Dashboard's to-do row, so work is visible from anywhere in the app. */
+  nav .nav-count {
+    margin-left: auto; font: 11px var(--mono); line-height: 18px; padding: 0 7px;
+    border-radius: 999px; background: rgba(245,166,35,.16); color: var(--amber);
+  }
+  nav .nav-count:empty { display: none; }
 
   .scheduler-pill {
     margin: auto 20px 20px;
@@ -518,29 +533,199 @@
     pre, .mono-block { overflow-x: auto; }
   }
 
-  /* ── WhatsApp lead cards ───────────────────────────────────────────────────
-     One column, stacked, at every screen size — not just a mobile fallback.
-     A 5-column table was never going to work on a phone, and a single
-     column of cards reads more simply on a laptop too, which is the actual
-     point: fewer things fighting for attention in one row. */
-  .wa-list { display: flex; flex-direction: column; gap: 10px; }
-  .wa-card {
-    background: var(--bg2); border: 1px solid var(--border);
-    border-radius: 10px; padding: 14px 16px;
+  /* ── Channel pages: one shape for Email, Calling and WhatsApp ─────────────
+     Every channel page is the same set of tabs over the same kinds of
+     screen, so learning one teaches the other two. */
+  .tabs {
+    display: flex; gap: 2px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--border); margin-bottom: 18px;
   }
-  .wa-card-top {
-    display: flex; align-items: flex-start; justify-content: space-between;
-    gap: 10px; margin-bottom: 8px; flex-wrap: wrap;
+  .tab {
+    background: none; border: 0; border-bottom: 2px solid transparent;
+    padding: 9px 14px; margin-bottom: -1px; cursor: pointer;
+    color: var(--muted); font: 500 13.5px var(--font);
+    display: inline-flex; align-items: center; gap: 6px;
   }
-  .wa-card-name { font-size: 15px; font-weight: 600; color: #fff; }
-  .wa-card-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
-  .wa-card-phone {
-    font-family: var(--mono); font-size: 12.5px; color: var(--text);
-    margin-bottom: 10px;
+  .tab:hover { color: var(--text); }
+  .tab.active { color: #fff; border-bottom-color: var(--green); font-weight: 600; }
+  .tab .count {
+    font: 11px var(--mono); background: var(--bg3); color: var(--text);
+    border-radius: 999px; padding: 0 7px; line-height: 18px;
   }
-  .wa-card-phone .landline-note { color: var(--muted); font-size: 11px; }
-  .wa-card-body { margin-bottom: 10px; }
-  .wa-card-body textarea { min-height: 70px; font-size: 13.5px; font-family: var(--font); }
-  .wa-card-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
-  .wa-card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  .wa-card-footnote { color: var(--muted); font-size: 11.5px; margin-top: 6px; }
+  .tab .count.hot { background: rgba(245,166,35,.16); color: var(--amber); }
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+
+  /* Quick filters inside a tab ("Needs review 4"). Buttons, not tabs: they
+     narrow what is under them rather than switching to a different screen. */
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .chip {
+    background: var(--bg3); border: 1px solid var(--border2); color: var(--text);
+    border-radius: 7px; padding: 5px 11px; font: 12.5px var(--font); cursor: pointer;
+  }
+  .chip:hover { border-color: var(--muted); }
+  .chip.active { border-color: var(--green); color: var(--green); background: rgba(0,232,122,.06); }
+  .chip .count { font-family: var(--mono); font-size: 11px; margin-left: 4px; opacity: .85; }
+
+  /* Pills: what state something is in, readable at a glance. */
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+    font-size: 11px; line-height: 18px; padding: 0 8px; border-radius: 999px;
+    border: 1px solid var(--border2); color: var(--muted);
+  }
+  .pill.green  { color: var(--green);  border-color: rgba(0,232,122,.35);  background: rgba(0,232,122,.06); }
+  .pill.amber  { color: var(--amber);  border-color: rgba(245,166,35,.35); background: rgba(245,166,35,.06); }
+  .pill.blue   { color: var(--blue);   border-color: rgba(77,166,255,.35); background: rgba(77,166,255,.06); }
+  .pill.red    { color: var(--red);    border-color: rgba(255,76,76,.35);  background: rgba(255,76,76,.06); }
+  .pill.purple { color: var(--purple); border-color: rgba(167,139,250,.35); background: rgba(167,139,250,.06); }
+  .pill.dashed { border-style: dashed; }
+  .pills { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+
+  /* ── Lead tables ────────────────────────────────────────────────────────── */
+  .lt-toolbar {
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
+  .lt-toolbar .search-input { width: 260px; max-width: 100%; }
+  .lt-count { margin-left: auto; color: var(--muted); font: 12px var(--mono); white-space: nowrap; }
+  .lt-bulk {
+    display: none; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 9px 16px; font-size: 12.5px;
+    background: rgba(77,166,255,.07); border-bottom: 1px solid rgba(77,166,255,.25);
+  }
+  .lt-bulk.show { display: flex; }
+  .lt-bulk .sel { color: var(--blue); font-weight: 600; margin-right: 4px; }
+  .lt-bulk a { color: var(--blue); cursor: pointer; text-decoration: underline; }
+  .lead-table td { padding: 9px 14px; }
+  .lead-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  .lead-table th .arrow { opacity: .45; font-size: 10px; margin-left: 3px; }
+  .lead-table tr.clickable { cursor: pointer; }
+  .lead-table tr.selected td { background: rgba(77,166,255,.06); }
+  .lead-table tr.current td { background: rgba(0,232,122,.07); }
+  .lead-table td.check, .lead-table th.check { width: 36px; padding-right: 0; }
+  .lead-table .biz-name { color: #fff; font-weight: 500; white-space: nowrap; }
+  .lead-table .sub { display: block; color: var(--muted); font-size: 11.5px; margin-top: 1px; }
+  .lead-table td.num { font: 12px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .lead-table td.nowrap { white-space: nowrap; }
+  .lt-pager {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 10px 16px; border-top: 1px solid var(--border);
+  }
+  .row-menu { position: relative; display: inline-block; }
+  .row-menu > .btn { padding: 3px 9px; }
+  .row-menu-list {
+    display: none; position: absolute; right: 0; top: calc(100% + 4px); z-index: 300;
+    min-width: 200px; padding: 5px 0; border-radius: 8px;
+    background: var(--bg2); border: 1px solid var(--border2); box-shadow: 0 6px 24px rgba(0,0,0,.5);
+  }
+  .row-menu.open .row-menu-list { display: block; }
+  .row-menu-list button {
+    display: block; width: 100%; text-align: left; background: none; border: 0;
+    padding: 7px 14px; color: var(--text); font: 13px var(--font); cursor: pointer; white-space: nowrap;
+  }
+  .row-menu-list button:hover { background: var(--bg3); }
+  .row-menu-list button.danger { color: var(--red); }
+
+  /* ── Work queue: list on the left, the lead you are on to the right ────── */
+  .work-split {
+    display: grid; grid-template-columns: minmax(0,1fr) minmax(0,420px);
+    gap: 18px; align-items: start;
+  }
+  .work-panel { padding: 18px; position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; }
+  .work-panel h3 { font-size: 17px; color: #fff; margin-bottom: 2px; }
+  .field-label {
+    display: block; font: 11px var(--mono); letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); margin: 14px 0 6px;
+  }
+  .box {
+    background: var(--bg3); border: 1px solid var(--border2); border-radius: 8px;
+    padding: 10px 12px; font-size: 13px; line-height: 1.55; white-space: pre-wrap;
+  }
+  .soft-input {
+    width: 100%; background: var(--bg3); border: 1px solid var(--border2); border-radius: 8px;
+    padding: 9px 12px; color: var(--text); font: 13.5px/1.5 var(--font); outline: none;
+    resize: vertical;
+  }
+  .soft-input:focus { border-color: var(--green); }
+  textarea.soft-input { min-height: 84px; }
+  /* .form-group textarea is monospace for template editing; a notes box is prose. */
+  .form-group textarea.soft-input { font: 13.5px/1.5 var(--font); min-height: 84px; }
+  .fill { color: var(--green); background: rgba(0,232,122,.08); border-radius: 3px; }
+  .fill.empty { color: var(--amber); background: rgba(245,166,35,.08); }
+
+  /* A three-way choice that reads as one control rather than a dropdown you
+     have to open to discover the options. */
+  .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+         border: 1px solid var(--border2); border-radius: 8px; overflow: hidden; }
+  .seg button {
+    background: none; border: 0; border-right: 1px solid var(--border2);
+    padding: 8px 6px; color: var(--muted); font: 12.5px var(--font); cursor: pointer;
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button.active { background: rgba(0,232,122,.1); color: var(--green); font-weight: 600; }
+
+  /* Radio choices as cards, for decisions worth a sentence each. */
+  .choice {
+    display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: start;
+    padding: 11px 13px; border: 1px solid var(--border2); border-radius: 9px;
+    cursor: pointer; margin-bottom: 8px;
+  }
+  .choice input[type=radio] { margin-top: 3px; accent-color: var(--green); }
+  .choice.active { border-color: var(--green); background: rgba(0,232,122,.04); }
+  .choice.disabled { opacity: .5; cursor: not-allowed; }
+  .choice .title { font-weight: 600; font-size: 13.5px; color: var(--text); }
+  .choice .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .choice select { margin-top: 8px; width: 100%; max-width: 100%; }
+
+  /* ── Dashboard ──────────────────────────────────────────────────────────── */
+  .todo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .todo {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 13px 15px; cursor: pointer; text-align: left; font-family: var(--font); color: var(--text);
+    transition: border-color .15s;
+  }
+  .todo:hover { border-color: var(--muted); }
+  .todo .channel { font: 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+  .todo .n { display: block; font: 700 26px var(--mono); color: #fff; margin: 2px 0; }
+  .todo .what { font-size: 12.5px; color: var(--muted); }
+  .todo.quiet .n { color: var(--muted); }
+  .channel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .mini-stats { display: grid; grid-template-columns: repeat(4, 1fr); }
+  .mini-stat { padding: 12px 14px; border-right: 1px solid var(--border); min-width: 0; }
+  .mini-stat:last-child { border-right: 0; }
+  .mini-stat .label { font: 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+  .mini-stat .value { font: 700 20px var(--mono); color: #fff; }
+  .mini-stat .value.green { color: var(--green); }
+  .mini-stat .value.amber { color: var(--amber); }
+  .bar { height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden; min-width: 90px; }
+  .bar > i { display: block; height: 100%; background: var(--green); }
+  .channel-email    { color: var(--green); }
+  .channel-calling  { color: var(--blue); }
+  .channel-whatsapp { color: var(--purple); }
+
+  /* ── Contact detail ─────────────────────────────────────────────────────── */
+  .timeline { display: flex; flex-direction: column; gap: 8px; }
+  .timeline .item { border-top: 1px solid var(--border); padding-top: 8px; font-size: 12.5px; }
+  .timeline .when { font: 11px var(--mono); color: var(--muted); margin-right: 6px; }
+  .timeline .detail { color: var(--muted); margin-top: 2px; white-space: pre-wrap; }
+
+  /* ── Placeholder buttons in template editors ───────────────────────────── */
+  .placeholder-list { display: flex; gap: 5px; flex-wrap: wrap; margin: 6px 0 10px; }
+  .placeholder-list button {
+    background: var(--bg3); border: 1px solid var(--border2); border-radius: 6px;
+    padding: 2px 8px; color: var(--text); font: 11.5px var(--mono); cursor: pointer;
+  }
+  .placeholder-list button:hover { border-color: var(--green); color: var(--green); }
+  .placeholder-list button .gap { color: var(--amber); margin-left: 4px; }
+
+  @media (max-width: 1100px) {
+    .work-split { grid-template-columns: 1fr; }
+    .work-panel { position: static; max-height: none; }
+  }
+  @media (max-width: 768px) {
+    .mini-stats { grid-template-columns: repeat(2, 1fr); }
+    .mini-stat:nth-child(2) { border-right: 0; }
+    .mini-stat:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+    .lt-count { margin-left: 0; }
+    .tab { padding: 9px 10px; }
+  }

@@ -17,7 +17,7 @@
   {% include 'sections/sidebar.html' %}
   <main class="main">
     {% include 'sections/dashboard.html' %}
-    {% include 'sections/campaigns.html' %}
+    {% include 'sections/email.html' %}
     {% include 'sections/calling.html' %}
     {% include 'sections/whatsapp.html' %}
     {% include 'sections/contacts.html' %}
@@ -41,6 +41,20 @@
 {% include 'modals/preview.html' %}
 {% include 'modals/add_call_leads.html' %}
 {% include 'modals/import_wa_leads.html' %}
+{% include 'modals/business_form.html' %}
+
+<!-- One dialog for every "where should this go?" question. See chooseDialog. -->
+<div class="modal-overlay" id="modal-choose">
+  <div class="modal" style="max-width:480px">
+    <button class="modal-close" onclick="chooseCancel()">✕</button>
+    <h2 id="choose-title"></h2>
+    <div id="choose-body"></div>
+    <div class="flex gap-2" style="margin-top:18px">
+      <button class="btn btn-primary" id="choose-confirm" onclick="chooseConfirm()">OK</button>
+      <button class="btn btn-ghost" onclick="chooseCancel()">Cancel</button>
+    </div>
+  </div>
+</div>
 
 <div class="modal-overlay" id="modal-add-user">
   <div class="modal" style="max-width:380px">
@@ -97,8 +111,10 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
+<script src="{{ url_for('static', filename='js/tables.js') }}"></script>
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 <script src="{{ url_for('static', filename='js/campaigns.js') }}"></script>
+<script src="{{ url_for('static', filename='js/email_leads.js') }}"></script>
 <script src="{{ url_for('static', filename='js/contacts.js') }}"></script>
 <script src="{{ url_for('static', filename='js/calling.js') }}"></script>
 <script src="{{ url_for('static', filename='js/whatsapp.js') }}"></script>

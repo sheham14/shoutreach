@@ -157,12 +157,19 @@ def init_db():
                 created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
             );
 
+            -- Being on Calling is having a row here with removed_at unset.
+            -- It used to be implied by having a phone number, which put every
+            -- lead scraped for WhatsApp into the "never called" pile too.
             CREATE TABLE IF NOT EXISTS call_leads (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 business_id   INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
                 call_status   TEXT    NOT NULL DEFAULT '',
                 next_call_at  TEXT    DEFAULT NULL,
                 call_attempts INTEGER NOT NULL DEFAULT 0,
+                -- Set when the operator takes the lead off Calling. The row
+                -- stays so its call history does, and adding the lead back
+                -- clears this rather than starting a fresh record.
+                removed_at    TEXT    DEFAULT NULL,
                 created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(business_id)
             );
@@ -208,9 +215,42 @@ def init_db():
                 -- so a later scrape cannot quietly re-queue a number already
                 -- ruled out here.
                 moved_to         TEXT    NOT NULL DEFAULT '',
+                -- Taken off WhatsApp by hand for some other reason than the
+                -- number not being on it (a wrong import, say). Unlike
+                -- moved_to, this doesn't rule the number out: adding the
+                -- lead again brings it back.
+                removed_at       TEXT    DEFAULT NULL,
+                -- The campaign whose templates, follow-up gap and variables
+                -- this lead's messages are written from. NULL only when its
+                -- campaign was deleted; such a lead can't be drafted until
+                -- it's moved into another.
+                wa_campaign_id   INTEGER DEFAULT NULL REFERENCES wa_campaigns(id) ON DELETE SET NULL,
                 notes            TEXT    NOT NULL DEFAULT '',
                 created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(business_id)
+            );
+
+            -- A named batch of WhatsApp leads with its own pitch. Different
+            -- campaigns lead with different services, so the copy lives
+            -- here rather than once per operator: a lead is written to from
+            -- its campaign's templates, at its campaign's follow-up gap.
+            CREATE TABLE IF NOT EXISTS wa_campaigns (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id      INTEGER NOT NULL DEFAULT 0,
+                name          TEXT    NOT NULL,
+                notes         TEXT    NOT NULL DEFAULT '',
+                -- Preselected when adding leads, so a Doha campaign doesn't
+                -- have to be told it's in Qatar every time. Each lead still
+                -- keeps its own country.
+                country       TEXT    NOT NULL DEFAULT '',
+                status        TEXT    NOT NULL DEFAULT 'active',
+                -- {"gap": [arms], "no_gap": [arms], "followup": [arms]}
+                templates     TEXT    NOT NULL DEFAULT '{}',
+                followup_days INTEGER NOT NULL DEFAULT 3,
+                -- {"my_name": "Sam", ...} -- filled into {{my_name}} and so on,
+                -- the same as an email campaign's variables.
+                variables     TEXT    NOT NULL DEFAULT '{}',
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
             );
 
             -- Every WhatsApp message the operator actually opened in WhatsApp,
@@ -311,6 +351,10 @@ def init_db():
                 -- from this row, not by the worker, so where leads land never
                 -- depends on which version of the worker someone is running.
                 destination  TEXT    NOT NULL DEFAULT 'email',
+                -- Optional campaign on that channel to drop the leads into
+                -- (a call campaign or a WhatsApp campaign). Never an email
+                -- campaign: enrolling there starts real sending.
+                campaign_id  INTEGER DEFAULT NULL,
                 niche        TEXT    NOT NULL,
                 city         TEXT    NOT NULL,
                 max_results  INTEGER NOT NULL DEFAULT 50,
@@ -480,6 +524,13 @@ def init_db():
             "ALTER TABLE call_scripts       ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE call_outcome_types ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE scrape_jobs ADD COLUMN destination TEXT NOT NULL DEFAULT 'email'",
+            "ALTER TABLE scrape_jobs ADD COLUMN campaign_id INTEGER DEFAULT NULL",
+            "ALTER TABLE call_leads ADD COLUMN removed_at TEXT DEFAULT NULL",
+            "ALTER TABLE wa_leads   ADD COLUMN removed_at TEXT DEFAULT NULL",
+            # Nullable with a NULL default, which is the one shape SQLite lets
+            # ALTER TABLE add with a REFERENCES clause.
+            "ALTER TABLE wa_leads ADD COLUMN wa_campaign_id INTEGER DEFAULT NULL "
+            "REFERENCES wa_campaigns(id) ON DELETE SET NULL",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -500,6 +551,8 @@ def init_db():
         # Hand every pre-multi-user row to its rightful owner. Runs after the
         # split above, which creates businesses/email_leads rows of its own.
         _backfill_owner_ids(conn)
+        _make_calling_explicit(conn)
+        _migrate_wa_campaigns(conn)
 
         # Uniqueness is per owner, not global. The old global index is dropped
         # rather than left in place: while it exists, a second operator
@@ -548,6 +601,7 @@ def init_db():
             # load of the WhatsApp section rather than a scheduled job.
             "CREATE INDEX IF NOT EXISTS wa_leads_due_idx         ON wa_leads(sent_date) WHERE replied = 0 AND paused = 0",
             "CREATE INDEX IF NOT EXISTS wa_log_lead_idx          ON wa_log(wa_lead_id, sent_at)",
+            "CREATE INDEX IF NOT EXISTS wa_leads_campaign_idx    ON wa_leads(wa_campaign_id)",
             # Ownership is now a predicate on nearly every read -- the lead
             # list, the call queue, every summary. Without these, filtering to
             # one operator means a full scan of the table it is filtering.
@@ -676,6 +730,7 @@ def owns(kind: str, row_id, owner_id) -> bool:
         "business":      "SELECT 1 FROM businesses WHERE id=? AND owner_id=?",
         "campaign":      "SELECT 1 FROM campaigns WHERE id=? AND owner_id=?",
         "call_campaign": "SELECT 1 FROM call_campaigns WHERE id=? AND owner_id=?",
+        "wa_campaign":   "SELECT 1 FROM wa_campaigns WHERE id=? AND owner_id=?",
         "scrape_job":    "SELECT 1 FROM scrape_jobs WHERE id=? AND owner_id=?",
         "email_lead":    "SELECT 1 FROM email_leads WHERE id=? AND owner_id=?",
         "wa_lead":       ("SELECT 1 FROM wa_leads w JOIN businesses b ON b.id=w.business_id "
@@ -734,7 +789,7 @@ def _backfill_owner_ids(conn):
     """, (OWNER_UNASSIGNED, OWNER_UNASSIGNED))
 
     for table in ("businesses", "email_leads", "campaigns", "call_campaigns",
-                  "scrape_jobs", "call_scripts"):
+                  "scrape_jobs", "call_scripts", "wa_campaigns"):
         conn.execute(
             f"UPDATE {table} SET owner_id=? WHERE owner_id=?", (owner, OWNER_UNASSIGNED)
         )
@@ -798,6 +853,40 @@ def _migrate_wa_settings(conn, owner: int):
         conn.execute("INSERT INTO settings(key, value) VALUES(?,?)",
                      (own_key, shared["value"]))
         conn.execute("DELETE FROM settings WHERE key=?", (base,))
+
+
+_CALLING_EXPLICIT_MARKER = "_migrated_calling_explicit"
+
+
+def _make_calling_explicit(conn):
+    """
+    One-shot: give every lead that was implicitly on Calling a real row.
+
+    The call queue used to be every business with a phone number, so a lead
+    scraped for WhatsApp also sat in "never called". Membership is a call_leads
+    row now. So the switch changes nothing an operator can see except that
+    fix, every business that was showing up gets its row -- minus the ones on
+    WhatsApp, which were the bug, and opted-out ones, which never showed.
+
+    Guarded by a marker, not by "has no call_leads row": after the switch a
+    business without one is simply not on Calling, and re-running this would
+    quietly put back every lead the operator had taken off.
+    """
+    if conn.execute("SELECT 1 FROM settings WHERE key=?", (_CALLING_EXPLICIT_MARKER,)).fetchone():
+        return
+    added = conn.execute("""
+        INSERT INTO call_leads(business_id)
+        SELECT b.id FROM businesses b
+         WHERE COALESCE(b.phone,'') != ''
+           AND b.do_not_contact = 0
+           AND NOT EXISTS (SELECT 1 FROM call_leads cl WHERE cl.business_id = b.id)
+           AND NOT EXISTS (SELECT 1 FROM wa_leads w WHERE w.business_id = b.id)
+           AND NOT EXISTS (SELECT 1 FROM scrape_jobs j
+                            WHERE j.id = b.source_job_id AND j.destination = 'whatsapp')
+    """).rowcount
+    conn.execute("INSERT INTO settings(key, value) VALUES(?, '1')", (_CALLING_EXPLICIT_MARKER,))
+    if added:
+        logger.info("Calling is explicit now: kept %d existing lead(s) on the call list", added)
 
 
 # ── One-shot migration: contacts → businesses + per-channel leads ────────────
@@ -1222,7 +1311,9 @@ def worker_owner_for_key(presented: str):
 # Statuses a job can sit in while it is still someone's responsibility.
 SCRAPE_ACTIVE_STATUSES = ("queued", "claimed", "running", "captcha")
 
-SCRAPE_DESTINATIONS = ("email", "whatsapp")
+# Each channel scrapes for itself. Email hunts each site for an address;
+# Calling and WhatsApp only need the phone number Maps already shows.
+SCRAPE_DESTINATIONS = ("email", "calling", "whatsapp")
 
 # A worker that has not checked in for this long is treated as gone. It has to
 # comfortably exceed the worker's own post interval, or a busy scrape that goes
@@ -1231,17 +1322,18 @@ WORKER_STALE_SECONDS = 45
 
 
 def create_scrape_job(niche, city, max_results=50, auto_import=True, owner_id=None,
-                      destination="email", country="") -> int:
+                      destination="email", country="", campaign_id=None) -> int:
     if destination not in SCRAPE_DESTINATIONS:
         raise ValueError(f"Unknown scrape destination: {destination}")
     with get_db() as conn:
         cur = conn.execute("""
             INSERT INTO scrape_jobs(niche, city, max_results, auto_import, logs, owner_id,
-                                    destination, country)
-            VALUES(?,?,?,?,'[]',?,?,?)
+                                    destination, country, campaign_id)
+            VALUES(?,?,?,?,'[]',?,?,?,?)
         """, (niche, city, int(max_results), 1 if auto_import else 0,
               _resolve_owner_id(conn, owner_id), destination,
-              (country or "").strip().upper()))
+              (country or "").strip().upper(),
+              int(campaign_id) if campaign_id else None))
         return cur.lastrowid
 
 
@@ -2019,7 +2111,7 @@ SOURCE_MANUAL = "manual"
 
 
 def _email_lead_filters(q="", source_job_id=None, status=None, include_deleted=False,
-                        call_status=None, owner_id=None):
+                        call_status=None, owner_id=None, campaign_id=None):
     """
     Build the shared WHERE clause for the email lead list views.
 
@@ -2067,6 +2159,15 @@ def _email_lead_filters(q="", source_job_id=None, status=None, include_deleted=F
             clauses.append("b.source_job_id = ?")
             params.append(int(source_job_id))
 
+    # 'none' is addresses not in any campaign -- the ones still waiting to be
+    # used, which is what you look for when building a new one.
+    if campaign_id == "none":
+        clauses.append("NOT EXISTS (SELECT 1 FROM enrollments en WHERE en.email_lead_id = el.id)")
+    elif campaign_id:
+        clauses.append("EXISTS (SELECT 1 FROM enrollments en WHERE en.email_lead_id = el.id "
+                       "AND en.campaign_id = ?)")
+        params.append(int(campaign_id))
+
     q = (q or "").strip()
     if q:
         like = " OR ".join(f"COALESCE({c},'') LIKE ?" for c in _EMAIL_LEAD_SEARCH_COLUMNS)
@@ -2079,7 +2180,7 @@ def _email_lead_filters(q="", source_job_id=None, status=None, include_deleted=F
 
 def get_email_leads_page(page=1, per_page=50, q="", source_job_id=None, status=None,
                          include_deleted=False, sort_col="", sort_dir="desc",
-                         call_status=None, owner_id=None):
+                         call_status=None, owner_id=None, campaign_id=None):
     """One page of email leads plus the total matching the same filter."""
     page     = max(1, int(page or 1))
     per_page = max(1, min(int(per_page or 50), 500))
@@ -2099,16 +2200,32 @@ def get_email_leads_page(page=1, per_page=50, q="", source_job_id=None, status=N
 
     with get_db() as conn:
         where, params = _email_lead_filters(q, source_job_id, status, include_deleted,
-                                            call_status, _resolve_owner_id(conn, owner_id))
+                                            call_status, _resolve_owner_id(conn, owner_id),
+                                            campaign_id)
         total = conn.execute(f"SELECT COUNT(*) {join} {where}", params).fetchone()[0]
-        rows = conn.execute(
+        rows = [dict(r) for r in conn.execute(
             f"SELECT {_EMAIL_LEAD_COLUMNS} {join} {where} "
             f"ORDER BY {order_by} LIMIT ? OFFSET ?",
             params + [per_page, offset],
-        ).fetchall()
+        ).fetchall()]
+        # The campaign each address is in, for the Leads table's Campaign
+        # column -- one query for the page rather than one per row.
+        ids = [r["id"] for r in rows]
+        enrolled = {}
+        if ids:
+            for en in conn.execute(f"""
+                SELECT en.id, en.email_lead_id, en.status, en.current_step, en.next_send_at,
+                       c.id AS campaign_id, c.name AS campaign
+                  FROM enrollments en JOIN campaigns c ON c.id = en.campaign_id
+                 WHERE en.email_lead_id IN ({",".join("?" * len(ids))})
+                 ORDER BY en.enrolled_at DESC
+            """, ids):
+                enrolled.setdefault(en["email_lead_id"], []).append(dict(en))
+        for r in rows:
+            r["enrollments"] = enrolled.get(r["id"], [])
 
     return {
-        "rows":     [dict(r) for r in rows],
+        "rows":     rows,
         "total":    total,
         "page":     page,
         "per_page": per_page,
@@ -2119,7 +2236,7 @@ def get_email_leads_page(page=1, per_page=50, q="", source_job_id=None, status=N
 
 
 def get_email_lead_ids_matching(q="", source_job_id=None, status=None, include_deleted=False,
-                                call_status=None, owner_id=None):
+                                call_status=None, owner_id=None, campaign_id=None):
     """
     Every email lead id matching a filter, ignoring paging.
 
@@ -2129,7 +2246,8 @@ def get_email_lead_ids_matching(q="", source_job_id=None, status=None, include_d
     """
     with get_db() as conn:
         where, params = _email_lead_filters(q, source_job_id, status, include_deleted,
-                                            call_status, _resolve_owner_id(conn, owner_id))
+                                            call_status, _resolve_owner_id(conn, owner_id),
+                                            campaign_id)
         return [r["id"] for r in conn.execute(
             f"SELECT el.id FROM email_leads el "
             f"JOIN businesses b ON b.id = el.business_id {where}", params
@@ -2243,12 +2361,17 @@ def get_channel_presence(conn, business_ids: list) -> dict:
         f"WHERE business_id IN ({placeholders}) AND status != 'deleted'", ids,
     ):
         out[bid]["email"] = True
+    # Only leads still on the channel count. One taken off Calling, or ruled out
+    # as not on WhatsApp, isn't being worked there, so it's no reason to hold an
+    # import back for confirmation.
     for bid, in conn.execute(
-        f"SELECT DISTINCT business_id FROM call_leads WHERE business_id IN ({placeholders})", ids,
+        f"SELECT DISTINCT business_id FROM call_leads "
+        f"WHERE business_id IN ({placeholders}) AND removed_at IS NULL", ids,
     ):
         out[bid]["call"] = True
     for bid, in conn.execute(
-        f"SELECT DISTINCT business_id FROM wa_leads WHERE business_id IN ({placeholders})", ids,
+        f"SELECT DISTINCT business_id FROM wa_leads "
+        f"WHERE business_id IN ({placeholders}) AND removed_at IS NULL AND moved_to = ''", ids,
     ):
         out[bid]["whatsapp"] = True
     return out
@@ -3653,26 +3776,80 @@ def delete_call_campaign(cid: int):
         conn.execute("DELETE FROM call_campaigns WHERE id=?", (cid,))
 
 
+def add_to_calling(business_ids, owner_id=None, call_campaign_id=None) -> dict:
+    """
+    Put businesses this operator owns on Calling, optionally into a campaign.
+
+    A lead taken off Calling earlier comes back with its call history intact.
+    Skipped leads are counted rather than dropped silently, so the operator is
+    told why fewer landed than they picked:
+      no_phone   -- nothing to dial
+      opted_out  -- do_not_contact is set; they asked to be left alone
+      already    -- already on Calling (still added to the campaign, if given)
+    """
+    counts = {"added": 0, "already": 0, "no_phone": 0, "opted_out": 0, "in_campaign": 0}
+    with get_db() as conn:
+        for business_id in _own_business_ids(conn, business_ids, owner_id):
+            biz = conn.execute(
+                "SELECT phone, do_not_contact FROM businesses WHERE id=?", (business_id,)
+            ).fetchone()
+            if biz["do_not_contact"]:
+                counts["opted_out"] += 1
+                continue
+            if not (biz["phone"] or "").strip():
+                counts["no_phone"] += 1
+                continue
+            existing = conn.execute(
+                "SELECT id, removed_at FROM call_leads WHERE business_id=?", (business_id,)
+            ).fetchone()
+            if existing and existing["removed_at"] is None:
+                counts["already"] += 1
+            else:
+                counts["added"] += 1
+            call_lead_id = get_or_create_call_lead(conn, business_id)
+            if call_campaign_id:
+                counts["in_campaign"] += conn.execute("""
+                    INSERT OR IGNORE INTO call_campaign_members(call_campaign_id, call_lead_id)
+                    VALUES(?,?)
+                """, (int(call_campaign_id), call_lead_id)).rowcount
+    return counts
+
+
+def remove_from_calling(business_ids, owner_id=None) -> int:
+    """
+    Take leads off Calling. Their call history stays, and so does the lead in
+    Contacts; they just stop appearing in any queue or campaign. Campaign
+    membership goes with it -- a campaign is a batch you are working, and a
+    lead you took off Calling is no longer part of that work.
+    """
+    removed = 0
+    with get_db() as conn:
+        for business_id in _own_business_ids(conn, business_ids, owner_id):
+            row = conn.execute(
+                "SELECT id FROM call_leads WHERE business_id=? AND removed_at IS NULL",
+                (business_id,),
+            ).fetchone()
+            if not row:
+                continue
+            conn.execute("UPDATE call_leads SET removed_at=datetime('now') WHERE id=?",
+                         (row["id"],))
+            conn.execute("DELETE FROM call_campaign_members WHERE call_lead_id=?", (row["id"],))
+            removed += 1
+    return removed
+
+
 def add_to_call_campaign(cid: int, business_ids, owner_id=None) -> int:
     """
-    Add businesses to a call campaign, ignoring any already in it.
+    Add businesses to a call campaign, putting them on Calling if they aren't.
+    Returns how many joined the campaign; see add_to_calling for what is
+    skipped and why.
 
     Takes business ids rather than call-lead ids because that is what the
-    operator is choosing from -- a clinic that has never been dialled has no
-    call lead yet, and requiring one before it could be added would make the
-    never-called leads the only ones you could not put in a campaign.
+    operator is choosing from -- a clinic nobody has put on Calling yet has no
+    call lead, and requiring one first would make the campaign picker useless
+    for exactly the leads you are about to start on.
     """
-    added = 0
-    with get_db() as conn:
-        business_ids = _own_business_ids(conn, business_ids, owner_id)
-        for business_id in business_ids:
-            call_lead_id = get_or_create_call_lead(conn, int(business_id))
-            cur = conn.execute("""
-                INSERT OR IGNORE INTO call_campaign_members(call_campaign_id, call_lead_id)
-                VALUES(?,?)
-            """, (cid, call_lead_id))
-            added += cur.rowcount
-    return added
+    return add_to_calling(business_ids, owner_id=owner_id, call_campaign_id=cid)["in_campaign"]
 
 
 def remove_from_call_campaign(cid: int, business_ids, owner_id=None) -> int:
@@ -3690,16 +3867,16 @@ def remove_from_call_campaign(cid: int, business_ids, owner_id=None) -> int:
 
 def get_or_create_call_lead(conn, business_id: int) -> int:
     """
-    The call lead for a business, created on first use.
-
-    Calling a clinic for the first time is what brings it onto the calling
-    list; there is no separate import step, and a business can be worked on
-    email or WhatsApp without ever appearing here.
+    The call lead for a business, created -- or brought back from having been
+    taken off Calling -- on use. Logging a call against a lead is as clear a
+    statement that it's on Calling as adding it is.
     """
     row = conn.execute(
-        "SELECT id FROM call_leads WHERE business_id=?", (business_id,)
+        "SELECT id, removed_at FROM call_leads WHERE business_id=?", (business_id,)
     ).fetchone()
     if row:
+        if row["removed_at"] is not None:
+            conn.execute("UPDATE call_leads SET removed_at=NULL WHERE id=?", (row["id"],))
         return row["id"]
     return conn.execute(
         "INSERT INTO call_leads(business_id) VALUES(?)", (business_id,)
@@ -3737,6 +3914,7 @@ def get_call_campaigns(owner_id=None):
                   JOIN call_leads cl ON cl.id = m.call_lead_id
                   JOIN businesses b  ON b.id  = cl.business_id
                  WHERE m.call_campaign_id = ? AND b.owner_id = ?
+                   AND cl.removed_at IS NULL
             """, (*terminal, *terminal, c["id"], c["owner_id"])).fetchone()
 
             c.update({k: (row[k] or 0) for k in
@@ -3842,22 +4020,29 @@ def get_call_lead_view(business_id: int, owner_id=None):
 def search_businesses(q="", status=None, call_status=None, limit=100, owner_id=None,
                       not_on_channel=None):
     """
-    Businesses matching a filter, for the "add existing leads" pickers (call
-    campaigns today; WhatsApp will use the same query).
+    Businesses matching a filter, for the "add existing leads" pickers on every
+    channel.
 
     Separate from the email-lead search: this looks at businesses directly, so
-    a clinic the scraper found with no email at all is still findable here,
-    which is the entire point of the calling "from contacts" tab.
+    a clinic the scraper found with no email at all is still findable here.
+    Opted-out businesses are left out -- every picker this backs puts a lead
+    onto a channel, and they asked not to be on any.
     """
-    where, params = ["b.owner_id = ?"], [_owner_or_default(owner_id)]
+    where, params = ["b.owner_id = ?", "b.do_not_contact = 0"], [_owner_or_default(owner_id)]
     if status:
         where.append("b.web_status = ?")
         params.append(status)
-    # For the "add to WhatsApp" picker. A lead that was moved off WhatsApp
-    # still has its row there, so a number already ruled out as not being on
-    # WhatsApp is never offered back as a fresh lead.
     if not_on_channel == "whatsapp":
-        where.append("NOT EXISTS (SELECT 1 FROM wa_leads w WHERE w.business_id = b.id)")
+        # A number ruled out as not being on WhatsApp is never offered back as
+        # a fresh lead. One merely taken off by hand can be.
+        where.append("NOT EXISTS (SELECT 1 FROM wa_leads w WHERE w.business_id = b.id "
+                     "AND (w.removed_at IS NULL OR w.moved_to != ''))")
+    elif not_on_channel == "calling":
+        where.append("NOT EXISTS (SELECT 1 FROM call_leads c2 WHERE c2.business_id = b.id "
+                     "AND c2.removed_at IS NULL)")
+    elif not_on_channel == "email":
+        where.append("NOT EXISTS (SELECT 1 FROM email_leads e2 WHERE e2.business_id = b.id "
+                     "AND e2.status != 'deleted')")
     if call_status == "none":
         where.append("COALESCE(cl.call_status,'') = ''")
     elif call_status == "any":
@@ -3883,88 +4068,76 @@ def search_businesses(q="", status=None, call_status=None, limit=100, owner_id=N
         return {"rows": [dict(r) for r in rows], "total": total}
 
 
+# The queue draws from call_leads, not from every business with a phone. A
+# lead is on Calling because somebody put it there -- see _make_calling_explicit.
+_CALL_QUEUE_JOIN = "FROM call_leads cl JOIN businesses b ON b.id = cl.business_id"
+
+CALL_BUCKETS = ("today", "new", "upcoming", "all", "worked")
+
+
+def _call_queue_filter(bucket, owner, source_job_id=None, only_no_website=False,
+                       call_campaign_id=None):
+    """WHERE clauses, params and ordering for one bucket. Shared by the list and
+    the counts so the two can never disagree about what a bucket holds."""
+    terminal = terminal_outcome_keys() or ["__none__"]
+    tph = ",".join("?" * len(terminal))
+    where, params = ["cl.removed_at IS NULL", "b.owner_id = ?"], [owner]
+
+    # "worked" is the opposite of every other bucket: it exists precisely to
+    # show the leads the others hide, so a lead closed out by mistake can be
+    # found and reopened instead of disappearing.
+    if bucket == "worked":
+        where.append(f"cl.call_status IN ({tph})")
+        params.extend(terminal)
+        order = "b.id DESC"
+    else:
+        where += [f"(cl.call_status = '' OR cl.call_status NOT IN ({tph}))",
+                  "b.do_not_contact = 0", "COALESCE(b.phone,'') != ''"]
+        params.extend(terminal)
+        if bucket == "today":
+            where.append("cl.next_call_at IS NOT NULL AND datetime(cl.next_call_at) <= datetime('now')")
+            order = "cl.next_call_at ASC"
+        elif bucket == "new":
+            where.append("cl.call_status = ''")
+            order = "cl.created_at DESC, b.created_at DESC"
+        elif bucket == "upcoming":
+            where.append("cl.next_call_at IS NOT NULL AND datetime(cl.next_call_at) > datetime('now')")
+            order = "cl.next_call_at ASC"
+        else:
+            order = "cl.next_call_at IS NULL, cl.next_call_at ASC, b.created_at DESC"
+
+    if source_job_id:
+        where.append("b.source_job_id = ?")
+        params.append(int(source_job_id))
+    if only_no_website:
+        where.append("b.web_status = 'no_website'")
+    if call_campaign_id:
+        where.append("cl.id IN (SELECT call_lead_id FROM call_campaign_members "
+                     "WHERE call_campaign_id = ?)")
+        params.append(int(call_campaign_id))
+    return where, params, order
+
+
 def get_call_queue(bucket="today", limit=200, source_job_id=None, only_no_website=False,
                    call_campaign_id=None, owner_id=None):
     """
     The leads to work right now.
 
       today    -- callbacks due (including overdue), soonest first
-      new      -- never called, freshest leads first
+      new      -- never called, most recently added to Calling first
       upcoming -- callbacks scheduled beyond today
       all      -- everything still callable
+      worked   -- closed out, so a misclick can be found and reopened
 
-    Terminal outcomes and opted-out businesses are excluded everywhere: a
-    finished lead should never reappear in a queue, whichever bucket is open.
-
-    Selects from businesses rather than call_leads, LEFT JOINing the calling
-    state. A clinic that has never been dialled has no call_leads row yet --
-    one is created the moment a call is logged -- and drawing only from that
-    table would make the never-called leads, which are the whole point of the
-    "new" bucket, invisible.
+    Terminal outcomes and opted-out businesses are excluded from every bucket
+    but "worked": a finished lead should never reappear in a queue.
     """
-    terminal = terminal_outcome_keys() or ["__none__"]
-    placeholders = ",".join("?" * len(terminal))
-
-    cols = _CALL_LEAD_COLUMNS
-    join = _CALL_LEAD_JOIN
-
-    where = [
-        f"(COALESCE(cl.call_status,'') = '' OR cl.call_status NOT IN ({placeholders}))",
-        "b.do_not_contact = 0",
-        "COALESCE(b.phone,'') != ''",
-    ]
-    params = list(terminal)
-
-    owner = _owner_or_default(owner_id)
-
-    def _apply_common(where, params):
-        where.append("b.owner_id = ?")
-        params.append(owner)
-        if source_job_id:
-            where.append("b.source_job_id = ?")
-            params.append(int(source_job_id))
-        if only_no_website:
-            where.append("b.web_status = 'no_website'")
-        if call_campaign_id:
-            where.append(
-                "cl.id IN (SELECT call_lead_id FROM call_campaign_members "
-                "WHERE call_campaign_id = ?)"
-            )
-            params.append(int(call_campaign_id))
-
-    # "worked" is the opposite of every other bucket: it exists precisely to
-    # show the leads the others hide, so a lead closed out by mistake can be
-    # found and reopened instead of disappearing.
-    if bucket == "worked":
-        where = [f"cl.call_status IN ({placeholders})"]
-        params = list(terminal)
-        _apply_common(where, params)
-        params.append(int(limit))
-        with get_db() as conn:
-            return [dict(r) for r in conn.execute(f"""
-                SELECT {cols} {join}
-                 WHERE {' AND '.join(where)}
-                 ORDER BY b.id DESC LIMIT ?
-            """, params).fetchall()]
-
-    if bucket == "today":
-        where.append("cl.next_call_at IS NOT NULL AND datetime(cl.next_call_at) <= datetime('now')")
-        order = "cl.next_call_at ASC"
-    elif bucket == "new":
-        where.append("COALESCE(cl.call_status,'') = ''")
-        order = "b.created_at DESC"
-    elif bucket == "upcoming":
-        where.append("cl.next_call_at IS NOT NULL AND datetime(cl.next_call_at) > datetime('now')")
-        order = "cl.next_call_at ASC"
-    else:
-        order = "cl.next_call_at IS NULL, cl.next_call_at ASC, b.created_at DESC"
-
-    _apply_common(where, params)
-
+    where, params, order = _call_queue_filter(
+        bucket, _owner_or_default(owner_id), source_job_id, only_no_website, call_campaign_id)
     params.append(int(limit))
     with get_db() as conn:
         rows = conn.execute(f"""
-            SELECT {cols} {join}
+            SELECT {_CALL_LEAD_COLUMNS} {_CALL_QUEUE_JOIN}
              WHERE {' AND '.join(where)}
              ORDER BY {order}
              LIMIT ?
@@ -3976,12 +4149,94 @@ def get_call_queue_counts(source_job_id=None, only_no_website=False, call_campai
                           owner_id=None):
     """Bucket sizes, so the tabs can show what is waiting without loading it."""
     owner = _owner_or_default(owner_id)
-    return {
-        b: len(get_call_queue(b, limit=100000, source_job_id=source_job_id,
-                              only_no_website=only_no_website,
-                              call_campaign_id=call_campaign_id, owner_id=owner))
-        for b in ("today", "new", "upcoming", "worked")
-    }
+    out = {}
+    with get_db() as conn:
+        for bucket in ("today", "new", "upcoming", "worked"):
+            where, params, _order = _call_queue_filter(
+                bucket, owner, source_job_id, only_no_website, call_campaign_id)
+            out[bucket] = conn.execute(
+                f"SELECT COUNT(*) {_CALL_QUEUE_JOIN} WHERE {' AND '.join(where)}", params
+            ).fetchone()[0]
+    return out
+
+
+# Whitelist: sort keys are interpolated into SQL.
+_CALL_LEAD_SORT = {
+    "company": "b.name", "phone": "b.phone", "call_status": "cl.call_status",
+    "call_attempts": "cl.call_attempts", "next_call_at": "cl.next_call_at",
+    "last_called_at": "last_called_at", "added": "cl.created_at", "city": "b.city",
+}
+
+
+def get_call_leads_page(page=1, per_page=50, q="", outcome="", call_campaign_id=None,
+                        source_job_id=None, sort_col="", sort_dir="desc", owner_id=None):
+    """
+    Every lead on Calling as one table -- the Leads tab. Unlike the queue this
+    includes closed-out and opted-out leads: it is where you go to see and
+    manage the whole list, not to decide who to ring next.
+
+    outcome: '' any, 'none' never called, or an outcome key.
+    """
+    page = max(1, int(page or 1))
+    per_page = max(1, min(int(per_page or 50), 500))
+    where, params = ["cl.removed_at IS NULL", "b.owner_id = ?"], [_owner_or_default(owner_id)]
+    if outcome == "none":
+        where.append("cl.call_status = ''")
+    elif outcome:
+        where.append("cl.call_status = ?")
+        params.append(outcome)
+    if call_campaign_id == "none":
+        where.append("cl.id NOT IN (SELECT call_lead_id FROM call_campaign_members)")
+    elif call_campaign_id:
+        where.append("cl.id IN (SELECT call_lead_id FROM call_campaign_members "
+                     "WHERE call_campaign_id = ?)")
+        params.append(int(call_campaign_id))
+    if source_job_id not in (None, ""):
+        if str(source_job_id) == SOURCE_MANUAL:
+            where.append("b.source_job_id IS NULL")
+        else:
+            where.append("b.source_job_id = ?")
+            params.append(int(source_job_id))
+    q = (q or "").strip()
+    if q:
+        where.append("(b.name LIKE ? OR b.phone LIKE ? OR b.website LIKE ? "
+                     "OR b.address LIKE ? OR b.city LIKE ?)")
+        params.extend([f"%{q}%"] * 5)
+
+    direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+    col = _CALL_LEAD_SORT.get(sort_col)
+    order = (f"{col} IS NULL, {col} {direction}" if col else "cl.created_at DESC, cl.id DESC")
+
+    with get_db() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) {_CALL_QUEUE_JOIN} WHERE {' AND '.join(where)}", params
+        ).fetchone()[0]
+        rows = [dict(r) for r in conn.execute(f"""
+            SELECT {_CALL_LEAD_COLUMNS},
+                   cl.created_at AS added_at,
+                   (SELECT MAX(l.called_at) FROM call_log l WHERE l.call_lead_id = cl.id)
+                       AS last_called_at
+              {_CALL_QUEUE_JOIN}
+             WHERE {' AND '.join(where)}
+             ORDER BY {order}
+             LIMIT ? OFFSET ?
+        """, (*params, per_page, (page - 1) * per_page)).fetchall()]
+
+        ids = [r["call_lead_id"] for r in rows]
+        campaigns = {}
+        if ids:
+            for m in conn.execute(f"""
+                SELECT m.call_lead_id, c.id, c.name
+                  FROM call_campaign_members m JOIN call_campaigns c ON c.id = m.call_campaign_id
+                 WHERE m.call_lead_id IN ({",".join("?" * len(ids))})
+                 ORDER BY c.id DESC
+            """, ids):
+                campaigns.setdefault(m["call_lead_id"], []).append(
+                    {"id": m["id"], "name": m["name"]})
+    for r in rows:
+        r["campaigns"] = campaigns.get(r["call_lead_id"], [])
+    return {"rows": rows, "total": total, "page": page, "per_page": per_page,
+            "pages": max(1, (total + per_page - 1) // per_page)}
 
 
 def reopen_call_lead(call_lead_id: int) -> bool:
@@ -4018,39 +4273,47 @@ def get_call_summary(call_campaign_id=None, owner_id=None) -> dict:
         scope_params = [int(call_campaign_id)]
 
     with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
         row = conn.execute(f"""
             SELECT
               COUNT(*)                                                          AS leads,
               SUM(CASE WHEN cl.call_status = 'booked' THEN 1 ELSE 0 END)        AS booked,
+              SUM(CASE WHEN cl.call_status = 'interested' THEN 1 ELSE 0 END)    AS interested,
               SUM(CASE WHEN cl.call_status = 'not_interested' THEN 1 ELSE 0 END) AS not_interested,
+              SUM(CASE WHEN cl.call_status = '' THEN 1 ELSE 0 END)              AS uncalled,
               SUM(CASE WHEN cl.next_call_at IS NOT NULL
                         AND datetime(cl.next_call_at) <= datetime('now')
                         AND cl.call_status NOT IN ({tph}) THEN 1 ELSE 0 END)    AS due
-              FROM businesses b LEFT JOIN call_leads cl ON cl.business_id = b.id
-             WHERE b.do_not_contact = 0 AND COALESCE(b.phone,'') != ''
-               AND b.owner_id = ? {scope}
-        """, (*terminal, _resolve_owner_id(conn, owner_id), *scope_params)).fetchone()
+              {_CALL_QUEUE_JOIN}
+             WHERE cl.removed_at IS NULL AND b.do_not_contact = 0
+               AND COALESCE(b.phone,'') != '' AND b.owner_id = ? {scope}
+        """, (*terminal, owner, *scope_params)).fetchone()
 
         # Calls, not leads: one clinic rung four times is four calls, and that
-        # is the number that reflects a day's work.
-        call_scope, call_params = "", []
+        # is the number that reflects a day's work. Only this operator's calls
+        # -- call_log has no owner of its own, so it is reached through the
+        # business it was made to.
+        call_where = ["b.owner_id = ?"]
+        call_params = [owner]
         if call_campaign_id:
-            call_scope = "WHERE call_campaign_id = ?"
-            call_params = [int(call_campaign_id)]
+            call_where.append("l.call_campaign_id = ?")
+            call_params.append(int(call_campaign_id))
+        call_join = ("FROM call_log l JOIN call_leads cl ON cl.id = l.call_lead_id "
+                     "JOIN businesses b ON b.id = cl.business_id")
         made = conn.execute(
-            f"SELECT COUNT(*) FROM call_log {call_scope}", call_params
+            f"SELECT COUNT(*) {call_join} WHERE {' AND '.join(call_where)}", call_params
         ).fetchone()[0]
-        today_where = "WHERE DATE(called_at) = DATE('now')"
-        if call_campaign_id:
-            today_where += " AND call_campaign_id = ?"
         today = conn.execute(
-            f"SELECT COUNT(*) FROM call_log {today_where}", call_params
+            f"SELECT COUNT(*) {call_join} WHERE {' AND '.join(call_where)} "
+            f"AND DATE(l.called_at) = DATE('now')", call_params
         ).fetchone()[0]
 
     return {
         "leads":          row["leads"] or 0,
         "booked":         row["booked"] or 0,
+        "interested":     row["interested"] or 0,
         "not_interested": row["not_interested"] or 0,
+        "uncalled":       row["uncalled"] or 0,
         "due":            row["due"] or 0,
         "calls_made":     made or 0,
         "calls_today":    today or 0,
@@ -4357,7 +4620,7 @@ def pick_wa_arm(arms: list, position: int) -> tuple:
     return label, arms[idx]
 
 
-def get_wa_variant_stats(owner_id=None) -> list:
+def get_wa_variant_stats(owner_id=None, wa_campaign_id=None) -> list:
     """
     Reply rate per template arm -- the entire point of running a test.
 
@@ -4366,18 +4629,26 @@ def get_wa_variant_stats(owner_id=None) -> list:
     would make a long cadence look like a persuasive template. Paraphrased and
     plain are reported apart, because an AI rewrite is a different message and
     folding it in would confound the arm it was rewritten from.
+
+    Scoped to one campaign when given one: arm A of one campaign's copy and arm
+    A of another's are different messages, so pooling them measures nothing.
     """
     with get_db() as conn:
-        rows = conn.execute("""
+        where, params = ["b.owner_id = ?", "w.sent_date IS NOT NULL"], \
+            [_resolve_owner_id(conn, owner_id)]
+        if wa_campaign_id:
+            where.append("w.wa_campaign_id = ?")
+            params.append(int(wa_campaign_id))
+        rows = conn.execute(f"""
             SELECT COALESCE(NULLIF(w.template_variant,''),'-') AS arm,
                    w.paraphrased                               AS paraphrased,
                    COUNT(*)                                    AS sent,
                    SUM(w.replied)                              AS replied
               FROM wa_leads w JOIN businesses b ON b.id = w.business_id
-             WHERE b.owner_id = ? AND w.sent_date IS NOT NULL
+             WHERE {' AND '.join(where)}
              GROUP BY arm, w.paraphrased
              ORDER BY arm
-        """, (_resolve_owner_id(conn, owner_id),)).fetchall()
+        """, params).fetchall()
     out = []
     for r in rows:
         sent = r["sent"] or 0
@@ -4392,13 +4663,396 @@ def get_wa_variant_stats(owner_id=None) -> list:
     return out
 
 
+# ── WhatsApp: templates and variables ────────────────────────────────────────
+
+WA_TEMPLATE_KINDS = ("gap", "no_gap", "followup")
+
+# What a WhatsApp template can say about the lead, in the order the editor
+# lists them. Campaign variables add to these; a lead's own value wins over a
+# campaign variable of the same name, as it does for email.
+WA_TEMPLATE_FIELDS = [
+    ("business_name", "Business name"),
+    ("signal_detail", "What you saw on their website"),
+    ("city",          "City"),
+    ("category",      "Business category"),
+    ("rating",        "Google rating"),
+    ("review_count",  "Number of reviews"),
+    ("website",       "Website"),
+    ("address",       "Street address"),
+]
+
+# {{name}}, {{ name }} or {{name|fallback}} -- the same syntax as email copy,
+# so one habit works everywhere.
+_WA_PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\|([^}]*))?\}\}")
+
+
+def render_wa_message(template: str, lead: dict, variables: dict = None) -> str:
+    """
+    Fill a template for one lead. `lead` is any row with the business joined
+    in (`company` for the name, as every WhatsApp view returns it).
+
+    A placeholder with no value becomes its fallback, or nothing -- never
+    literal braces in a message someone reads on their phone. The business
+    name alone falls back to "there", so "Hi {{business_name}}" can't come out
+    as "Hi ," when a listing had no name.
+    """
+    fields = {str(k): v for k, v in (variables or {}).items()}
+    for key, _label in WA_TEMPLATE_FIELDS:
+        if key in ("business_name", "signal_detail"):
+            continue
+        value = lead.get(key)
+        if value not in (None, ""):
+            fields[key] = value
+    name = (lead.get("company") or lead.get("name") or "").strip()
+    fields["business_name"] = name
+    fields["company"] = name
+    fields["signal_detail"] = lead.get("signal_detail") or ""
+
+    def _resolve(match):
+        key, fallback = match.group(1), match.group(2)
+        value = fields.get(key)
+        if value is None or not str(value).strip():
+            if fallback is not None:
+                return fallback.strip()
+            return "there" if key in ("business_name", "company") else ""
+        return str(value).strip()
+
+    return _WA_PLACEHOLDER_RE.sub(_resolve, template or "")
+
+
 def _render_wa_template(template: str, business: dict, signal_detail: str) -> str:
-    return (template
-            .replace("{{business_name}}", business.get("name") or "there")
-            .replace("{{signal_detail}}", signal_detail or ""))
+    """Older call shape, kept for callers that only have a name and a signal."""
+    return render_wa_message(template, {"company": business.get("name") or "",
+                                        "signal_detail": signal_detail})
 
 
-def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None) -> tuple:
+def _wa_factory_templates() -> dict:
+    return {kind: [default] for kind, (_key, default) in _WA_TEMPLATE_SETTINGS_KEYS.items()}
+
+
+def _clean_wa_arms(value) -> list:
+    arms = [value] if isinstance(value, str) else (value or [])
+    return [a for a in arms if isinstance(a, str) and a.strip()][:WA_MAX_ARMS]
+
+
+def _clean_wa_variables(value) -> dict:
+    """Keys become identifiers ({{my name}} can't be typed into a template)."""
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for k, v in value.items():
+        key = re.sub(r"[^A-Za-z0-9_]", "_", str(k).strip()).strip("_")
+        if key and not key[0].isdigit():
+            out[key[:60]] = str(v if v is not None else "")[:500]
+    return out
+
+
+# ── WhatsApp: campaigns ───────────────────────────────────────────────────────
+
+def _parse_wa_campaign(row) -> dict:
+    out = dict(row)
+    try:
+        raw = json.loads(out.get("templates") or "{}")
+    except (TypeError, ValueError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    factory = _wa_factory_templates()
+    out["templates"] = {kind: (_clean_wa_arms(raw.get(kind)) or factory[kind])
+                        for kind in WA_TEMPLATE_KINDS}
+    try:
+        out["variables"] = _clean_wa_variables(json.loads(out.get("variables") or "{}"))
+    except (TypeError, ValueError):
+        out["variables"] = {}
+    try:
+        out["followup_days"] = max(1, int(out.get("followup_days")))
+    except (TypeError, ValueError):
+        out["followup_days"] = WA_DEFAULT_FOLLOWUP_DAYS
+    return out
+
+
+def create_wa_campaign(name: str, owner_id=None, country: str = "", notes: str = "",
+                       copy_from=None) -> int:
+    """
+    A new campaign. Its copy starts from another of this operator's campaigns
+    when `copy_from` names one -- the usual case, tweaking a pitch that works --
+    and from the factory templates otherwise. Never from anyone else's.
+    """
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        templates, followup_days, variables = _wa_factory_templates(), WA_DEFAULT_FOLLOWUP_DAYS, {}
+        if copy_from:
+            src = conn.execute("SELECT * FROM wa_campaigns WHERE id=? AND owner_id=?",
+                               (int(copy_from), owner)).fetchone()
+            if src:
+                parsed = _parse_wa_campaign(src)
+                templates = parsed["templates"]
+                followup_days = parsed["followup_days"]
+                variables = parsed["variables"]
+        return conn.execute("""
+            INSERT INTO wa_campaigns(owner_id, name, notes, country, templates,
+                                     followup_days, variables)
+            VALUES(?,?,?,?,?,?,?)
+        """, (owner, (name or "").strip() or "Untitled campaign", notes or "",
+              (country or "").strip().upper(), json.dumps(templates), followup_days,
+              json.dumps(variables))).lastrowid
+
+
+def get_wa_campaign(cid: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM wa_campaigns WHERE id=?", (int(cid),)).fetchone()
+        return _parse_wa_campaign(row) if row else None
+
+
+def update_wa_campaign(cid: int, **fields):
+    """
+    Save whichever of name, notes, country, status, templates, followup_days
+    and variables were given. A template kind can't be saved empty -- a lead
+    confirmed later would have nothing to be written from.
+    """
+    updates = {}
+    if "name" in fields:
+        name = (fields["name"] or "").strip()
+        if not name:
+            raise ValueError("A campaign needs a name")
+        updates["name"] = name[:200]
+    if "notes" in fields:
+        updates["notes"] = str(fields["notes"] or "")
+    if "country" in fields:
+        updates["country"] = str(fields["country"] or "").strip().upper()
+    if "status" in fields:
+        if fields["status"] not in ("active", "archived"):
+            raise ValueError("Unknown status")
+        updates["status"] = fields["status"]
+    if "followup_days" in fields:
+        try:
+            updates["followup_days"] = max(1, min(365, int(fields["followup_days"])))
+        except (TypeError, ValueError):
+            raise ValueError("The follow-up gap has to be a number of days")
+    if "variables" in fields:
+        updates["variables"] = json.dumps(_clean_wa_variables(fields["variables"]))
+    if "templates" in fields:
+        given = fields["templates"]
+        if not isinstance(given, dict):
+            raise ValueError("templates must be an object")
+        current = get_wa_campaign(cid)
+        merged = dict(current["templates"]) if current else _wa_factory_templates()
+        for kind, value in given.items():
+            if kind not in WA_TEMPLATE_KINDS:
+                continue
+            arms = _clean_wa_arms(value)
+            if not arms:
+                raise ValueError(f"The {kind.replace('_', ' ')} message needs at least one version")
+            merged[kind] = arms
+        updates["templates"] = json.dumps(merged)
+    if not updates:
+        return
+    with get_db() as conn:
+        conn.execute(f"UPDATE wa_campaigns SET {', '.join(f'{k}=?' for k in updates)} WHERE id=?",
+                     (*updates.values(), int(cid)))
+
+
+def delete_wa_campaign(cid: int) -> int:
+    """
+    Removes the campaign, never its leads. They stay on WhatsApp with no
+    campaign, where they wait to be moved into one -- a lead without a
+    campaign has no copy to be written from. Returns how many were left so.
+    """
+    with get_db() as conn:
+        left = conn.execute("UPDATE wa_leads SET wa_campaign_id=NULL WHERE wa_campaign_id=?",
+                            (int(cid),)).rowcount
+        conn.execute("DELETE FROM wa_campaigns WHERE id=?", (int(cid),))
+        return left
+
+
+# A lead still being worked on WhatsApp: not ruled out as not on it, not taken
+# off by hand.
+_WA_ACTIVE = "w.moved_to = '' AND w.removed_at IS NULL"
+
+
+def _wa_due_clause(days=None):
+    """
+    "Due a follow-up" for a sent lead. Each campaign has its own gap; a lead
+    with no campaign falls back to the default. `days` overrides both, for a
+    caller asking about one fixed window.
+    """
+    if days is not None:
+        return "datetime(w.sent_date) <= datetime('now', ?)", [f"-{int(days)} days"]
+    return (f"datetime(w.sent_date) <= datetime('now', '-' || "
+            f"COALESCE(c.followup_days, {int(WA_DEFAULT_FOLLOWUP_DAYS)}) || ' days')"), []
+
+
+def get_wa_campaigns(owner_id=None) -> list:
+    """This operator's campaigns, newest first, each with the numbers it's judged by."""
+    due, due_params = _wa_due_clause()
+    with get_db() as conn:
+        rows = conn.execute(f"""
+            SELECT c.*,
+              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} THEN 1 ELSE 0 END) AS leads,
+              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} AND w.wa_status = ''
+                       THEN 1 ELSE 0 END)                                         AS checking,
+              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} AND w.wa_status = 'signal_ready'
+                       THEN 1 ELSE 0 END)                                         AS to_review,
+              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} AND w.wa_status = 'confirmed'
+                       THEN 1 ELSE 0 END)                                         AS to_write,
+              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} AND w.wa_status = 'drafted'
+                       THEN 1 ELSE 0 END)                                         AS ready,
+              SUM(CASE WHEN w.wa_status IN ('sent','replied') THEN 1 ELSE 0 END)  AS messaged,
+              SUM(CASE WHEN w.replied = 1 THEN 1 ELSE 0 END)                      AS replied,
+              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} AND w.wa_status = 'sent'
+                        AND w.replied = 0 AND w.paused = 0 AND w.sent_date IS NOT NULL
+                        AND {due} THEN 1 ELSE 0 END)                              AS due
+              FROM wa_campaigns c
+              LEFT JOIN wa_leads w ON w.wa_campaign_id = c.id
+             WHERE c.owner_id = ?
+             GROUP BY c.id
+             ORDER BY c.status = 'archived', c.id DESC
+        """, (*due_params, _resolve_owner_id(conn, owner_id))).fetchall()
+    out = []
+    for r in rows:
+        c = _parse_wa_campaign(r)
+        for k in ("leads", "checking", "to_review", "to_write", "ready", "messaged", "replied", "due"):
+            c[k] = c.get(k) or 0
+        c["reply_rate"] = round(c["replied"] / c["messaged"] * 100, 1) if c["messaged"] else 0.0
+        out.append(c)
+    return out
+
+
+def get_wa_variable_coverage(cid: int) -> dict:
+    """
+    How many of a campaign's leads have a value for each template field, so a
+    template leaning on {{city}} can be seen to be missing it for half the
+    list before a message goes out saying "in ".
+    """
+    with get_db() as conn:
+        base = f"FROM wa_leads w JOIN businesses b ON b.id = w.business_id " \
+               f"WHERE w.wa_campaign_id = ? AND {_WA_ACTIVE}"
+        total = conn.execute(f"SELECT COUNT(*) {base}", (int(cid),)).fetchone()[0]
+        pieces = []
+        for key, _label in WA_TEMPLATE_FIELDS:
+            col = {"business_name": "b.name", "signal_detail": "w.signal_detail"}.get(key, f"b.{key}")
+            if key in ("rating", "review_count"):
+                expr = f"{col} IS NOT NULL"
+            else:
+                expr = f"NULLIF(TRIM(COALESCE({col},'')),'') IS NOT NULL"
+            pieces.append(f"SUM(CASE WHEN {expr} THEN 1 ELSE 0 END) AS {key}")
+        row = conn.execute(f"SELECT {', '.join(pieces)} {base}", (int(cid),)).fetchone()
+    return {
+        "total": total,
+        "fields": [{"key": k, "label": label, "filled": (row[k] or 0) if total else 0}
+                   for k, label in WA_TEMPLATE_FIELDS],
+    }
+
+
+def set_wa_leads_campaign(wa_lead_ids, cid, owner_id=None) -> int:
+    """Move leads into a campaign. Both have to be this operator's."""
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        if cid is not None and not conn.execute(
+            "SELECT 1 FROM wa_campaigns WHERE id=? AND owner_id=?", (int(cid), owner)
+        ).fetchone():
+            return 0
+        ids = _own_wa_lead_ids(conn, wa_lead_ids, owner)
+        if not ids:
+            return 0
+        return conn.execute(
+            f"UPDATE wa_leads SET wa_campaign_id=? WHERE id IN ({','.join('?' * len(ids))})",
+            (int(cid) if cid is not None else None, *ids),
+        ).rowcount
+
+
+_WA_CAMPAIGNS_MARKER = "_migrated_wa_campaigns"
+
+
+def _migrate_wa_campaigns(conn):
+    """
+    One-shot: give every operator's existing WhatsApp work a campaign.
+
+    Copy moved from per-operator settings to per-campaign. Each operator with
+    WhatsApp leads, or with templates of their own, gets one campaign holding
+    their current copy, follow-up gap and every lead they already had -- so
+    the switch changes where the copy is edited and nothing else. The old
+    settings rows are left where they are; nothing reads them after this.
+
+    Waits for a first user to exist, because campaigns belong to someone.
+    """
+    if conn.execute("SELECT 1 FROM settings WHERE key=?", (_WA_CAMPAIGNS_MARKER,)).fetchone():
+        return
+    users = [r["id"] for r in conn.execute("SELECT id FROM users ORDER BY id")]
+    if not users:
+        return
+    settings = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings")}
+
+    owners = {r["owner_id"] for r in conn.execute("""
+        SELECT DISTINCT b.owner_id FROM wa_leads w JOIN businesses b ON b.id = w.business_id
+         WHERE w.wa_campaign_id IS NULL
+    """)}
+    own_copy_keys = [key for key, _d in _WA_TEMPLATE_SETTINGS_KEYS.values()] + [WA_FOLLOWUP_DAYS_KEY]
+    for uid in users:
+        if any(settings.get(_wa_owner_key(k, uid)) not in (None, "") for k in own_copy_keys):
+            owners.add(uid)
+    owners.discard(OWNER_UNASSIGNED)
+
+    for owner in sorted(owners):
+        templates = {
+            kind: _wa_arms(_wa_setting(settings, key, owner, default), default)
+            for kind, (key, default) in _WA_TEMPLATE_SETTINGS_KEYS.items()
+        }
+        try:
+            followup_days = max(1, int(_wa_setting(settings, WA_FOLLOWUP_DAYS_KEY, owner,
+                                                   WA_DEFAULT_FOLLOWUP_DAYS)))
+        except (TypeError, ValueError):
+            followup_days = WA_DEFAULT_FOLLOWUP_DAYS
+        country_row = conn.execute("""
+            SELECT w.country, COUNT(*) AS n FROM wa_leads w JOIN businesses b ON b.id = w.business_id
+             WHERE b.owner_id = ? AND w.country != '' GROUP BY w.country ORDER BY n DESC LIMIT 1
+        """, (owner,)).fetchone()
+        cid = conn.execute("""
+            INSERT INTO wa_campaigns(owner_id, name, country, templates, followup_days)
+            VALUES(?,?,?,?,?)
+        """, (owner, "My first campaign", country_row["country"] if country_row else "",
+              json.dumps(templates), followup_days)).lastrowid
+        moved = conn.execute("""
+            UPDATE wa_leads SET wa_campaign_id = ?
+             WHERE wa_campaign_id IS NULL
+               AND business_id IN (SELECT id FROM businesses WHERE owner_id = ?)
+        """, (cid, owner)).rowcount
+        logger.info("WhatsApp campaigns: put %d existing lead(s) and the current copy "
+                    "into a first campaign for user %s", moved, owner)
+
+    conn.execute("INSERT INTO settings(key, value) VALUES(?, '1')", (_WA_CAMPAIGNS_MARKER,))
+
+
+# ── WhatsApp: leads ───────────────────────────────────────────────────────────
+
+def _own_wa_lead_ids(conn, wa_lead_ids, owner_id=None) -> list:
+    """The WhatsApp lead ids, out of these, that belong to this operator."""
+    ids = []
+    for i in wa_lead_ids or []:
+        try:
+            ids.append(int(i))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return []
+    keep = {r["id"] for r in conn.execute(
+        f"SELECT w.id FROM wa_leads w JOIN businesses b ON b.id = w.business_id "
+        f"WHERE w.id IN ({','.join('?' * len(ids))}) AND b.owner_id = ?",
+        (*ids, _resolve_owner_id(conn, owner_id)),
+    )}
+    return [i for i in ids if i in keep]
+
+
+def _own_wa_campaign_id(conn, wa_campaign_id, owner: int):
+    if not wa_campaign_id:
+        return None
+    row = conn.execute("SELECT id FROM wa_campaigns WHERE id=? AND owner_id=?",
+                       (int(wa_campaign_id), owner)).fetchone()
+    return row["id"] if row else None
+
+
+def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
+                    wa_campaign_id=None) -> tuple:
     """
     Import WhatsApp leads: resolve/create the business the same way any
     channel's import does (find_or_create_business, so a clinic already
@@ -4409,6 +5063,10 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None) -> tup
     country column of its own; the picker in the import UI is the fallback
     for one that doesn't.
 
+    New leads go into `wa_campaign_id`. A lead already on WhatsApp keeps the
+    campaign it's in; one taken off by hand comes back, into this campaign; one
+    ruled out as not on WhatsApp stays ruled out.
+
     Returns (accepted, business_ids), same shape as upsert_businesses.
     """
     with get_db() as conn:
@@ -4416,6 +5074,7 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None) -> tup
         touched = set()
         ordered_ids = []
         owner_id = _resolve_owner_id(conn, owner_id)
+        campaign = _own_wa_campaign_id(conn, wa_campaign_id, owner_id)
 
         for r in rows:
             name = (r.get("company") or r.get("name") or "").strip()
@@ -4456,7 +5115,8 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None) -> tup
             number_type = classify_number_type(phone, country) if phone else "unknown"
 
             existing = conn.execute(
-                "SELECT id, wa_number, country FROM wa_leads WHERE business_id=?", (business_id,)
+                "SELECT id, wa_number, country, removed_at, moved_to, wa_campaign_id "
+                "FROM wa_leads WHERE business_id=?", (business_id,)
             ).fetchone()
             if existing:
                 conn.execute("""
@@ -4467,11 +5127,17 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None) -> tup
                                            THEN ? ELSE number_type END
                     WHERE id=?
                 """, (wa_number, country, wa_number, number_type, existing["id"]))
+                if existing["removed_at"] is not None and not existing["moved_to"]:
+                    conn.execute("UPDATE wa_leads SET removed_at=NULL, wa_campaign_id=? WHERE id=?",
+                                 (campaign, existing["id"]))
+                elif existing["wa_campaign_id"] is None and campaign:
+                    conn.execute("UPDATE wa_leads SET wa_campaign_id=? WHERE id=?",
+                                 (campaign, existing["id"]))
             else:
                 conn.execute("""
-                    INSERT INTO wa_leads(business_id, wa_number, country, number_type)
-                    VALUES(?,?,?,?)
-                """, (business_id, wa_number, country, number_type))
+                    INSERT INTO wa_leads(business_id, wa_number, country, number_type, wa_campaign_id)
+                    VALUES(?,?,?,?,?)
+                """, (business_id, wa_number, country, number_type, campaign))
             accepted += 1
 
         for business_id in touched:
@@ -4480,9 +5146,9 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None) -> tup
         return accepted, ordered_ids
 
 
-def add_businesses_to_wa(business_ids, country: str, owner_id=None) -> dict:
+def add_businesses_to_wa(business_ids, country: str, owner_id=None, wa_campaign_id=None) -> dict:
     """
-    Put leads this operator already has onto WhatsApp.
+    Put leads this operator already has onto WhatsApp, into a campaign.
 
     For businesses already in the database -- an earlier scrape, a clinic that
     was emailed and never answered. Their identity is settled, so unlike
@@ -4496,20 +5162,26 @@ def add_businesses_to_wa(business_ids, country: str, owner_id=None) -> dict:
                     adding it back would requeue a number known to be dead
       opted_out  -- do_not_contact is set; they asked to be left alone
       already    -- already on WhatsApp
+    A lead only taken off WhatsApp by hand is added back, into this campaign.
     """
     country = (country or "").strip().upper()
     counts = {"added": 0, "already": 0, "no_phone": 0, "ruled_out": 0, "opted_out": 0}
     with get_db() as conn:
-        for business_id in _own_business_ids(conn, business_ids, owner_id):
-            existing = conn.execute(
-                "SELECT moved_to FROM wa_leads WHERE business_id=?", (business_id,)
-            ).fetchone()
-            if existing:
-                counts["ruled_out" if existing["moved_to"] else "already"] += 1
-                continue
+        owner = _resolve_owner_id(conn, owner_id)
+        campaign = _own_wa_campaign_id(conn, wa_campaign_id, owner)
+        for business_id in _own_business_ids(conn, business_ids, owner):
             biz = conn.execute(
                 "SELECT phone, do_not_contact FROM businesses WHERE id=?", (business_id,)
             ).fetchone()
+            existing = conn.execute(
+                "SELECT id, moved_to, removed_at FROM wa_leads WHERE business_id=?", (business_id,)
+            ).fetchone()
+            if existing and existing["moved_to"]:
+                counts["ruled_out"] += 1
+                continue
+            if existing and existing["removed_at"] is None:
+                counts["already"] += 1
+                continue
             if biz["do_not_contact"]:
                 counts["opted_out"] += 1
                 continue
@@ -4517,27 +5189,33 @@ def add_businesses_to_wa(business_ids, country: str, owner_id=None) -> dict:
             if not phone:
                 counts["no_phone"] += 1
                 continue
-            conn.execute("""
-                INSERT INTO wa_leads(business_id, wa_number, country, number_type)
-                VALUES(?,?,?,?)
-            """, (business_id, format_whatsapp_number(phone, country), country,
-                  classify_number_type(phone, country)))
+            if existing:
+                conn.execute("UPDATE wa_leads SET removed_at=NULL, wa_campaign_id=? WHERE id=?",
+                             (campaign, existing["id"]))
+            else:
+                conn.execute("""
+                    INSERT INTO wa_leads(business_id, wa_number, country, number_type, wa_campaign_id)
+                    VALUES(?,?,?,?,?)
+                """, (business_id, format_whatsapp_number(phone, country), country,
+                      classify_number_type(phone, country), campaign))
             counts["added"] += 1
     return counts
 
 
-# Every row a WhatsApp list view needs, business joined in the same shape the
-# other two channels use -- `company` for the name, so the UI needs no
-# special-casing per channel.
+# Every row a WhatsApp list view needs, business and campaign joined in the
+# same shape the other channels use -- `company` for the name, so the UI needs
+# no special-casing per channel.
 _WA_LEAD_COLUMNS = """
     w.id, w.business_id, w.wa_number, w.country, w.number_type, w.wa_status,
     w.signal_type, w.signal_detail, w.signal_confirmed, w.draft_message,
     w.template_variant, w.paraphrased, w.sent_date, w.replied, w.followup_count, w.paused,
-    w.moved_to, w.notes, w.created_at,
+    w.moved_to, w.removed_at, w.notes, w.created_at, w.wa_campaign_id,
+    c.name AS campaign_name, c.followup_days AS campaign_followup_days,
     b.name AS company, b.website, b.address, b.city, b.phone, b.category,
-    b.rating, b.review_count, b.do_not_contact
+    b.rating, b.review_count, b.do_not_contact, b.source_job_id
 """
-_WA_LEAD_JOIN = "FROM wa_leads w JOIN businesses b ON b.id = w.business_id"
+_WA_LEAD_JOIN = ("FROM wa_leads w JOIN businesses b ON b.id = w.business_id "
+                 "LEFT JOIN wa_campaigns c ON c.id = w.wa_campaign_id")
 
 
 def get_wa_lead(wa_lead_id: int):
@@ -4548,19 +5226,28 @@ def get_wa_lead(wa_lead_id: int):
         return dict(row) if row else None
 
 
-def get_wa_leads(status: str = None, limit: int = 200, owner_id=None) -> list:
+def get_wa_leads(status: str = None, limit: int = 200, owner_id=None, wa_campaign_id=None,
+                 include_inactive: bool = False) -> list:
     """
     The WhatsApp list, optionally scoped to one lifecycle stage:
     '' (imported, awaiting signal), 'signal_ready' (needs operator review),
     'confirmed' (signal locked in, awaiting drafting), 'drafted' (ready to
-    open), 'sent' (in the cadence), 'replied' / 'moved' (terminal).
+    open), 'sent' (in the cadence), 'replied' (terminal).
+
+    Leads taken off WhatsApp are left out unless asked for: a lead ruled out
+    mid-review would otherwise still be sitting in "Needs review".
     """
     clauses, params = ["b.owner_id = ?"], []
     with get_db() as conn:
         params.append(_resolve_owner_id(conn, owner_id))
+        if not include_inactive:
+            clauses.append(_WA_ACTIVE)
         if status is not None:
             clauses.append("w.wa_status = ?")
             params.append(status)
+        if wa_campaign_id:
+            clauses.append("w.wa_campaign_id = ?")
+            params.append(int(wa_campaign_id))
         params.append(limit)
         rows = conn.execute(
             f"SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN} WHERE {' AND '.join(clauses)} "
@@ -4569,34 +5256,128 @@ def get_wa_leads(status: str = None, limit: int = 200, owner_id=None) -> list:
         return [dict(r) for r in rows]
 
 
-def get_wa_summary(owner_id=None) -> dict:
+def _wa_stage_sql() -> tuple:
+    """The one-word stage a lead is in, as the Leads table shows and filters it."""
+    due, params = _wa_due_clause()
+    return f"""
+        CASE
+          WHEN w.removed_at IS NOT NULL THEN 'removed'
+          WHEN w.moved_to != ''         THEN 'moved'
+          WHEN w.replied = 1            THEN 'replied'
+          WHEN w.paused = 1             THEN 'paused'
+          WHEN w.wa_status = ''         THEN 'checking'
+          WHEN w.wa_status = 'signal_ready' THEN 'review'
+          WHEN w.wa_status = 'confirmed'    THEN 'writing'
+          WHEN w.wa_status = 'drafted'      THEN 'ready'
+          WHEN w.wa_status = 'sent' AND w.sent_date IS NOT NULL AND {due} THEN 'due'
+          WHEN w.wa_status = 'sent'     THEN 'waiting'
+          ELSE w.wa_status
+        END""", params
+
+
+WA_STAGES = ("checking", "review", "writing", "ready", "due", "waiting", "replied", "paused",
+             "moved", "removed")
+
+_WA_LEAD_SORT = {
+    "company": "company", "campaign_name": "campaign_name", "stage": "stage",
+    "sent_date": "sent_date", "followup_count": "followup_count", "created_at": "created_at",
+    "template_variant": "template_variant", "city": "city",
+}
+
+
+def get_wa_leads_page(page=1, per_page=50, q="", stage="", wa_campaign_id=None,
+                      sort_col="", sort_dir="desc", owner_id=None) -> dict:
+    """
+    Every WhatsApp lead as one table -- the Leads tab.
+
+    stage: '' everything still on WhatsApp, 'off' everything taken off it,
+    or one stage from WA_STAGES. wa_campaign_id: a campaign id, or 'none'
+    for leads with no campaign.
+    """
+    page = max(1, int(page or 1))
+    per_page = max(1, min(int(per_page or 50), 500))
+    stage_sql, stage_params = _wa_stage_sql()
+    inner_where, inner_params = ["b.owner_id = ?"], [_owner_or_default(owner_id)]
+    if wa_campaign_id == "none":
+        inner_where.append("w.wa_campaign_id IS NULL")
+    elif wa_campaign_id:
+        inner_where.append("w.wa_campaign_id = ?")
+        inner_params.append(int(wa_campaign_id))
+    q = (q or "").strip()
+    if q:
+        inner_where.append("(b.name LIKE ? OR b.phone LIKE ? OR w.wa_number LIKE ? "
+                           "OR b.website LIKE ? OR b.city LIKE ?)")
+        inner_params.extend([f"%{q}%"] * 5)
+
+    outer_where, outer_params = [], []
+    if stage == "off":
+        outer_where.append("stage IN ('moved','removed')")
+    elif stage in WA_STAGES:
+        outer_where.append("stage = ?")
+        outer_params.append(stage)
+    else:
+        outer_where.append("stage NOT IN ('moved','removed')")
+
+    direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+    col = _WA_LEAD_SORT.get(sort_col)
+    order = f"{col} IS NULL, {col} {direction}" if col else "created_at DESC, id DESC"
+
+    inner = (f"SELECT {_WA_LEAD_COLUMNS}, {stage_sql} AS stage {_WA_LEAD_JOIN} "
+             f"WHERE {' AND '.join(inner_where)}")
+    params = [*stage_params, *inner_params]
+    where = " AND ".join(outer_where)
     with get_db() as conn:
-        row = conn.execute("""
+        total = conn.execute(f"SELECT COUNT(*) FROM ({inner}) WHERE {where}",
+                             (*params, *outer_params)).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT * FROM ({inner}) WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+            (*params, *outer_params, per_page, (page - 1) * per_page),
+        ).fetchall()
+    return {"rows": [dict(r) for r in rows], "total": total, "page": page,
+            "per_page": per_page, "pages": max(1, (total + per_page - 1) // per_page)}
+
+
+def get_wa_summary(owner_id=None, wa_campaign_id=None) -> dict:
+    due, due_params = _wa_due_clause()
+    with get_db() as conn:
+        where, params = ["b.owner_id = ?"], [_resolve_owner_id(conn, owner_id)]
+        if wa_campaign_id:
+            where.append("w.wa_campaign_id = ?")
+            params.append(int(wa_campaign_id))
+        row = conn.execute(f"""
             SELECT
-              COUNT(*)                                                       AS total,
-              SUM(CASE WHEN w.wa_status=''            THEN 1 ELSE 0 END)     AS pending_signal,
-              SUM(CASE WHEN w.wa_status='signal_ready' THEN 1 ELSE 0 END)    AS awaiting_review,
-              SUM(CASE WHEN w.wa_status='confirmed'   THEN 1 ELSE 0 END)     AS awaiting_draft,
-              SUM(CASE WHEN w.wa_status='drafted'     THEN 1 ELSE 0 END)     AS ready_to_send,
-              SUM(CASE WHEN w.wa_status='sent'        THEN 1 ELSE 0 END)     AS in_cadence,
-              SUM(w.replied)                                                 AS replied,
-              SUM(CASE WHEN w.moved_to != ''          THEN 1 ELSE 0 END)     AS moved
+              SUM(CASE WHEN {_WA_ACTIVE} THEN 1 ELSE 0 END)                        AS total,
+              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status=''             THEN 1 ELSE 0 END) AS pending_signal,
+              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='signal_ready' THEN 1 ELSE 0 END) AS awaiting_review,
+              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='confirmed'    THEN 1 ELSE 0 END) AS awaiting_draft,
+              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='drafted'      THEN 1 ELSE 0 END) AS ready_to_send,
+              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='sent'         THEN 1 ELSE 0 END) AS in_cadence,
+              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='sent' AND w.replied=0 AND w.paused=0
+                        AND w.sent_date IS NOT NULL AND {due} THEN 1 ELSE 0 END)           AS due,
+              SUM(CASE WHEN w.wa_status IN ('sent','replied') THEN 1 ELSE 0 END)           AS messaged,
+              SUM(w.replied)                                                               AS replied,
+              SUM(CASE WHEN w.moved_to != '' OR w.removed_at IS NOT NULL THEN 1 ELSE 0 END) AS moved,
+              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_campaign_id IS NULL THEN 1 ELSE 0 END)   AS no_campaign
               FROM wa_leads w JOIN businesses b ON b.id = w.business_id
-             WHERE b.owner_id = ?
-        """, (_resolve_owner_id(conn, owner_id),)).fetchone()
-        return {k: (row[k] or 0) for k in row.keys()}
+              LEFT JOIN wa_campaigns c ON c.id = w.wa_campaign_id
+             WHERE {' AND '.join(where)}
+        """, (*due_params, *params)).fetchone()
+        out = {k: (row[k] or 0) for k in row.keys()}
+    out["reply_rate"] = round(out["replied"] / out["messaged"] * 100, 1) if out["messaged"] else 0.0
+    return out
 
 
 def get_wa_leads_pending_signal(limit: int = 5) -> list:
     """
     WhatsApp leads awaiting their first (and only) signal check. Consumed by
     the background scan in scheduler.py, never by a request -- see that
-    module for why this can't run inline.
+    module for why this can't run inline. A lead taken off WhatsApp before it
+    was checked isn't worth a fetch.
     """
     with get_db() as conn:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT w.id, b.website FROM wa_leads w JOIN businesses b ON b.id = w.business_id
-             WHERE w.wa_status = ''
+             WHERE w.wa_status = '' AND {_WA_ACTIVE}
              ORDER BY w.created_at ASC LIMIT ?
         """, (limit,)).fetchall()
         return [dict(r) for r in rows]
@@ -4627,16 +5408,38 @@ def confirm_wa_signal(wa_lead_id: int, signal_type: str, signal_detail: str):
         """, (signal_type, signal_detail, wa_lead_id))
 
 
-def get_wa_leads_ready_to_draft(limit: int = 200, owner_id=None) -> list:
+def get_wa_leads_ready_to_draft(limit: int = 200, owner_id=None, wa_campaign_id=None) -> list:
     """Confirmed leads with no draft yet -- what the batch draft step processes."""
     with get_db() as conn:
+        where = ["w.wa_status='confirmed'", "w.signal_confirmed=1", "b.owner_id = ?", _WA_ACTIVE]
+        params = [_resolve_owner_id(conn, owner_id)]
+        if wa_campaign_id:
+            where.append("w.wa_campaign_id = ?")
+            params.append(int(wa_campaign_id))
         rows = conn.execute(f"""
             SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN}
-             WHERE w.wa_status='confirmed' AND w.signal_confirmed=1
-               AND b.owner_id = ?
+             WHERE {' AND '.join(where)}
              ORDER BY w.created_at ASC LIMIT ?
-        """, (_resolve_owner_id(conn, owner_id), limit)).fetchall()
+        """, (*params, limit)).fetchall()
         return [dict(r) for r in rows]
+
+
+def wa_arm_offset(wa_campaign_id: int, kind: str) -> int:
+    """
+    Where the next lead of this kind picks up in its campaign's rotation.
+
+    Counting from the leads already written means small batches still
+    alternate. Starting every batch at the first arm dealt every lead to arm A
+    whenever leads were written one or two at a time -- which is how most
+    review sessions go.
+    """
+    signal = "w.signal_type = 'gap_found'" if kind == "gap" else "COALESCE(w.signal_type,'') != 'gap_found'"
+    with get_db() as conn:
+        return conn.execute(f"""
+            SELECT COUNT(*) FROM wa_leads w
+             WHERE w.wa_campaign_id = ? AND {signal}
+               AND w.wa_status IN ('drafted','sent','replied')
+        """, (int(wa_campaign_id),)).fetchone()[0]
 
 
 def save_wa_draft(wa_lead_id: int, message: str, template_variant: str = "",
@@ -4709,60 +5512,527 @@ def set_wa_paused(wa_lead_id: int, paused: bool = True):
         conn.execute("UPDATE wa_leads SET paused=? WHERE id=?", (1 if paused else 0, wa_lead_id))
 
 
-def get_wa_followups_due(days: int = 3, limit: int = 200, owner_id=None) -> list:
-    """
-    Leads due for a follow-up: sent at least `days` ago, not replied, not
-    paused, not moved to another channel. A live query, not a scheduled job
-    -- nothing about surfacing "this is due" should touch the network, and
-    computing it on read means there is no background code path here at all
-    for anyone auditing the manual-send constraint to have to trust.
-    """
+def set_wa_paused_bulk(wa_lead_ids, paused: bool, owner_id=None) -> int:
     with get_db() as conn:
+        ids = _own_wa_lead_ids(conn, wa_lead_ids, owner_id)
+        if not ids:
+            return 0
+        return conn.execute(
+            f"UPDATE wa_leads SET paused=? WHERE id IN ({','.join('?' * len(ids))})",
+            (1 if paused else 0, *ids),
+        ).rowcount
+
+
+def get_wa_followups_due(days: int = None, limit: int = 200, owner_id=None,
+                         wa_campaign_id=None) -> list:
+    """
+    Leads due for a follow-up: sent at least their campaign's follow-up gap
+    ago (or `days`, if given), not replied, not paused, still on WhatsApp. A
+    live query, not a scheduled job -- nothing about surfacing "this is due"
+    should touch the network, and computing it on read means there is no
+    background code path here at all for anyone auditing the manual-send
+    constraint to have to trust.
+    """
+    due, due_params = _wa_due_clause(days)
+    with get_db() as conn:
+        where = ["w.wa_status = 'sent'", "w.replied = 0", "w.paused = 0", _WA_ACTIVE,
+                 "w.sent_date IS NOT NULL", due, "b.owner_id = ?"]
+        params = [*due_params, _resolve_owner_id(conn, owner_id)]
+        if wa_campaign_id:
+            where.append("w.wa_campaign_id = ?")
+            params.append(int(wa_campaign_id))
         rows = conn.execute(f"""
             SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN}
-             WHERE w.wa_status = 'sent'
-               AND w.replied = 0 AND w.paused = 0 AND w.moved_to = ''
-               AND w.sent_date IS NOT NULL
-               AND datetime(w.sent_date) <= datetime('now', ?)
-               AND b.owner_id = ?
+             WHERE {' AND '.join(where)}
              ORDER BY w.sent_date ASC LIMIT ?
-        """, (f"-{int(days)} days", _resolve_owner_id(conn, owner_id), limit)).fetchall()
+        """, (*params, limit)).fetchall()
         return [dict(r) for r in rows]
 
 
-def move_wa_lead(wa_lead_id: int, destination: str) -> dict:
+WA_MOVE_DESTINATIONS = ("call", "email", "none")
+
+
+def move_wa_lead(wa_lead_id: int, destination: str, owner_id=None, campaign_id=None) -> dict:
     """
     The number turned out not to be on WhatsApp (discovered by the operator,
     not this app -- see the module handover for why there's no automatic
-    check). Files the business under Calling or Email instead of losing the
-    lead, and marks moved_to so it drops out of the WhatsApp cadence and a
-    later re-scrape can't quietly re-queue a number already ruled out here.
+    check). Marks moved_to so it drops out of WhatsApp for good and a later
+    re-scrape can't quietly re-queue a number already ruled out here, and
+    files the lead where the operator chose:
 
-    'call' creates/reuses a call_leads row and returns its id so the caller
-    can offer adding it straight to a campaign. 'email' has nowhere to
-    enroll a business with no address on file, so it only ensures the
-    business exists as a prospect -- ready to pick up once an email surfaces.
+      call   -- onto Calling, and into `campaign_id` (a call campaign) if given
+      email  -- enrolled in `campaign_id` (an email campaign) if given; needs an
+                address on file, since there is nothing to email otherwise
+      none   -- nowhere; it stays in Contacts, under Unassigned
+
+    The other channel is set up first, so a refusal (no address, opted out)
+    leaves the lead on WhatsApp rather than half-moved.
     """
-    if destination not in ("call", "email"):
+    if destination not in WA_MOVE_DESTINATIONS:
         raise ValueError(f"Unknown destination: {destination}")
     lead = get_wa_lead(wa_lead_id)
     if not lead:
         raise ValueError("WhatsApp lead not found")
+    owner = _owner_or_default(owner_id)
+    business_id = lead["business_id"]
+    result = {"destination": destination, "business_id": business_id}
+
+    if destination == "call":
+        counts = add_to_calling([business_id], owner_id=owner, call_campaign_id=campaign_id)
+        if counts["opted_out"]:
+            raise ValueError("They asked not to be contacted, so they can't go on Calling")
+        if counts["no_phone"]:
+            raise ValueError("There's no phone number on file to call")
+        with get_db() as conn:
+            result["call_lead_id"] = conn.execute(
+                "SELECT id FROM call_leads WHERE business_id=?", (business_id,)
+            ).fetchone()["id"]
+        result["in_campaign"] = counts["in_campaign"]
+    elif destination == "email":
+        with get_db() as conn:
+            row = conn.execute("""
+                SELECT id FROM email_leads
+                 WHERE business_id=? AND status='active' AND owner_id=?
+                 ORDER BY duplicate_of IS NOT NULL, id LIMIT 1
+            """, (business_id, owner)).fetchone()
+        if not row:
+            raise ValueError("There's no email address on file for this business")
+        result["email_lead_id"] = row["id"]
+        if campaign_id:
+            enrolled, skipped = enroll_contacts_bulk(int(campaign_id), [row["id"]], owner_id=owner)
+            result["enrolled"] = enrolled
+            result["skipped"] = skipped
 
     with get_db() as conn:
-        conn.execute(
-            "UPDATE wa_leads SET moved_to=?, paused=1 WHERE id=?",
-            (destination, wa_lead_id),
-        )
-        if destination == "call":
-            call_lead_id = get_or_create_call_lead(conn, lead["business_id"])
-            return {"destination": "call", "call_lead_id": call_lead_id}
+        conn.execute("UPDATE wa_leads SET moved_to=?, paused=1 WHERE id=?",
+                     (destination, wa_lead_id))
+    return result
+
+
+def remove_wa_leads(wa_lead_ids, owner_id=None) -> int:
+    """
+    Take leads off WhatsApp by hand -- a wrong import, a clinic you've decided
+    against. Unlike "not on WhatsApp", this rules nothing out: adding the lead
+    again brings it back, message history and all.
+    """
+    with get_db() as conn:
+        ids = _own_wa_lead_ids(conn, wa_lead_ids, owner_id)
+        if not ids:
+            return 0
+        return conn.execute(
+            f"UPDATE wa_leads SET removed_at=datetime('now') "
+            f"WHERE removed_at IS NULL AND id IN ({','.join('?' * len(ids))})", ids,
+        ).rowcount
+
+
+# ── Contacts: every business, on any channel or none ─────────────────────────
+#
+# Contacts is the one list that holds every business an operator has, with
+# each channel's state alongside. The channel pages each show only their own
+# leads; this is where a business on none of them can still be found, and
+# sent somewhere.
+
+# Why a business isn't on any channel, most specific first. Shown in the
+# Unassigned view so a stray lead explains itself.
+UNASSIGNED_REASONS = {
+    "not_on_whatsapp":  "Not on WhatsApp",
+    "removed_whatsapp": "Taken off WhatsApp",
+    "removed_calling":  "Taken off Calling",
+    "removed_email":    "Email address deleted",
+    "no_email_found":   "Email scrape, no email found",
+    "no_phone":         "Scraped with no phone number",
+    "added_by_hand":    "Added by hand",
+    "scraped":          "Scraped, never assigned",
+}
+
+_BUSINESS_VIEWS = ("all", "unassigned", "dnc")
+_BUSINESS_CHANNELS = ("email", "calling", "whatsapp")
+
+
+def _business_rows_sql() -> tuple:
+    """
+    One row per business with its channel state flattened in, as a subquery
+    the list, the count and the id lookup all filter the same way.
+    """
+    stage_sql, stage_params = _wa_stage_sql()
+    sql = f"""
+        SELECT b.id, b.name AS company, b.phone, b.website, b.domain, b.address, b.city,
+               b.country, b.category, b.rating, b.review_count, b.web_status,
+               b.source_job_id, b.do_not_contact, b.notes, b.created_at,
+               (SELECT COUNT(*) FROM email_leads e
+                 WHERE e.business_id = b.id AND e.status != 'deleted')          AS email_count,
+               (SELECT e.email FROM email_leads e
+                 WHERE e.business_id = b.id AND e.status != 'deleted'
+                 ORDER BY e.duplicate_of IS NOT NULL, e.status != 'active', e.id LIMIT 1) AS email,
+               (SELECT e.status FROM email_leads e
+                 WHERE e.business_id = b.id AND e.status != 'deleted'
+                 ORDER BY e.duplicate_of IS NOT NULL, e.status != 'active', e.id LIMIT 1) AS email_status,
+               (SELECT en.status FROM enrollments en JOIN email_leads e ON e.id = en.email_lead_id
+                 WHERE e.business_id = b.id ORDER BY en.enrolled_at DESC LIMIT 1)   AS email_enrollment,
+               (SELECT c2.name FROM enrollments en JOIN email_leads e ON e.id = en.email_lead_id
+                  JOIN campaigns c2 ON c2.id = en.campaign_id
+                 WHERE e.business_id = b.id ORDER BY en.enrolled_at DESC LIMIT 1)   AS email_campaign,
+               cl.id AS call_lead_id, cl.call_status, cl.next_call_at,
+               w.id AS wa_lead_id, w.wa_campaign_id, c.name AS wa_campaign,
+               CASE WHEN w.id IS NULL THEN NULL ELSE {stage_sql} END              AS wa_stage,
+               j.destination AS source_destination,
+               CASE
+                 WHEN w.id IS NOT NULL AND w.moved_to != '' THEN 'not_on_whatsapp'
+                 WHEN w.id IS NOT NULL AND w.removed_at IS NOT NULL THEN 'removed_whatsapp'
+                 WHEN EXISTS (SELECT 1 FROM call_leads r WHERE r.business_id = b.id
+                               AND r.removed_at IS NOT NULL) THEN 'removed_calling'
+                 WHEN EXISTS (SELECT 1 FROM email_leads r WHERE r.business_id = b.id
+                               AND r.status = 'deleted') THEN 'removed_email'
+                 WHEN j.destination = 'email' THEN 'no_email_found'
+                 WHEN j.destination IN ('calling','whatsapp') THEN 'no_phone'
+                 WHEN b.source_job_id IS NULL THEN 'added_by_hand'
+                 ELSE 'scraped'
+               END AS unassigned_reason
+          FROM businesses b
+          LEFT JOIN call_leads cl   ON cl.business_id = b.id AND cl.removed_at IS NULL
+          LEFT JOIN wa_leads w      ON w.business_id = b.id
+          LEFT JOIN wa_campaigns c  ON c.id = w.wa_campaign_id
+          LEFT JOIN scrape_jobs j   ON j.id = b.source_job_id AND j.owner_id = b.owner_id
+         WHERE b.owner_id = ?
+    """
+    return sql, stage_params
+
+
+def _business_filter(view="all", channel="", q="", source_job_id=None) -> tuple:
+    on_email = "email_count > 0"
+    on_calling = "call_lead_id IS NOT NULL"
+    on_whatsapp = "wa_stage IS NOT NULL AND wa_stage NOT IN ('moved','removed')"
+    where, params = [], []
+    if view == "unassigned":
+        where.append(f"do_not_contact = 0 AND NOT ({on_email}) AND NOT ({on_calling}) "
+                     f"AND NOT ({on_whatsapp})")
+    elif view == "dnc":
+        where.append("do_not_contact = 1")
+    if channel == "email":
+        where.append(on_email)
+    elif channel == "calling":
+        where.append(on_calling)
+    elif channel == "whatsapp":
+        where.append(on_whatsapp)
+    q = (q or "").strip()
+    if q:
+        where.append("(company LIKE ? OR phone LIKE ? OR website LIKE ? OR address LIKE ? "
+                     "OR city LIKE ? OR category LIKE ? OR email LIKE ?)")
+        params.extend([f"%{q}%"] * 7)
+    if source_job_id not in (None, ""):
+        if str(source_job_id) == SOURCE_MANUAL:
+            where.append("source_job_id IS NULL")
         else:
-            conn.execute(
-                "UPDATE businesses SET web_status=COALESCE(NULLIF(web_status,''),'no_email') "
-                "WHERE id=?", (lead["business_id"],),
-            )
-            return {"destination": "email", "business_id": lead["business_id"]}
+            where.append("source_job_id = ?")
+            params.append(int(source_job_id))
+    return (" AND ".join(where) or "1=1"), params
+
+
+_BUSINESS_SORT = {
+    "company": "company", "phone": "phone", "email": "email", "city": "city",
+    "category": "category", "rating": "rating", "created_at": "created_at",
+}
+
+
+def get_businesses_page(page=1, per_page=50, view="all", channel="", q="", source_job_id=None,
+                        sort_col="", sort_dir="desc", owner_id=None) -> dict:
+    """One page of Contacts, with counts for each view's tab."""
+    page = max(1, int(page or 1))
+    per_page = max(1, min(int(per_page or 50), 500))
+    view = view if view in _BUSINESS_VIEWS else "all"
+    channel = channel if channel in _BUSINESS_CHANNELS else ""
+    inner, inner_params = _business_rows_sql()
+    owner = _owner_or_default(owner_id)
+    where, params = _business_filter(view, channel, q, source_job_id)
+
+    direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+    col = _BUSINESS_SORT.get(sort_col)
+    order = (f"NULLIF({col}, '') IS NULL, {col} {direction}" if col
+             else "created_at DESC, id DESC")
+
+    base = [*inner_params, owner]
+    with get_db() as conn:
+        total = conn.execute(f"SELECT COUNT(*) FROM ({inner}) WHERE {where}",
+                             (*base, *params)).fetchone()[0]
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT * FROM ({inner}) WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+            (*base, *params, per_page, (page - 1) * per_page),
+        ).fetchall()]
+        counts = {}
+        for v in _BUSINESS_VIEWS:
+            w, p = _business_filter(v)
+            counts[v] = conn.execute(f"SELECT COUNT(*) FROM ({inner}) WHERE {w}",
+                                     (*base, *p)).fetchone()[0]
+    for r in rows:
+        r["unassigned_label"] = UNASSIGNED_REASONS.get(r["unassigned_reason"], "")
+    return {"rows": rows, "total": total, "page": page, "per_page": per_page,
+            "pages": max(1, (total + per_page - 1) // per_page), "counts": counts}
+
+
+def get_business_ids_matching(view="all", channel="", q="", source_job_id=None, owner_id=None) -> list:
+    """Every id matching a Contacts filter, for "select all N matching"."""
+    inner, inner_params = _business_rows_sql()
+    where, params = _business_filter(view if view in _BUSINESS_VIEWS else "all",
+                                     channel if channel in _BUSINESS_CHANNELS else "",
+                                     q, source_job_id)
+    with get_db() as conn:
+        return [r["id"] for r in conn.execute(
+            f"SELECT id FROM ({inner}) WHERE {where}",
+            (*inner_params, _resolve_owner_id(conn, owner_id), *params),
+        ).fetchall()]
+
+
+def get_business_detail(business_id: int, owner_id=None):
+    """
+    One business with everything that's happened to it, on every channel, as
+    one timeline. None if it isn't this operator's.
+    """
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        b = conn.execute("SELECT * FROM businesses WHERE id=? AND owner_id=?",
+                         (int(business_id), owner)).fetchone()
+        if not b:
+            return None
+        out = dict(b)
+        out["company"] = out["name"]
+        out["emails"] = [dict(r) for r in conn.execute("""
+            SELECT id, email, first_name, last_name, status, mx_valid, duplicate_of
+              FROM email_leads WHERE business_id=? AND status != 'deleted'
+             ORDER BY duplicate_of IS NOT NULL, id
+        """, (business_id,))]
+        out["enrollments"] = [dict(r) for r in conn.execute("""
+            SELECT en.id, en.status, en.current_step, en.next_send_at, c.id AS campaign_id,
+                   c.name AS campaign, e.email
+              FROM enrollments en JOIN email_leads e ON e.id = en.email_lead_id
+              JOIN campaigns c ON c.id = en.campaign_id
+             WHERE e.business_id = ? ORDER BY en.enrolled_at DESC
+        """, (business_id,))]
+        cl = conn.execute("SELECT * FROM call_leads WHERE business_id=?", (business_id,)).fetchone()
+        out["call"] = dict(cl) if cl else None
+        if cl:
+            out["call"]["campaigns"] = [dict(r) for r in conn.execute("""
+                SELECT c.id, c.name FROM call_campaign_members m
+                  JOIN call_campaigns c ON c.id = m.call_campaign_id WHERE m.call_lead_id=?
+            """, (cl["id"],))]
+        wa = conn.execute("""
+            SELECT w.*, c.name AS campaign_name FROM wa_leads w
+              LEFT JOIN wa_campaigns c ON c.id = w.wa_campaign_id WHERE w.business_id=?
+        """, (business_id,)).fetchone()
+        out["whatsapp"] = dict(wa) if wa else None
+
+        timeline = []
+        for r in conn.execute("""
+            SELECT s.sent_at AS at, s.subject, s.step_num, c.name AS campaign, e.email
+              FROM sends s JOIN email_leads e ON e.id = s.email_lead_id
+              LEFT JOIN campaigns c ON c.id = s.campaign_id
+             WHERE e.business_id = ?
+        """, (business_id,)):
+            timeline.append({"at": r["at"], "channel": "email",
+                             "text": f"Email step {r['step_num']} sent to {r['email']}"
+                                     + (f" ({r['campaign']})" if r["campaign"] else ""),
+                             "detail": r["subject"] or ""})
+        labels = {k: v["label"] for k, v in get_call_outcomes(include_archived=True,
+                                                              owner_id=owner).items()}
+        for r in conn.execute("""
+            SELECT l.called_at AS at, l.outcome, l.notes FROM call_log l
+              JOIN call_leads cl ON cl.id = l.call_lead_id WHERE cl.business_id = ?
+        """, (business_id,)):
+            timeline.append({"at": r["at"], "channel": "calling",
+                             "text": f"Called: {labels.get(r['outcome'], r['outcome'])}",
+                             "detail": r["notes"] or ""})
+        for r in conn.execute("""
+            SELECT l.sent_at AS at, l.kind, l.message FROM wa_log l
+              JOIN wa_leads w ON w.id = l.wa_lead_id WHERE w.business_id = ?
+        """, (business_id,)):
+            timeline.append({"at": r["at"], "channel": "whatsapp",
+                             "text": "WhatsApp follow-up opened" if r["kind"] == "followup"
+                                     else "WhatsApp message opened",
+                             "detail": r["message"] or ""})
+    timeline.sort(key=lambda t: t["at"] or "", reverse=True)
+    out["timeline"] = timeline
+    return out
+
+
+_BUSINESS_EDITABLE = ("name", "phone", "website", "address", "city", "category", "notes")
+
+
+def update_business(business_id: int, fields: dict, owner_id=None):
+    """
+    Edit a business's own details. Returns (ok, error).
+
+    A new phone number is re-formatted for WhatsApp against the lead's own
+    country, so the wa.me link follows the edit instead of dialling the old
+    number. Opting out can be set here; clearing it is refused once an address
+    has unsubscribed, because that opt-out came from the prospect, not from a
+    misclick.
+    """
+    updates = {k: str(fields[k] or "").strip() for k in _BUSINESS_EDITABLE if k in fields}
+    if "name" in updates and not updates["name"]:
+        return False, "A business needs a name"
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        if not conn.execute("SELECT 1 FROM businesses WHERE id=? AND owner_id=?",
+                            (int(business_id), owner)).fetchone():
+            return False, "Not found"
+        if "phone" in updates:
+            updates["phone_normalized"] = normalize_phone(updates["phone"])
+        if "website" in updates:
+            updates["domain"] = canonical_domain(updates["website"])
+        if "do_not_contact" in fields:
+            want = 1 if fields["do_not_contact"] else 0
+            if want == 0 and conn.execute(
+                "SELECT 1 FROM email_leads WHERE business_id=? AND status='unsubscribed'",
+                (int(business_id),)
+            ).fetchone():
+                return False, ("They unsubscribed from your emails, so they stay marked "
+                               "do-not-contact")
+            updates["do_not_contact"] = want
+        if updates:
+            conn.execute(f"UPDATE businesses SET {', '.join(f'{k}=?' for k in updates)} WHERE id=?",
+                         (*updates.values(), int(business_id)))
+        if "phone" in updates:
+            wa = conn.execute("SELECT id, country FROM wa_leads WHERE business_id=?",
+                              (int(business_id),)).fetchone()
+            if wa:
+                phone = updates["phone"]
+                conn.execute("UPDATE wa_leads SET wa_number=?, number_type=? WHERE id=?", (
+                    format_whatsapp_number(phone, wa["country"]) if phone else "",
+                    classify_number_type(phone, wa["country"]) if phone else "unknown",
+                    wa["id"]))
+    return True, None
+
+
+def delete_businesses(business_ids, owner_id=None) -> dict:
+    """
+    Delete businesses and everything on every channel with them. Returns
+    {"deleted": n, "kept": n}.
+
+    Anyone who opted out, unsubscribed or bounced is kept: their row is the
+    only thing stopping a later scrape or import from putting them straight
+    back on a list. Deleting them would quietly undo a "stop contacting me".
+    """
+    with get_db() as conn:
+        ids = _own_business_ids(conn, business_ids, owner_id)
+        if not ids:
+            return {"deleted": 0, "kept": 0}
+        ph = ",".join("?" * len(ids))
+        protected = {r["id"] for r in conn.execute(f"""
+            SELECT b.id FROM businesses b
+             WHERE b.id IN ({ph}) AND (b.do_not_contact = 1 OR EXISTS (
+                   SELECT 1 FROM email_leads e WHERE e.business_id = b.id
+                      AND e.status IN ('unsubscribed','bounced')))
+        """, ids)}
+        doomed = [i for i in ids if i not in protected]
+        if doomed:
+            dph = ",".join("?" * len(doomed))
+            # enrollments and call_campaign_members hang off the channel rows
+            # and cascade with them; sends has no foreign key and keeps its
+            # history for campaign totals.
+            conn.execute(f"DELETE FROM businesses WHERE id IN ({dph})", doomed)
+        return {"deleted": len(doomed), "kept": len(protected)}
+
+
+def create_business(fields: dict, owner_id=None) -> tuple:
+    """
+    Add one business by hand, matched against existing ones the same way an
+    import is. Returns (business_id, created). An email, if given, becomes an
+    address on Email; nothing is put on Calling or WhatsApp until the operator
+    says so.
+    """
+    name = (fields.get("name") or fields.get("company") or "").strip()
+    if not name:
+        raise ValueError("A business needs a name")
+    row = {"company": name}
+    for k in ("phone", "website", "address", "city", "category", "email"):
+        if fields.get(k):
+            row[k] = str(fields[k]).strip()
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        existing = find_existing_business(conn, email=row.get("email", ""), phone=row.get("phone", ""),
+                                          website=row.get("website", ""), company=name,
+                                          address=row.get("address", ""), owner_id=owner)
+    _accepted, ids = upsert_businesses([row], owner_id=owner)
+    if not ids:
+        raise ValueError("Nothing to add")
+    return ids[0], existing is None
+
+
+def enroll_businesses(campaign_id: int, business_ids, owner_id=None) -> dict:
+    """
+    Enroll businesses into an email campaign by their best address. Businesses
+    with no active address are counted, since there's nothing to send to.
+    """
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        ids = _own_business_ids(conn, business_ids, owner)
+        lead_ids, no_email = [], 0
+        for bid in ids:
+            row = conn.execute("""
+                SELECT id FROM email_leads WHERE business_id=? AND status='active' AND owner_id=?
+                 ORDER BY duplicate_of IS NOT NULL, id LIMIT 1
+            """, (bid, owner)).fetchone()
+            if row:
+                lead_ids.append(row["id"])
+            else:
+                no_email += 1
+    enrolled, skipped = enroll_contacts_bulk(campaign_id, lead_ids, owner_id=owner) if lead_ids \
+        else (0, {"other_campaign": 0, "duplicate_address": 0, "same_domain": 0, "do_not_contact": 0})
+    return {"enrolled": enrolled, "skipped": skipped, "no_email": no_email}
+
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+
+def get_dashboard(owner_id=None) -> dict:
+    """
+    Every channel's headline numbers, what's waiting on the operator today,
+    and all their campaigns in one list.
+    """
+    owner = _owner_or_default(owner_id)
+    email = get_stats(owner_id=owner)
+    calling = get_call_summary(owner_id=owner)
+    whatsapp = get_wa_summary(owner_id=owner)
+
+    campaigns = []
+    with get_db() as conn:
+        for c in conn.execute("SELECT id, name, status FROM campaigns WHERE owner_id=? "
+                              "ORDER BY created_at DESC", (owner,)).fetchall():
+            s = get_stats(c["id"])
+            done = s["completed"] + s["replied"] + s["bounced"]
+            campaigns.append({
+                "channel": "email", "id": c["id"], "name": c["name"], "status": c["status"],
+                "leads": s["total"], "progress": round(done / s["total"] * 100) if s["total"] else 0,
+                "result": f"{s['replied']} replied", "reply_rate": s["reply_rate"],
+            })
+    for c in get_call_campaigns(owner_id=owner):
+        campaigns.append({
+            "channel": "calling", "id": c["id"], "name": c["name"], "status": c["status"],
+            "leads": c["total"],
+            "progress": round(c["closed"] / c["total"] * 100) if c["total"] else 0,
+            "result": f"{c['booked']} booked", "reply_rate": None,
+        })
+    for c in get_wa_campaigns(owner_id=owner):
+        campaigns.append({
+            "channel": "whatsapp", "id": c["id"], "name": c["name"], "status": c["status"],
+            "leads": c["leads"],
+            "progress": round(c["messaged"] / c["leads"] * 100) if c["leads"] else 0,
+            "result": f"{c['replied']} replied", "reply_rate": c["reply_rate"],
+        })
+
+    active_email = sum(1 for c in campaigns if c["channel"] == "email" and c["status"] == "active")
+    return {
+        "email": {**email, "active_campaigns": active_email},
+        "calling": calling,
+        "whatsapp": whatsapp,
+        "todo": {
+            "wa_review": whatsapp["awaiting_review"],
+            "wa_to_write": whatsapp["awaiting_draft"],
+            "wa_ready": whatsapp["ready_to_send"],
+            "wa_due": whatsapp["due"],
+            "calls_due": calling["due"],
+            "calls_new": calling["uncalled"],
+        },
+        "campaigns": campaigns,
+    }
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -4931,6 +6201,7 @@ def owned_row_counts(uid: int) -> dict:
     with get_db() as conn:
         for table, label in (("businesses", "leads"), ("campaigns", "campaigns"),
                              ("call_campaigns", "call campaigns"),
+                             ("wa_campaigns", "WhatsApp campaigns"),
                              ("scrape_jobs", "scrape jobs")):
             n = conn.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE owner_id=?", (uid,)

@@ -1,9 +1,10 @@
 // ── Cold calling ─────────────────────────────────────────────────────────────
 //
-// Built as a working queue rather than a CRM screen. The default view is what
-// to do next -- callbacks due, then leads never called -- because deciding who
+// Built as a working queue rather than a CRM screen. The To do tab is what to
+// do next -- callbacks due, then leads never called -- because deciding who
 // to ring is friction at exactly the moment momentum matters, and "Save & next
 // lead" keeps you in the loop instead of returning to a table between calls.
+// The Leads tab is the other half: everyone on Calling, as a table to manage.
 
 let _callBucket   = 'today';
 let _callLeads    = [];
@@ -14,9 +15,38 @@ let _attemptLimit = 6;
 let _callCampaigns = [];
 let _callCampaignId = '';   // '' = every lead, ignoring campaigns
 
+onTab('calling', name => {
+  if (name === 'todo') loadCallQueue();
+  if (name === 'leads') loadCallLeads();
+  if (name === 'campaigns') loadCallCampaigns();
+  if (name === 'script') { _renderScriptEditor(); _renderOutcomeEditor(); }
+});
+
 async function loadCalling() {
   await Promise.all([loadCallScript(), loadCallSources(), loadCallCampaigns()]);
-  await loadCallQueue();
+  setTab('calling', currentTab('calling', 'todo'));
+  if (currentTab('calling', 'todo') !== 'leads') {
+    const page = await api('/api/calls/leads?per_page=1');
+    if (page && page.total !== undefined) setTabCount('calling', 'leads', page.total);
+  }
+}
+
+// From the Dashboard: straight to a bucket, or to one campaign's queue.
+function openCallingTodo(bucket) {
+  _callBucket = bucket;
+  showSection('calling');
+  setTimeout(() => { setTab('calling', 'todo', { load: false }); setCallBucket(bucket); }, 0);
+}
+
+function openCallingCampaign(id) {
+  _callCampaignId = String(id);
+  showSection('calling');
+  setTimeout(() => {
+    setTab('calling', 'leads', { load: false });
+    const sel = document.getElementById('cl-campaign');
+    if (sel) sel.value = String(id);
+    loadCallLeads();
+  }, 0);
 }
 
 // ── Campaigns ────────────────────────────────────────────────────────────────
@@ -26,103 +56,255 @@ async function loadCalling() {
 
 async function loadCallCampaigns() {
   _callCampaigns = await api('/api/call-campaigns') || [];
+  setTabCount('calling', 'campaigns', _callCampaigns.length);
   const sel = document.getElementById('cq-campaign');
   if (sel) {
-    sel.innerHTML = '<option value="">All leads (no campaign)</option>' +
+    sel.innerHTML = '<option value="">All campaigns</option>' +
       _callCampaigns.map(c =>
         `<option value="${c.id}">${esc(c.name)} — ${c.remaining} left of ${c.total}</option>`
       ).join('');
     sel.value = _callCampaignId;
   }
+  const leadSel = document.getElementById('cl-campaign');
+  if (leadSel) {
+    const keep = leadSel.value;
+    leadSel.innerHTML = '<option value="">Any campaign</option><option value="none">Not in a campaign</option>' +
+      _callCampaigns.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+    leadSel.value = keep;
+  }
   _renderCampaignCards();
-  _toggleCampaignButtons();
-}
-
-function _toggleCampaignButtons() {
-  const on = _callCampaignId ? 'inline-flex' : 'none';
-  const del = document.getElementById('cq-campaign-delete');
-  const add = document.getElementById('cq-campaign-add');
-  if (del) del.style.display = on;
-  if (add) add.style.display = on;
 }
 
 function _renderCampaignCards() {
   const wrap = document.getElementById('cq-campaign-cards');
   if (!wrap) return;
   if (!_callCampaigns.length) {
-    wrap.innerHTML = '<div class="text-muted text-small">No campaigns yet. Create one, then add leads from Contacts.</div>';
+    wrap.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><p>No call campaigns yet.
+      Create one, then add leads to it — from here, from the Leads tab, or from Contacts.</p></div>`;
     return;
   }
   wrap.innerHTML = _callCampaigns.map(c => {
-    const on = String(c.id) === String(_callCampaignId);
     const pct = c.total ? Math.round((c.closed / c.total) * 100) : 0;
-    return `<div onclick="setCallCampaign('${c.id}')"
-      style="cursor:pointer;border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};
-             border-radius:8px;padding:12px;background:${on ? 'rgba(96,165,250,.06)' : 'transparent'}">
-      <div style="font-size:13px;font-weight:600;margin-bottom:6px">${esc(c.name)}</div>
-      <div style="height:5px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-bottom:8px">
-        <div style="height:100%;width:${pct}%;background:var(--green)"></div>
+    return `<div class="card" style="padding:16px">
+      <div class="flex items-center" style="gap:8px;margin-bottom:8px">
+        <div class="card-title">${esc(c.name)}</div>
+        <div class="row-menu ml-auto">
+          <button class="btn btn-ghost btn-sm" onclick="toggleRowMenu(this)">⋯</button>
+          <div class="row-menu-list">
+            <button onclick="renameCallCampaign(${c.id})">Rename</button>
+            <button class="danger" onclick="deleteCallCampaign(${c.id})">Delete campaign</button>
+          </div>
+        </div>
       </div>
-      <div class="text-muted" style="font-size:11px;line-height:1.7">
-        <div>${c.remaining} left of ${c.total}</div>
+      <div class="bar" style="margin-bottom:10px" title="${pct}% closed out"><i style="width:${pct}%"></i></div>
+      <div class="text-muted" style="font-size:12px;line-height:1.8">
+        <div><strong style="color:var(--text)">${c.remaining}</strong> left of ${c.total}</div>
         <div>${c.due} due now · ${c.uncalled} never called</div>
-        <div style="color:var(--green)">${c.booked} booked</div>
+        <div><span style="color:var(--green)">${c.booked} booked</span> · ${c.not_interested} not interested</div>
+      </div>
+      <div class="flex gap-2" style="margin-top:12px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" onclick="workCallCampaign(${c.id})">☎ Work it</button>
+        <button class="btn btn-ghost btn-sm" onclick="openCallingCampaign(${c.id})">Leads</button>
+        <button class="btn btn-ghost btn-sm" onclick="openAddLeadsModal(${c.id})">+ Add leads</button>
       </div>
     </div>`;
   }).join('');
+}
+
+function workCallCampaign(id) {
+  _callCampaignId = String(id);
+  setTab('calling', 'todo', { load: false });
+  setCallCampaign(id);
 }
 
 function setCallCampaign(id) {
   _callCampaignId = id ? String(id) : '';
   const sel = document.getElementById('cq-campaign');
   if (sel) sel.value = _callCampaignId;
-  _toggleCampaignButtons();
-  _renderCampaignCards();
   loadCallQueue();
 }
 
 async function openNewCallCampaign() {
-  const name = prompt('Name this campaign — e.g. "Dental clinics, St Johns"');
-  if (!name || !name.trim()) return;
-  const res = await api('/api/call-campaigns', 'POST', { name: name.trim() });
+  const name = await chooseDialog({
+    title: 'New call campaign',
+    body: `<label class="field-label">Name</label>
+      <input id="ncc-name" class="soft-input" placeholder="No-website clinics, Sharjah" />
+      <div class="form-hint">Then add leads to it from the Leads tab, from Contacts, or with + Add leads.</div>`,
+    confirm: 'Create',
+    collect: () => {
+      const v = document.getElementById('ncc-name').value.trim();
+      if (!v) { toast('Give it a name', 'err'); return null; }
+      return v;
+    },
+  });
+  if (!name) return;
+  const res = await api('/api/call-campaigns', 'POST', { name });
   if (!res || res.error) { toast((res && res.error) || 'Could not create it', 'err'); return; }
-  toast('Campaign created — add leads from Contacts');
-  _callCampaignId = String(res.id);
+  toast('Campaign created');
   await loadCallCampaigns();
-  loadCallQueue();
 }
 
-async function deleteCallCampaign() {
-  if (!_callCampaignId) return;
-  const c = _callCampaigns.find(x => String(x.id) === _callCampaignId);
-  // Worth stating plainly: this removes the grouping, not the leads.
-  if (!confirm(`Delete the campaign "${c ? c.name : ''}"?\n\n`
-             + `The ${c ? c.total : 0} contacts and their call history are kept — `
-             + `only the grouping goes.`)) return;
-  const res = await api(`/api/call-campaigns/${_callCampaignId}`, 'DELETE');
+async function renameCallCampaign(id) {
+  const c = _callCampaigns.find(x => x.id === id);
+  const name = await chooseDialog({
+    title: 'Rename campaign',
+    body: `<input id="rcc-name" class="soft-input" value="${esc(c ? c.name : '')}" />`,
+    confirm: 'Save',
+    collect: () => document.getElementById('rcc-name').value.trim() || null,
+  });
+  if (!name) return;
+  await api(`/api/call-campaigns/${id}`, 'PATCH', { name });
+  loadCallCampaigns();
+}
+
+async function deleteCallCampaign(id) {
+  const c = _callCampaigns.find(x => x.id === id);
+  const ok = await chooseDialog({
+    title: `Delete "${c ? c.name : 'this campaign'}"?`,
+    body: `<p class="text-small" style="line-height:1.6">The ${c ? c.total : 0} leads and their call history are kept
+      on Calling — only the grouping goes.</p>`,
+    confirm: 'Delete campaign', danger: true,
+  });
+  if (!ok) return;
+  const res = await api(`/api/call-campaigns/${id}`, 'DELETE');
   if (!res || res.error) { toast((res && res.error) || 'Could not delete', 'err'); return; }
   toast('Campaign deleted — leads kept');
-  _callCampaignId = '';
+  if (_callCampaignId === String(id)) _callCampaignId = '';
   await loadCallCampaigns();
-  loadCallQueue();
 }
 
-// ── Adding leads to a campaign ───────────────────────────────────────────────
+// ── Leads table ──────────────────────────────────────────────────────────────
+
+createLeadTable({
+  id: 'cl',
+  url: '/api/calls/leads',
+  empty: 'Nobody on Calling matches. Add leads with + Add leads, from Contacts, or scrape with Calling as the destination.',
+  params: () => ({
+    q: document.getElementById('cl-search')?.value.trim(),
+    outcome: document.getElementById('cl-outcome')?.value,
+    call_campaign_id: document.getElementById('cl-campaign')?.value,
+    source_job_id: document.getElementById('cl-source')?.value,
+  }),
+  columns: [
+    { key: 'company', label: 'Business', sort: true,
+      render: r => `<span class="biz-name">${esc(r.company || 'Unnamed business')}</span>${contactSignalPill(r)}${
+        r.city || r.address ? `<span class="sub">${esc(r.city || r.address)}</span>` : ''}` },
+    { key: 'phone', label: 'Phone', sort: true, cls: 'num', render: r => esc(r.phone || '') },
+    { key: 'campaigns', label: 'Campaigns',
+      render: r => (r.campaigns || []).length
+        ? `<span class="pills">${r.campaigns.map(c => pill(c.name)).join('')}</span>`
+        : '<span class="text-muted">—</span>' },
+    { key: 'call_status', label: 'Last outcome', sort: true,
+      render: r => (r.do_not_contact ? pill('Do not contact', 'red') + ' ' : '') + callStatusBadge(r.call_status) },
+    { key: 'call_attempts', label: 'Attempts', sort: true, cls: 'num', render: r => r.call_attempts || 0 },
+    { key: 'next_call_at', label: 'Next call', sort: true, cls: 'num',
+      render: r => esc(r.next_call_at ? r.next_call_at.substring(0, 16) : '') },
+    { key: 'last_called_at', label: 'Last called', sort: true, cls: 'num',
+      render: r => esc(shortDate(r.last_called_at)) },
+  ],
+  bulk: () => `
+    <button class="btn btn-ghost btn-sm" onclick="callLeadsToCampaign(LT.cl.selectedIds())">Add to campaign</button>
+    ${document.getElementById('cl-campaign')?.value && document.getElementById('cl-campaign')?.value !== 'none'
+      ? `<button class="btn btn-ghost btn-sm" onclick="callLeadsOutOfCampaign(LT.cl.selectedIds())">Remove from this campaign</button>` : ''}
+    <button class="btn btn-ghost btn-sm" onclick="contactsToWhatsApp(LT.cl.selectedIds(), {onDone: () => LT.cl.load()})">+ WhatsApp</button>
+    <button class="btn btn-danger btn-sm" onclick="removeFromCalling(LT.cl.selectedIds())">Take off Calling</button>`,
+  menu: r => [
+    { label: 'Open in the dialler', run: `openInDialler(${r.id})` },
+    { label: 'Add to a campaign…', run: `callLeadsToCampaign([${r.id}])` },
+    ...(r.campaigns || []).map(c => ({ label: `Remove from “${c.name}”`, run: `callLeadsOutOfCampaign([${r.id}], ${c.id})` })),
+    r.call_status && { label: 'Reopen (put back in the queue)', run: `reopenCallLead(${r.id})` },
+    { label: 'Open in Contacts', run: `openBusiness(${r.id})` },
+    { label: 'Take off Calling', run: `removeFromCalling([${r.id}])`, danger: true },
+  ],
+  onLoad: data => setTabCount('calling', 'leads', data.total),
+});
+
+async function loadCallLeads() {
+  const outcomeSel = document.getElementById('cl-outcome');
+  if (outcomeSel && outcomeSel.options.length <= 1) {
+    const outcomes = await api('/api/call-outcomes') || [];
+    outcomeSel.innerHTML = '<option value="">Any outcome</option><option value="none">Never called</option>' +
+      outcomes.filter(o => !o.archived).map(o => `<option value="${esc(o.key)}">${esc(o.label)}</option>`).join('');
+  }
+  const src = document.getElementById('cl-source');
+  if (src && src.options.length <= 1) {
+    const sources = await api('/api/contacts/sources') || [];
+    src.innerHTML = '<option value="">All lists</option>' +
+      sources.map(s => `<option value="${esc(String(s.job_id))}">${esc(s.label)} (${s.count})</option>`).join('');
+  }
+  await loadCallCampaigns();
+  LT.cl.load();
+}
+
+function openInDialler(businessId) {
+  setTab('calling', 'todo', { load: false });
+  _callBucket = 'all';
+  ['today', 'new', 'upcoming', 'all', 'worked'].forEach(b =>
+    document.getElementById(`cq-tab-${b}`)?.classList.toggle('active', b === 'all'));
+  loadCallQueue().then(() => openCallLead(businessId));
+}
+
+async function callLeadsToCampaign(ids) {
+  if (!ids.length) return;
+  const ok = await chooseDialog({
+    title: `Add ${ids.length} to a call campaign`,
+    body: `<label class="field-label">Campaign</label>${campaignSelectHtml('clc-pick', _callCampaigns)}`,
+    confirm: 'Add',
+    collect: () => document.getElementById('clc-pick').value || null,
+  });
+  if (!ok) return;
+  const cid = await resolveCampaignSelect('clc-pick', '/api/call-campaigns');
+  if (!cid) return;
+  const res = await api('/api/calls/add', 'POST', { business_ids: ids, call_campaign_id: cid, confirm_conflicts: true });
+  if (!res || res.error) { toast((res && res.error) || 'Could not add them', 'err'); return; }
+  toast(`Added ${res.in_campaign} to the campaign` + (ids.length - res.in_campaign > 0
+    ? ` — ${ids.length - res.in_campaign} were already in it or couldn't be added` : ''));
+  LT.cl.clear();
+  loadCallLeads();
+}
+
+async function callLeadsOutOfCampaign(ids, campaignId = null) {
+  const cid = campaignId || document.getElementById('cl-campaign').value;
+  if (!cid || cid === 'none' || !ids.length) return;
+  const res = await api(`/api/call-campaigns/${cid}/members`, 'DELETE', { contact_ids: ids });
+  if (!res || res.error) { toast((res && res.error) || 'Could not remove them', 'err'); return; }
+  toast(`Removed ${res.removed} from the campaign — still on Calling`);
+  LT.cl.clear();
+  loadCallLeads();
+}
+
+async function removeFromCalling(ids) {
+  if (!ids.length) return;
+  const ok = await chooseDialog({
+    title: `Take ${ids.length} off Calling?`,
+    body: `<p class="text-small" style="line-height:1.6">They leave every call queue and campaign. Their call history
+      is kept, and they stay in Contacts (under Unassigned if they're on no other channel), so you can add them back any time.</p>`,
+    confirm: 'Take off Calling', danger: true,
+  });
+  if (!ok) return;
+  const res = await api('/api/calls/remove', 'POST', { business_ids: ids });
+  if (!res || res.error) { toast((res && res.error) || 'Could not remove them', 'err'); return; }
+  toast(`Took ${res.removed} off Calling`);
+  LT.cl.clear();
+  loadCallLeads();
+}
+
+// ── Adding leads ─────────────────────────────────────────────────────────────
 //
-// This lives on the calling page as well as in Contacts because that is where
-// you go looking after creating a campaign. Three routes in, mirroring how
-// contacts reach an email campaign: pick from the database, type a few, or
-// bring a CSV.
+// Three routes in: pick from leads you already have, type a few, or bring a
+// CSV. A campaign is optional -- a lead can just be on Calling.
 
 let _aclTab = 'existing';
 let _aclSelected = new Set();
 let _aclRows = [];
 let _aclTimer = null;
 
-function openAddLeadsModal() {
-  if (!_callCampaignId) { toast('Pick a campaign first', 'err'); return; }
-  const c = _callCampaigns.find(x => String(x.id) === _callCampaignId);
-  document.getElementById('acl-campaign-name').textContent = c ? c.name : 'this campaign';
+async function openAddLeadsModal(campaignId = '') {
+  if (!_callCampaigns.length) await loadCallCampaigns();
+  document.getElementById('acl-campaign-wrap').innerHTML =
+    campaignSelectHtml('acl-campaign', _callCampaigns,
+                       { allowNone: true, noneLabel: 'No campaign — just add them to Calling',
+                         selected: campaignId || '' });
   _aclSelected.clear();
   document.getElementById('acl-search').value = '';
   document.getElementById('acl-manual').value = '';
@@ -155,7 +337,7 @@ async function _aclFetch() {
   if (q) p.set('q', q);
   const status = document.getElementById('acl-status').value;
   if (status) p.set('status', status);
-  if (document.getElementById('acl-uncalled').checked) p.set('call_status', 'none');
+  if (document.getElementById('acl-uncalled').checked) p.set('not_on', 'calling');
 
   // Businesses, not email leads: a clinic the scraper found with no email at
   // all is exactly the kind of lead this tab exists to surface.
@@ -169,7 +351,7 @@ function _aclRenderTable(total) {
   document.getElementById('acl-count').textContent =
     `${_aclSelected.size} selected · showing ${_aclRows.length} of ${total}`;
   if (!_aclRows.length) {
-    tbody.innerHTML = '<tr><td colspan="4"><div class="empty-state"><p>No contacts match</p></div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4"><div class="empty-state"><p>No leads match</p></div></td></tr>';
     return;
   }
   tbody.innerHTML = _aclRows.map(c => `
@@ -177,7 +359,7 @@ function _aclRenderTable(total) {
       <td><input type="checkbox" ${_aclSelected.has(c.id) ? 'checked' : ''}
                  onclick="event.stopPropagation();aclToggle(${c.id})" style="cursor:pointer" /></td>
       <td>${esc(c.company || c.email || '—')}${contactSignalPill(c)}</td>
-      <td class="mono" style="font-size:12px">${esc(c.phone || '—')}</td>
+      <td class="mono" style="font-size:12px">${c.phone ? esc(c.phone) : '<span class="text-muted">no phone</span>'}</td>
       <td>${callStatusBadge(c.call_status)}</td>
     </tr>`).join('');
 }
@@ -197,36 +379,27 @@ function aclClearSelection() {
   _aclRenderTable(_aclRows.length);
 }
 
-// Adds businesses to the open campaign, holding for confirmation any that
-// are already active on another channel (see confirmChannelConflicts).
-// Shared by all three tabs so the confirm-before-proceeding prompt behaves
-// identically regardless of how the business ids were gathered.
-async function _addCallCampaignMembers(businessIds) {
-  if (!businessIds.length) return { added: 0, already_present: 0 };
-  const first = await api(`/api/call-campaigns/${_callCampaignId}/members`, 'POST',
-                          { contact_ids: businessIds });
+// Puts businesses on Calling (and into the picked campaign), holding for
+// confirmation any already active on another channel.
+async function _addToCalling(businessIds, campaignId) {
+  if (!businessIds.length) return { added: 0 };
+  const body = { business_ids: businessIds, call_campaign_id: campaignId || null };
+  const first = await api('/api/calls/add', 'POST', body);
   if (!first || first.error) return first;
-  const final = await confirmChannelConflicts(first, () =>
-    api(`/api/call-campaigns/${_callCampaignId}/members`, 'POST', {
-      contact_ids: first.conflicts.map(c => c.business_id), confirm_conflicts: true,
-    })
-  );
-  if (final === first) return first;
-  return {
-    added: (first.added || 0) + (final.added || 0),
-    already_present: first.already_present || 0,
-  };
+  const final = await confirmChannelConflicts(first, () => api('/api/calls/add', 'POST', {
+    ...body, business_ids: first.conflicts.map(c => c.business_id), confirm_conflicts: true,
+  }));
+  return _sumCounts(first, final);
 }
 
 async function submitAddLeads() {
-  if (!_callCampaignId) return;
+  const campaignId = await resolveCampaignSelect('acl-campaign', '/api/call-campaigns');
+  if (campaignId === null) return;
+  let res, imported = null;
 
   if (_aclTab === 'existing') {
-    if (!_aclSelected.size) { toast('Select at least one contact', 'err'); return; }
-    const res = await _addCallCampaignMembers([..._aclSelected]);
-    if (!res || res.error) { toast((res && res.error) || 'Could not add them', 'err'); return; }
-    const dupes = res.already_present ? ` (${res.already_present} already in it)` : '';
-    toast(`Added ${res.added} lead${res.added === 1 ? '' : 's'}${dupes}`);
+    if (!_aclSelected.size) { toast('Select at least one lead', 'err'); return; }
+    res = await _addToCalling([..._aclSelected], campaignId);
 
   } else if (_aclTab === 'manual') {
     // "Name, phone, website" per line. Deliberately forgiving about the tail:
@@ -240,15 +413,9 @@ async function submitAddLeads() {
       })
       .filter(r => r.company);
     if (!rows.length) { toast('Nothing to add — one business per line', 'err'); return; }
-
-    const imported = await _importForCalling(rows);
-    if (!imported || imported.error) {
-      toast((imported && imported.error) || 'Could not add those', 'err');
-      return;
-    }
-    const res = await _addCallCampaignMembers(imported.business_ids || []);
-    toast(`Added ${(res && res.added) || 0} lead${((res && res.added) || 0) === 1 ? '' : 's'}`);
-    notifyCrossOwnerOverlap(imported);
+    imported = await _importForCalling(rows);
+    if (!imported || imported.error) { toast((imported && imported.error) || 'Could not add those', 'err'); return; }
+    res = await _addToCalling(imported.business_ids || [], campaignId);
 
   } else {
     const file = document.getElementById('acl-csv').files[0];
@@ -259,26 +426,25 @@ async function submitAddLeads() {
       method: 'POST', credentials: 'same-origin',
       headers: { 'X-CSRF-Token': await _getCsrfToken() }, body: fd,
     });
-    let imported = await r.json().catch(() => ({}));
-    if (!r.ok || imported.error) {
-      toast(imported.error || 'CSV import failed', 'err');
-      return;
-    }
+    imported = await r.json().catch(() => ({}));
+    if (!r.ok || imported.error) { toast(imported.error || 'CSV import failed', 'err'); return; }
     imported = await _resolveImportConflicts(imported);
-    const res = await _addCallCampaignMembers(imported.business_ids || []);
-    toast(`Imported ${imported.inserted || 0}, added ${(res && res.added) || 0} to the campaign`);
-    notifyCrossOwnerOverlap(imported);
+    res = await _addToCalling(imported.business_ids || [], campaignId);
   }
 
+  if (!res || res.error) { toast((res && res.error) || 'Could not add them', 'err'); return; }
+  toast(describeAdd(res, 'Added to Calling:'));
+  if (imported) notifyCrossOwnerOverlap(imported);
   closeModal('modal-add-call-leads');
   await loadCallCampaigns();
-  loadCallQueue();
+  const tab = currentTab('calling', 'todo');
+  if (tab === 'leads') LT.cl.load(); else if (tab === 'todo') loadCallQueue();
 }
 
 // A CSV or pasted line for calling can still carry an email column, which
 // goes through the same email-channel check as the Contacts importer. Held
 // rows are confirmed the same way, then folded back into one business id
-// list so the campaign-add step sees every business that ended up imported.
+// list so the add step sees every business that ended up imported.
 async function _importForCalling(rows) {
   const first = await api('/api/contacts/import', 'POST', { rows });
   if (!first || first.error) return first;
@@ -311,10 +477,7 @@ async function loadCallSources() {
 function setCallBucket(bucket) {
   _callBucket = bucket;
   ['today', 'new', 'upcoming', 'all', 'worked'].forEach(b => {
-    const el = document.getElementById(`cq-tab-${b}`);
-    if (!el) return;
-    el.classList.toggle('btn-primary', b === bucket);
-    el.classList.toggle('btn-ghost', b !== bucket);
+    document.getElementById(`cq-tab-${b}`)?.classList.toggle('active', b === bucket);
   });
   loadCallQueue();
 }
@@ -337,6 +500,10 @@ async function loadCallQueue() {
     const el = document.getElementById(`cq-count-${b}`);
     if (el) el.textContent = (data.counts || {})[b] ?? 0;
   });
+  const due = (data.counts || {}).today || 0;
+  setTabCount('calling', 'todo', due, true);
+  const nav = document.getElementById('nav-count-calling');
+  if (nav && !_callCampaignId) nav.textContent = due ? due : '';
 
   _renderSummary(data.summary);
   _renderCallTable();
@@ -374,7 +541,7 @@ function _renderSummary(s) {
 
 function _renderCallTable() {
   const titles = { today: 'Due now', new: 'Never called', upcoming: 'Scheduled',
-                   all: 'All callable', worked: 'Worked — closed out' };
+                   all: 'All callable', worked: 'Closed out' };
   document.getElementById('cq-list-title').textContent = titles[_callBucket] || 'Queue';
   document.getElementById('cq-list-count').textContent =
     `${_callLeads.length} lead${_callLeads.length === 1 ? '' : 's'}`;
@@ -589,13 +756,6 @@ const OUTCOME_TONES = [
   ['neutral', 'Neutral'], ['info', 'In progress'], ['good', 'Good'], ['bad', 'Dead'],
 ];
 
-async function toggleOutcomeEditor() {
-  const el = document.getElementById('cq-outcome-editor');
-  if (el.style.display !== 'none') { el.style.display = 'none'; return; }
-  await _renderOutcomeEditor();
-  el.style.display = 'block';
-}
-
 async function _renderOutcomeEditor() {
   const all = await api('/api/call-outcomes') || [];
   const el = document.getElementById('cq-outcome-editor');
@@ -632,7 +792,6 @@ async function _renderOutcomeEditor() {
         <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)">
           <input type="checkbox" id="oc-new-stops" /> Stops email</label>
         <button class="btn btn-primary btn-sm" onclick="createOutcome()">Add</button>
-        <button class="btn btn-ghost btn-sm" onclick="toggleOutcomeEditor()">Close</button>
       </div>
     </div>`;
 }
@@ -733,7 +892,7 @@ function _renderScriptFor(contact) {
     : 'Pick a lead to fill in their details.';
 
   const sections = _callScript.sections || [];
-  if (!sections.length) { body.innerHTML = '<div class="empty-state"><p>No script yet — press Edit script.</p></div>'; return; }
+  if (!sections.length) { body.innerHTML = '<div class="empty-state"><p>No script yet — write one under Script &amp; outcomes.</p></div>'; return; }
 
   // Each section collapses independently: mid-call you need to reach the right
   // objection in a second, not scroll a wall of text.
@@ -742,15 +901,8 @@ function _renderScriptFor(contact) {
       <summary style="cursor:pointer;padding:8px 12px;font-size:13px;font-weight:600;list-style:revert">${esc(s.title || 'Section')}</summary>
       <div style="padding:0 12px 10px;font-size:13px;line-height:1.55;white-space:pre-wrap;color:var(--text2)">${
         s.body ? esc(_fillScript(s.body, contact))
-               : '<span class="text-muted">Empty — add your words under Edit script.</span>'}</div>
+               : '<span class="text-muted">Empty — add your words under Script &amp; outcomes.</span>'}</div>
     </details>`).join('');
-}
-
-function toggleScriptEditor() {
-  const el = document.getElementById('cq-script-editor');
-  if (el.style.display !== 'none') { el.style.display = 'none'; return; }
-  _renderScriptEditor();
-  el.style.display = 'block';
 }
 
 function _renderScriptEditor() {
@@ -770,7 +922,6 @@ function _renderScriptEditor() {
       <div class="flex gap-2" style="margin-top:14px;flex-wrap:wrap">
         <button class="btn btn-ghost btn-sm" onclick="addScriptSection()">+ Add section</button>
         <button class="btn btn-primary btn-sm" onclick="saveCallScript()">Save script</button>
-        <button class="btn btn-ghost btn-sm" onclick="toggleScriptEditor()">Close</button>
       </div>
     </div>`;
 }
@@ -784,7 +935,7 @@ function _scriptSectionRow(s, i) {
                       padding:6px 10px;color:var(--text);font-size:13px;font-family:var(--font)" />
         <button class="btn btn-danger btn-sm" onclick="this.closest('.cq-script-row').remove()">✕</button>
       </div>
-      <textarea class="cq-sec-body" style="min-height:90px"
+      <textarea class="cq-sec-body soft-input" style="min-height:90px"
                 placeholder="What you say here…">${esc(s.body || '')}</textarea>
     </div>`;
 }
@@ -804,5 +955,5 @@ async function saveCallScript() {
   if (!res || res.error) { toast((res && res.error) || 'Could not save the script', 'err'); return; }
   toast('Script saved ✓');
   await loadCallScript();
-  toggleScriptEditor();
+  _renderScriptEditor();
 }

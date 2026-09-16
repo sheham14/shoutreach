@@ -1,121 +1,148 @@
 <div class="section" id="section-calling">
   <div class="page-header">
     <div>
-      <div class="page-title">Cold Calling</div>
+      <div class="page-title">Calling</div>
       <div class="page-sub">Work the list — your notebook while you dial</div>
     </div>
     <div class="flex gap-2">
-      <button class="btn btn-ghost" onclick="toggleOutcomeEditor()">⊙ Outcomes</button>
-      <button class="btn btn-ghost" onclick="toggleScriptEditor()">✎ Edit script</button>
-      <button class="btn btn-ghost btn-sm" onclick="loadCallQueue()">↻ Refresh</button>
+      <button class="btn btn-primary" onclick="openAddLeadsModal()">+ Add leads</button>
     </div>
   </div>
 
-  <!-- Campaigns: a named batch you decided to work, as opposed to a lead list,
-       which groups by whenever you happened to scrape. Lives here rather than
-       on the main dashboard so the picker and its numbers sit together. -->
-  <div class="card" style="padding:16px;margin-bottom:18px">
-    <div class="flex items-center" style="margin-bottom:12px;gap:10px;flex-wrap:wrap">
-      <div class="card-title">Campaigns</div>
-      <select id="cq-campaign" class="filter-select" onchange="setCallCampaign(this.value)"
-              style="min-width:220px">
-        <option value="">All leads (no campaign)</option>
+  <div class="tabs" data-tab-group="calling">
+    <button class="tab active" data-tab="todo" onclick="setTab('calling','todo')">To do <span class="count">0</span></button>
+    <button class="tab" data-tab="leads" onclick="setTab('calling','leads')">Leads <span class="count">0</span></button>
+    <button class="tab" data-tab="campaigns" onclick="setTab('calling','campaigns')">Campaigns <span class="count">0</span></button>
+    <button class="tab" data-tab="script" onclick="setTab('calling','script')">Script &amp; outcomes</button>
+  </div>
+
+  <!-- ── To do: the dialler ─────────────────────────────────────────────── -->
+  <div class="tab-pane active" data-pane-group="calling" data-pane="todo">
+    <!-- Totals for whatever is being worked -- scoped to the campaign picked
+         below, so the numbers agree with the list underneath. -->
+    <div class="stat-grid" id="cq-summary"
+         style="grid-template-columns:repeat(6,1fr);margin-bottom:16px"></div>
+
+    <div class="flex gap-2 items-center" style="margin-bottom:14px;flex-wrap:wrap">
+      <!-- "Due now" first because it is the work: callbacks you promised,
+           oldest first. New leads are the pile you dip into once that's clear. -->
+      <div class="chips">
+        <button class="chip active" id="cq-tab-today"    onclick="setCallBucket('today')">Due now <span class="count" id="cq-count-today">0</span></button>
+        <button class="chip" id="cq-tab-new"      onclick="setCallBucket('new')">Never called <span class="count" id="cq-count-new">0</span></button>
+        <button class="chip" id="cq-tab-upcoming" onclick="setCallBucket('upcoming')">Scheduled <span class="count" id="cq-count-upcoming">0</span></button>
+        <button class="chip" id="cq-tab-all"      onclick="setCallBucket('all')">All callable</button>
+        <button class="chip" id="cq-tab-worked"   onclick="setCallBucket('worked')" title="Leads you closed out — not interested, wrong number, do not call, booked">Closed out <span class="count" id="cq-count-worked">0</span></button>
+      </div>
+      <select id="cq-campaign" class="filter-select" onchange="setCallCampaign(this.value)" style="margin-left:auto">
+        <option value="">All campaigns</option>
       </select>
-      <button class="btn btn-ghost btn-sm" onclick="openNewCallCampaign()">+ New campaign</button>
-      <button class="btn btn-primary btn-sm" id="cq-campaign-add"
-              onclick="openAddLeadsModal()" style="display:none">+ Add leads</button>
-      <button class="btn btn-ghost btn-sm" id="cq-campaign-delete"
-              onclick="deleteCallCampaign()" style="display:none">✕ Delete campaign</button>
+      <select id="cq-source-filter" class="filter-select" onchange="loadCallQueue()">
+        <option value="">All lists</option>
+      </select>
+      <label class="text-muted text-small" style="display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap">
+        <input type="checkbox" id="cq-no-website" onchange="loadCallQueue()" style="cursor:pointer" />
+        No website only
+      </label>
     </div>
-    <div id="cq-campaign-cards" style="display:grid;gap:10px;
-         grid-template-columns:repeat(auto-fill,minmax(210px,1fr))"></div>
+
+    <div id="calling-split" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,420px);gap:20px;align-items:start">
+
+      <!-- Left: the queue, then the lead you're on -->
+      <div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title" id="cq-list-title">Queue</div>
+            <span class="text-muted text-small mono" id="cq-list-count"></span>
+          </div>
+          <div class="table-wrap" style="max-height:300px;overflow-y:auto">
+            <table class="lead-table">
+              <thead><tr><th>Business</th><th>Phone</th><th>Attempts</th><th>Due</th><th></th></tr></thead>
+              <tbody id="cq-table"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card" id="cq-lead-card" style="display:none;padding:20px">
+          <div class="flex items-center" style="margin-bottom:4px;gap:8px;flex-wrap:wrap">
+            <div class="card-title" id="cq-lead-name" style="font-size:18px"></div>
+            <span id="cq-lead-pills"></span>
+          </div>
+          <div id="cq-lead-meta" class="text-muted text-small" style="margin-bottom:12px"></div>
+          <div id="cq-lead-warning" style="display:none;margin-bottom:12px;padding:8px 12px;border-radius:6px;
+               background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);font-size:12px;color:var(--amber)"></div>
+
+          <div class="form-group">
+            <label>Notes</label>
+            <textarea id="cq-notes" class="soft-input" style="min-height:110px"
+                      placeholder="What they said, who you spoke to, anything worth remembering next time…"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>Outcome</label>
+            <div id="cq-outcomes" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+
+          <div class="form-group" id="cq-next-wrap" style="display:none">
+            <label id="cq-next-label">Next call</label>
+            <input type="datetime-local" id="cq-next-at" />
+            <div class="form-hint" id="cq-next-hint">Puts this lead back in "Due now" at that time.</div>
+          </div>
+
+          <div class="flex gap-2" style="flex-wrap:wrap;margin-top:4px">
+            <button class="btn btn-primary" onclick="saveCallOutcome()">Save &amp; next lead</button>
+            <button class="btn btn-ghost" onclick="skipCallLead()">Skip for now</button>
+            <a class="btn btn-ghost" id="cq-ics-link" style="display:none" href="#">⤓ Add to calendar</a>
+          </div>
+
+          <div id="cq-history" style="margin-top:18px"></div>
+        </div>
+      </div>
+
+      <!-- Right: the script, rendered for whoever is on screen -->
+      <div class="card" style="padding:18px;position:sticky;top:16px;max-height:calc(100vh - 40px);overflow-y:auto">
+        <div class="card-title" style="margin-bottom:4px">Script</div>
+        <div class="text-muted text-small" id="cq-script-for" style="margin-bottom:12px">
+          Pick a lead to fill in their details.
+        </div>
+        <div id="cq-script-body"></div>
+      </div>
+    </div>
   </div>
 
-  <!-- Totals across everything, mirroring the shape of the main dashboard so
-       the two read the same way. Per-campaign detail is in the cards above. -->
-  <div class="stat-grid" id="cq-summary"
-       style="grid-template-columns:repeat(6,1fr);margin-bottom:18px"></div>
-
-  <!-- Buckets. "Today" first because it is the work: callbacks you promised,
-       oldest first. New leads are the pile you dip into once that's clear. -->
-  <div class="flex gap-2" style="margin-bottom:16px;flex-wrap:wrap">
-    <button class="btn btn-primary" id="cq-tab-today"    onclick="setCallBucket('today')">Due now <span class="badge badge-gray" id="cq-count-today">0</span></button>
-    <button class="btn btn-ghost"   id="cq-tab-new"      onclick="setCallBucket('new')">Never called <span class="badge badge-gray" id="cq-count-new">0</span></button>
-    <button class="btn btn-ghost"   id="cq-tab-upcoming" onclick="setCallBucket('upcoming')">Scheduled <span class="badge badge-gray" id="cq-count-upcoming">0</span></button>
-    <button class="btn btn-ghost"   id="cq-tab-all"      onclick="setCallBucket('all')">All callable</button>
-    <button class="btn btn-ghost"   id="cq-tab-worked"   onclick="setCallBucket('worked')" title="Leads you closed out — not interested, wrong number, do not call, booked">Worked</button>
-    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;margin-left:8px;white-space:nowrap">
-      <input type="checkbox" id="cq-no-website" onchange="loadCallQueue()" style="cursor:pointer" />
-      No website only
-    </label>
-    <select id="cq-source-filter" class="filter-select" onchange="loadCallQueue()">
-      <option value="">All lists</option>
-    </select>
+  <!-- ── Leads: everyone on Calling ─────────────────────────────────────── -->
+  <div class="tab-pane" data-pane-group="calling" data-pane="leads">
+    <div class="card">
+      <div class="lt-toolbar">
+        <input id="cl-search" class="search-input" placeholder="Search name, phone, city…" oninput="LT.cl.search()" />
+        <select id="cl-outcome" class="filter-select" onchange="LT.cl.filter()">
+          <option value="">Any outcome</option>
+        </select>
+        <select id="cl-campaign" class="filter-select" onchange="LT.cl.filter()">
+          <option value="">Any campaign</option>
+        </select>
+        <select id="cl-source" class="filter-select" onchange="LT.cl.filter()" title="Which scrape found them">
+          <option value="">All lists</option>
+        </select>
+        <span class="lt-count" id="cl-count"></span>
+      </div>
+      <div id="cl-body"></div>
+    </div>
   </div>
 
-  <div id="cq-outcome-editor" style="display:none;margin-bottom:20px"></div>
-  <div id="cq-script-editor" style="display:none;margin-bottom:20px"></div>
-
-  <div id="calling-split" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,420px);gap:20px;align-items:start">
-
-    <!-- Left: the queue, then the lead you're on -->
-    <div>
-      <div class="card" style="margin-bottom:16px">
-        <div class="card-header">
-          <div class="card-title" id="cq-list-title">Queue</div>
-          <span class="text-muted text-small mono" id="cq-list-count"></span>
-        </div>
-        <div class="table-wrap" style="max-height:300px;overflow-y:auto">
-          <table>
-            <thead><tr><th>Business</th><th>Phone</th><th>Attempts</th><th>Due</th><th></th></tr></thead>
-            <tbody id="cq-table"></tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="card" id="cq-lead-card" style="display:none;padding:20px">
-        <div class="flex items-center" style="margin-bottom:4px;gap:8px;flex-wrap:wrap">
-          <div class="card-title" id="cq-lead-name" style="font-size:18px"></div>
-          <span id="cq-lead-pills"></span>
-        </div>
-        <div id="cq-lead-meta" class="text-muted text-small" style="margin-bottom:12px"></div>
-        <div id="cq-lead-warning" style="display:none;margin-bottom:12px;padding:8px 12px;border-radius:6px;
-             background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);font-size:12px;color:var(--amber)"></div>
-
-        <div class="form-group">
-          <label>Notes</label>
-          <textarea id="cq-notes" style="min-height:110px"
-                    placeholder="What they said, who you spoke to, anything worth remembering next time…"></textarea>
-        </div>
-
-        <div class="form-group">
-          <label>Outcome</label>
-          <div id="cq-outcomes" style="display:flex;gap:6px;flex-wrap:wrap"></div>
-        </div>
-
-        <div class="form-group" id="cq-next-wrap" style="display:none">
-          <label id="cq-next-label">Next call</label>
-          <input type="datetime-local" id="cq-next-at" />
-          <div class="form-hint" id="cq-next-hint">Puts this lead back in "Due now" at that time.</div>
-        </div>
-
-        <div class="flex gap-2" style="flex-wrap:wrap;margin-top:4px">
-          <button class="btn btn-primary" onclick="saveCallOutcome()">Save &amp; next lead</button>
-          <button class="btn btn-ghost" onclick="skipCallLead()">Skip for now</button>
-          <a class="btn btn-ghost" id="cq-ics-link" style="display:none" href="#">⤓ Add to calendar</a>
-        </div>
-
-        <div id="cq-history" style="margin-top:18px"></div>
-      </div>
+  <!-- ── Campaigns ──────────────────────────────────────────────────────── -->
+  <!-- A named batch you decided to work, as opposed to a lead list, which
+       groups by whenever you happened to scrape. -->
+  <div class="tab-pane" data-pane-group="calling" data-pane="campaigns">
+    <div class="flex items-center" style="margin-bottom:14px;gap:10px">
+      <p class="text-muted text-small">A campaign is a batch you've decided to work — "30 no-website clinics in Sharjah". A lead can be in more than one.</p>
+      <button class="btn btn-ghost btn-sm ml-auto" onclick="openNewCallCampaign()">+ New campaign</button>
     </div>
+    <div id="cq-campaign-cards" style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))"></div>
+  </div>
 
-    <!-- Right: the script, rendered for whoever is on screen -->
-    <div class="card" style="padding:18px;position:sticky;top:16px;max-height:calc(100vh - 40px);overflow-y:auto">
-      <div class="card-title" style="margin-bottom:4px">Script</div>
-      <div class="text-muted text-small" id="cq-script-for" style="margin-bottom:12px">
-        Pick a lead to fill in their details.
-      </div>
-      <div id="cq-script-body"></div>
-    </div>
+  <!-- ── Script & outcomes ──────────────────────────────────────────────── -->
+  <div class="tab-pane" data-pane-group="calling" data-pane="script">
+    <div id="cq-script-editor" style="margin-bottom:20px"></div>
+    <div id="cq-outcome-editor"></div>
   </div>
 </div>

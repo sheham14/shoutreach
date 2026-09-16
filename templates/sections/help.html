@@ -13,8 +13,55 @@
 
   <div class="faq-list">
 
-    <!-- 1. Getting Started -->
+    <!-- 0. How the app is laid out -->
     <div class="faq-item open">
+      <div class="faq-header" onclick="toggleFaq(this)">
+        <span class="faq-icon">🗂</span> How ShoutReach is laid out
+        <span class="faq-chevron">▼</span>
+      </div>
+      <div class="faq-body">
+        <p><strong>Contacts</strong> is every business you have, whichever channel it's on — or none. The
+        <strong>Channels</strong> column shows where each one is (for example "WhatsApp · replied"). Tick some and
+        send them to Email, Calling or WhatsApp from there.</p>
+        <ul>
+          <li><strong>Unassigned</strong> — businesses on no channel: taken off one, scraped with nothing to reach
+          them on, or added by hand. "Why it's here" says which.</li>
+          <li><strong>Do not contact</strong> — anyone who unsubscribed or asked to be left alone. They're kept so a
+          later scrape can never put them back on a list.</li>
+        </ul>
+
+        <p><strong>Email, Calling and WhatsApp</strong> are laid out the same way:</p>
+        <table>
+          <tr><th>Tab</th><th>What it's for</th></tr>
+          <tr><td><strong>To do</strong> (Calling, WhatsApp)</td><td>The work: a short list with the lead you're on beside it. Callbacks due and never-called leads; WhatsApp websites to review, messages ready to send, follow-ups due.</td></tr>
+          <tr><td><strong>Leads</strong></td><td>Every lead on that channel as a table. Search, filter, tick rows, then move, pause, enroll or take them off. The ⋯ at the end of a row has everything you can do to that one.</td></tr>
+          <tr><td><strong>Campaigns</strong></td><td>Named batches. An email campaign sends a sequence; a call campaign is a list you've decided to work; a WhatsApp campaign carries its own message templates.</td></tr>
+          <tr><td><strong>Templates / Script</strong></td><td>Your own words. Nobody else using the app can see them.</td></tr>
+        </table>
+
+        <h4>WhatsApp campaigns</h4>
+        <p>Every WhatsApp lead is in a campaign, and its messages are written from that campaign's templates, at
+        that campaign's follow-up gap. So leads for different services get different pitches. Templates can use
+        <code>{{business_name}}</code>, <code>{{signal_detail}}</code> (what you saw on their website),
+        <code>{{city}}</code>, <code>{{category}}</code> and any variables you add to the campaign, such as
+        <code>{{my_name}}</code>. Add a fallback for anything that might be missing: <code>{{city|your area}}</code>.</p>
+
+        <h4>When a number isn't on WhatsApp</h4>
+        <p>Press <strong>Not on WhatsApp…</strong> and choose: move it to Calling (into a campaign if you like),
+        move it to Email (if there's an address on file), or just take it off WhatsApp. Either way the number is
+        never re-added to WhatsApp by a later scrape. If it's on WhatsApp but you've decided against it, use
+        <strong>Take off WhatsApp</strong> in the ⋯ menu instead — that one can be added back.</p>
+
+        <h4>Scraping</h4>
+        <p>Each scrape goes to one channel. <strong>Email</strong> searches each website for an address;
+        <strong>Calling</strong> and <strong>WhatsApp</strong> only need the phone number from Google Maps, so they
+        skip the websites and run much faster. Anything a scrape finds that can't go on its channel — no email,
+        no phone — waits in Contacts under Unassigned.</p>
+      </div>
+    </div>
+
+    <!-- 1. Getting Started -->
+    <div class="faq-item">
       <div class="faq-header" onclick="toggleFaq(this)">
         <span class="faq-icon">⚡</span> Getting Started — First-Time Setup
         <span class="faq-chevron">▼</span>
@@ -107,15 +154,15 @@ Value: v=DMARC1; p=none; rua=mailto:dmarc@yourdomain.com</code></pre>
       </div>
       <div class="faq-body">
         <h4>1. Import Contacts</h4>
-        <p>Go to <strong>Contacts → Import CSV</strong>. Supported columns:</p>
+        <p>Go to <strong>Email → Import CSV</strong> (or Contacts → Import CSV). Supported columns:</p>
         <pre><code>email,first_name,last_name,company
 drsmith@dentistry.com,John,Smith,Smith Family Dental
 office@clinic.com,Sarah,Jones,Wellness Clinic</code></pre>
         <p>You can also paste raw emails (one per line) for a quick import — the system will extract what it can.</p>
-        <p>Contacts without emails (e.g. from the scraper finding only contact forms) are stored as prospects with <code>form_only</code> or <code>no_email</code> status. You can follow up with them manually.</p>
+        <p>Businesses without an email (e.g. the scraper found only a contact form) land in <strong>Contacts → Unassigned</strong>, ready to add to Calling or WhatsApp.</p>
 
         <h4>2. Create a Campaign</h4>
-        <p>Go to <strong>Campaigns → New Campaign</strong> and configure:</p>
+        <p>Go to <strong>Email → + New campaign</strong> and configure:</p>
         <ul>
           <li><strong>Daily Limit</strong> — follow the warmup schedule above (start at 15)</li>
           <li><strong>Send Window</strong> — hours (UTC) when emails go out. 9–17 = 9am to 5pm UTC. Convert to your local timezone.</li>
@@ -169,7 +216,7 @@ If you're ever interested in [offer], I'm happy to chat.
         <p>In the campaign detail view, click <strong>⚙ Assign</strong> next to "Sending accounts". Selected accounts will rotate round-robin. If none are assigned, the system uses global SMTP settings.</p>
 
         <h4>5. Enroll Contacts</h4>
-        <p>Click <strong>+ Enroll</strong> in the campaign view. Select contacts from your list. Each contact is immediately scheduled for Step 1.</p>
+        <p>Click <strong>+ Enroll</strong> in the campaign view, or tick addresses in <strong>Email → Leads</strong> and choose <strong>Enroll in campaign</strong>. Each one is immediately scheduled for Step 1.</p>
         <p>To remove a contact from a campaign, use the ✕ button in the Enrolled Contacts table, or select multiple and click Remove Selected.</p>
 
         <h4>6. Activate</h4>

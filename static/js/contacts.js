@@ -1,666 +1,392 @@
-const CONTACT_COLS = [
-  { key: 'email',         label: 'Email' },
-  { key: 'first_name',    label: 'First Name' },
-  { key: 'last_name',     label: 'Last Name' },
-  { key: 'company',       label: 'Company' },
-  { key: 'phone',         label: 'Phone' },
-  { key: 'website',       label: 'Website' },
-  { key: 'rating',        label: 'Rating' },
-  { key: 'review_count',  label: 'Reviews' },
-  { key: 'category',      label: 'Category' },
-  { key: 'address',       label: 'Address' },
-  { key: 'call_status',   label: 'Call status' },
-  { key: 'call_attempts', label: 'Attempts' },
-  { key: 'source_job_id', label: 'List' },
-  { key: 'status',        label: 'Status' },
-  { key: 'created_at',    label: 'Added' },
+// ── Contacts: every business, on any channel or none ─────────────────────────
+//
+// The channel pages each list their own leads. This is the list of businesses
+// behind all of them: where each one is, what's happened with it, and the
+// place to send a business to a channel it isn't on yet.
+
+let _ctView = 'all';
+let _ctDetailId = null;
+let _ctEditId = null;
+
+const CT_VIEW_HINTS = {
+  unassigned: 'Businesses on no channel — taken off one, scraped with nothing to reach them on, or added by hand. Tick some and send them to a channel.',
+  dnc: 'Businesses that asked not to be contacted or unsubscribed. They stay here so a later scrape or import can never put them back on a list.',
+};
+
+function callOutcomeLabel(key) {
+  if (!key) return 'never called';
+  const meta = (typeof CALL_STATUS_META !== 'undefined') && CALL_STATUS_META[key];
+  return meta ? meta.label.toLowerCase() : String(key).replace(/_/g, ' ');
+}
+
+// Where a business is, as pills -- the "category" of each contact.
+function channelPills(r) {
+  const out = [];
+  if (r.email_count > 0) {
+    const bad = ['unsubscribed', 'bounced'].includes(r.email_status);
+    const state = bad ? r.email_status : (r.email_enrollment ? r.email_enrollment : 'not enrolled');
+    out.push(pill(`Email · ${state}`, bad ? 'red' : 'green'));
+  }
+  if (r.call_lead_id) out.push(pill(`Calling · ${callOutcomeLabel(r.call_status)}`, 'blue'));
+  if (r.wa_stage && !['moved', 'removed'].includes(r.wa_stage)) {
+    out.push(pill(`WhatsApp · ${(WA_STAGE_META[r.wa_stage] || [r.wa_stage])[0].toLowerCase()}`, 'purple'));
+  }
+  if (!out.length) {
+    out.push(r.do_not_contact ? pill('Do not contact', 'red') : pill('Unassigned', 'dashed', r.unassigned_label || ''));
+  } else if (r.do_not_contact) {
+    out.push(pill('Do not contact', 'red'));
+  }
+  return `<span class="pills">${out.join('')}</span>`;
+}
+
+const _CT_COLUMNS_BASE = [
+  { key: 'company', label: 'Business', sort: true,
+    render: r => `<span class="biz-name">${esc(r.company || 'Unnamed business')}</span>${
+      r.city || r.address ? `<span class="sub">${esc(r.city || r.address)}</span>` : ''}` },
+  { key: 'channels', label: 'Channels', render: channelPills },
+  { key: 'phone', label: 'Phone', sort: true, cls: 'num', render: r => esc(r.phone || '') },
+  { key: 'email', label: 'Email', sort: true, cls: 'nowrap',
+    render: r => r.email ? `<span class="mono" style="font-size:12px">${esc(r.email)}</span>${
+      r.email_count > 1 ? ` <span class="text-muted">+${r.email_count - 1}</span>` : ''}` : '' },
+  { key: 'category', label: 'Category', sort: true, render: r => esc(r.category || '') },
+  { key: 'created_at', label: 'Added', sort: true, cls: 'num', render: r => esc(shortDate(r.created_at)) },
 ];
 
-// Hidden by default purely to keep the table narrow enough to read — all of
-// them are one click away under ⊞ Columns.
-let contactHiddenCols  = new Set(['address', 'category', 'call_attempts']);
-let contactSortCol     = '';
-let contactSortDir     = 'desc';
-let contactEditId      = null;
-let contactSelectedIds = new Set();
+const _CT_REASON_COLUMN = {
+  key: 'reason', label: "Why it's here",
+  render: r => pill(r.unassigned_label || 'Unassigned', 'dashed'),
+};
 
-// Server-side paging state. The table used to hold every contact in the
-// browser; it now holds one page, and every filter is applied in SQL.
-let contactRows        = [];
-let contactPage        = 1;
-let contactPerPage     = 50;
-let contactTotal       = 0;
-let contactPages       = 1;
-let contactSourceId    = '';     // '' = every list, 'manual' = hand-added/CSV
-let contactSources     = [];
-let contactSearchTimer = null;
-
-async function loadContacts() {
-  contactPage = 1;
-  contactSelectedIds.clear();
-  await loadContactSources();
-  _renderContactColDropdown();
-  await fetchContactsPage();
-  loadUnsubscribed();
-  loadInvalidMx();
-}
-
-async function loadContactSources() {
-  contactSources = await api('/api/contacts/sources') || [];
-  const sel = document.getElementById('contacts-source-filter');
-  if (!sel) return;
-  const total = contactSources.reduce((n, s) => n + s.count, 0);
-  sel.innerHTML =
-    `<option value="">All lists (${total})</option>` +
-    contactSources.map(s =>
-      `<option value="${esc(String(s.job_id))}">${esc(s.label)} (${s.count})</option>`
-    ).join('');
-  sel.value = contactSourceId;
-}
-
-function _contactQueryString(extra = {}) {
-  const p = new URLSearchParams();
-  const q = (document.getElementById('contacts-search')?.value || '').trim();
-  if (q) p.set('q', q);
-  if (contactSourceId) p.set('source_job_id', contactSourceId);
-  const status = document.getElementById('contacts-status-filter')?.value || '';
-  if (status) p.set('status', status);
-  const callStatus = document.getElementById('contacts-call-filter')?.value || '';
-  if (callStatus) p.set('call_status', callStatus);
-  if (document.getElementById('contacts-show-deleted')?.checked) p.set('include_deleted', '1');
-  Object.entries(extra).forEach(([k, v]) => p.set(k, v));
-  return p.toString();
-}
-
-async function fetchContactsPage() {
-  const params = { page: contactPage, per_page: contactPerPage };
-  if (contactSortCol) { params.sort_col = contactSortCol; params.sort_dir = contactSortDir; }
-  const data = await api('/api/contacts?' + _contactQueryString(params));
-
-  if (!data || data.error || !data.rows) {
-    toast((data && data.error) || 'Failed to load contacts', 'err');
-    return;
-  }
-
-  contactRows  = data.rows;
-  contactTotal = data.total;
-  contactPages = data.pages;
-  contactPage  = data.page;
-  // Kept in sync so the edit/delete handlers, which look a contact up by id,
-  // still find the row the user just clicked.
-  allContacts  = data.rows;
-
-  renderContactsTable();
-  _updateDeleteSelectedBtn();
-}
-
-function contactSearch() {
-  clearTimeout(contactSearchTimer);
-  contactSearchTimer = setTimeout(() => {
-    contactPage = 1;
-    fetchContactsPage();
-  }, 300);
-}
-
-function contactFilterChanged() {
-  contactSourceId = document.getElementById('contacts-source-filter')?.value || '';
-  contactPage = 1;
-  fetchContactsPage();
-}
-
-function contactPageStep(dir) {
-  const next = contactPage + dir;
-  if (next < 1 || next > contactPages) return;
-  contactPage = next;
-  fetchContactsPage();
-}
-
-let _unsubscribed = [];
-
-async function loadUnsubscribed() {
-  _unsubscribed = await api('/api/contacts/unsubscribed');
-  const countEl = document.getElementById('unsub-count');
-  const tbody   = document.getElementById('unsub-table');
-  if (!countEl || !tbody) return;
-  countEl.textContent = _unsubscribed.length ? `${_unsubscribed.length} contacts` : '';
-  if (!_unsubscribed.length) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty-state"><p>No unsubscribes yet</p></td></tr>';
-    return;
-  }
-  tbody.innerHTML = _unsubscribed.map(c => `<tr>
-    <td class="mono" style="font-size:12px">${esc(c.email || '—')}</td>
-    <td>${esc([c.first_name, c.last_name].filter(Boolean).join(' ') || '—')}</td>
-    <td>${esc(c.company || '—')}</td>
-    <td class="mono text-muted" style="font-size:11px">${(c.created_at || '').substring(0, 10)}</td>
-  </tr>`).join('');
-}
-
-function exportUnsubscribed() {
-  if (!_unsubscribed.length) { toast('No unsubscribes to export', 'err'); return; }
-  const rows = [['Email','First Name','Last Name','Company','Date']];
-  _unsubscribed.forEach(c => rows.push([
-    c.email || '', c.first_name || '', c.last_name || '',
-    c.company || '', (c.created_at || '').substring(0, 10),
-  ]));
-  const csv  = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const a    = Object.assign(document.createElement('a'), {
-    href: URL.createObjectURL(blob), download: 'unsubscribed.csv',
-  });
-  a.click();
-}
-
-// ── Invalid MX ────────────────────────────────────────────────────────────────
-
-let _invalidMx = [];
-
-async function loadInvalidMx() {
-  _invalidMx = await api('/api/contacts/invalid-mx');
-  const countEl = document.getElementById('invalid-mx-count');
-  const tbody   = document.getElementById('invalid-mx-table');
-  if (!countEl || !tbody) return;
-  countEl.textContent = _invalidMx.length ? `${_invalidMx.length} contacts` : '';
-  if (!_invalidMx.length) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty-state"><p>No invalid emails found yet</p></td></tr>';
-    return;
-  }
-  tbody.innerHTML = _invalidMx.map(c => `<tr>
-    <td class="mono" style="font-size:12px">${esc(c.email || '—')}</td>
-    <td>${esc(c.company || '—')}</td>
-    <td class="mono text-muted" style="font-size:12px">${esc(c.website || '—')}</td>
-    <td class="mono text-muted" style="font-size:11px">${(c.created_at || '').substring(0, 10)}</td>
-  </tr>`).join('');
-}
-
-function exportInvalidMx() {
-  if (!_invalidMx.length) { toast('No invalid emails to export', 'err'); return; }
-  const rows = [['Email','Company','Website','Address','Date']];
-  _invalidMx.forEach(c => rows.push([
-    c.email || '', c.company || '', c.website || '',
-    c.address || '', (c.created_at || '').substring(0, 10),
-  ]));
-  const csv  = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const a    = Object.assign(document.createElement('a'), {
-    href: URL.createObjectURL(blob), download: 'invalid-mx-emails.csv',
-  });
-  a.click();
-}
-
-function _sourceLabel(jobId) {
-  if (jobId === null || jobId === undefined || jobId === '') return 'Manual / CSV';
-  const hit = contactSources.find(s => String(s.job_id) === String(jobId));
-  return hit ? hit.label : `Scrape #${jobId}`;
-}
-
-function renderContactsTable() {
-  const visibleCols = CONTACT_COLS.filter(c => !contactHiddenCols.has(c.key));
-  const pageIds     = contactRows.map(c => c.id);
-  const pageAllSel  = pageIds.length > 0 && pageIds.every(id => contactSelectedIds.has(id));
-
-  const from = contactTotal === 0 ? 0 : (contactPage - 1) * contactPerPage + 1;
-  const to   = Math.min(contactPage * contactPerPage, contactTotal);
-  document.getElementById('contacts-count').textContent =
-    contactTotal ? `${from}–${to} of ${contactTotal}` : '0 contacts';
-
-  const pageLabel = document.getElementById('contacts-page-label');
-  if (pageLabel) pageLabel.textContent = `Page ${contactPage} of ${contactPages}`;
-  const prevBtn = document.getElementById('contacts-prev');
-  const nextBtn = document.getElementById('contacts-next');
-  if (prevBtn) prevBtn.disabled = contactPage <= 1;
-  if (nextBtn) nextBtn.disabled = contactPage >= contactPages;
-
-  document.getElementById('contacts-thead').innerHTML = '<tr>' +
-    `<th style="width:36px"><input type="checkbox" ${pageAllSel ? 'checked' : ''}
-        onchange="toggleSelectAllContacts(this.checked)" style="cursor:pointer"
-        title="Select everything on this page" /></th>` +
-    visibleCols.map(col => {
-      const active  = contactSortCol === col.key;
-      const arrow   = active ? (contactSortDir === 'asc' ? '▲' : '▼') : '⇅';
-      const nextDir = (active && contactSortDir === 'asc') ? 'desc' : 'asc';
-      return `<th style="cursor:pointer;user-select:none;white-space:nowrap"
-                  onclick="contactSort('${col.key}','${nextDir}')">
-                ${col.label}&nbsp;<span style="opacity:0.45;font-size:10px">${arrow}</span>
-              </th>`;
-    }).join('') +
-    '<th style="width:80px"></th></tr>';
-
-  const tbody = document.getElementById('contacts-table');
-  if (!contactRows.length) {
-    tbody.innerHTML = `<tr><td colspan="${visibleCols.length + 2}" class="empty-state"><p>No contacts found.</p></td></tr>`;
-    _renderSelectAllMatchingBar();
-    return;
-  }
-
-  tbody.innerHTML = contactRows.map(c => {
-    const checked = contactSelectedIds.has(c.id) ? 'checked' : '';
-    const cells = visibleCols.map(col => {
-      if (col.key === 'status') return `<td>${contactStatusBadge(c.status)}</td>`;
-      if (col.key === 'call_status') return `<td>${callStatusBadge(c.call_status)}</td>`;
-      if (col.key === 'call_attempts') {
-        return `<td class="mono text-muted" style="font-size:12px">${c.call_attempts || ''}</td>`;
-      }
-      if (col.key === 'created_at') {
-        const d = (c.created_at || '').split('T')[0] || (c.created_at || '').split(' ')[0];
-        return `<td class="mono text-muted" style="font-size:11px">${esc(d)}</td>`;
-      }
-      if (col.key === 'company') {
-        return `<td>${esc(c.company)}${contactSignalPill(c)}</td>`;
-      }
-      if (col.key === 'email') return `<td class="mono" style="font-size:12px">${esc(c.email)}</td>`;
-      if (col.key === 'phone') return `<td class="mono" style="font-size:12px">${esc(c.phone)}</td>`;
-      if (col.key === 'rating') {
-        return `<td class="mono" style="font-size:12px">${c.rating == null ? '' : esc(c.rating) + '★'}</td>`;
-      }
-      if (col.key === 'review_count') {
-        return `<td class="mono text-muted" style="font-size:12px">${c.review_count == null ? '' : esc(c.review_count)}</td>`;
-      }
-      if (col.key === 'source_job_id') {
-        return `<td class="text-muted" style="font-size:11px">${esc(_sourceLabel(c.source_job_id))}</td>`;
-      }
-      return `<td>${esc(c[col.key])}</td>`;
-    }).join('');
-    return `<tr>
-      <td><input type="checkbox" ${checked} onchange="toggleContactSelect(${c.id}, this.checked)" style="cursor:pointer" /></td>
-      ${cells}
-      <td style="white-space:nowrap">
-        <button class="btn btn-ghost btn-sm" onclick="openEditContactModal(${c.id})" title="Edit">✎</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteContact(${c.id})" title="Delete">✕</button>
-      </td>
-    </tr>`;
-  }).join('');
-
-  _renderSelectAllMatchingBar();
-}
-
-// Select-all ticks the current page only. Silently selecting rows the user
-// cannot see would make "Delete Selected" far more destructive than it looks,
-// so reaching the rest of a filtered list is a separate, explicit click.
-function _renderSelectAllMatchingBar() {
-  const bar = document.getElementById('contacts-selectall-bar');
-  if (!bar) return;
-  const pageIds    = contactRows.map(c => c.id);
-  const pageAllSel = pageIds.length > 0 && pageIds.every(id => contactSelectedIds.has(id));
-  const more       = contactTotal > contactRows.length;
-
-  if (pageAllSel && more && contactSelectedIds.size < contactTotal) {
-    bar.style.display = 'block';
-    bar.innerHTML =
-      `All ${contactRows.length} on this page are selected.
-       <a href="#" onclick="selectAllMatching();return false"
-          style="color:var(--blue);text-decoration:underline">
-         Select all ${contactTotal} matching this filter</a>`;
-  } else if (contactSelectedIds.size > 0) {
-    bar.style.display = 'block';
-    bar.innerHTML =
-      `${contactSelectedIds.size} selected.
-       <a href="#" onclick="clearContactSelection();return false"
-          style="color:var(--blue);text-decoration:underline">Clear selection</a>`;
-  } else {
-    bar.style.display = 'none';
-    bar.innerHTML = '';
-  }
-}
-
-async function selectAllMatching() {
-  const res = await api('/api/contacts/ids?' + _contactQueryString());
-  if (!res || !res.ids) { toast('Could not expand the selection', 'err'); return; }
-  res.ids.forEach(id => contactSelectedIds.add(id));
-  _updateDeleteSelectedBtn();
-  renderContactsTable();
-}
-
-function clearContactSelection() {
-  contactSelectedIds.clear();
-  _updateDeleteSelectedBtn();
-  renderContactsTable();
-}
-
-function contactSort(col, dir) {
-  contactSortCol = col;
-  contactSortDir = dir;
-  contactPage = 1;
-  fetchContactsPage();
-}
-
-function _renderContactColDropdown() {
-  const dd = document.getElementById('contacts-col-dropdown');
-  if (!dd) return;
-  dd.innerHTML = CONTACT_COLS.map(col => `
-    <label style="display:flex;align-items:center;gap:8px;padding:5px 14px;cursor:pointer;
-                  white-space:nowrap;font-size:13px;color:var(--text)">
-      <input type="checkbox" ${contactHiddenCols.has(col.key) ? '' : 'checked'}
-             onchange="contactToggleCol('${col.key}',this.checked)" style="cursor:pointer">
-      ${col.label}
-    </label>
-  `).join('');
-}
-
-function contactToggleCol(col, visible) {
-  if (visible) contactHiddenCols.delete(col);
-  else contactHiddenCols.add(col);
-  renderContactsTable();
-}
-
-function contactsToggleColDropdown() {
-  const dd = document.getElementById('contacts-col-dropdown');
-  dd.style.display = dd.style.display === 'none' ? 'block' : 'none';
-}
-
-document.addEventListener('click', e => {
-  const wrap = document.getElementById('contacts-col-toggle-wrap');
-  if (wrap && !wrap.contains(e.target)) {
-    const dd = document.getElementById('contacts-col-dropdown');
-    if (dd) dd.style.display = 'none';
-  }
+createLeadTable({
+  id: 'ct',
+  url: '/api/businesses',
+  idsUrl: '/api/businesses/ids',
+  columns: _CT_COLUMNS_BASE,
+  empty: 'No contacts match.',
+  params: () => ({
+    view: _ctView,
+    q: document.getElementById('ct-search')?.value.trim(),
+    channel: _ctView === 'all' ? document.getElementById('ct-channel')?.value : '',
+    source_job_id: document.getElementById('ct-source')?.value,
+  }),
+  onRowClick: r => openContactDetail(r.id),
+  bulk: () => `
+    <button class="btn btn-ghost btn-sm" onclick="contactsToEmail(LT.ct.selectedIds())">+ Email campaign</button>
+    <button class="btn btn-ghost btn-sm" onclick="contactsToCalling(LT.ct.selectedIds())">+ Calling</button>
+    <button class="btn btn-ghost btn-sm" onclick="contactsToWhatsApp(LT.ct.selectedIds())">+ WhatsApp</button>
+    <button class="btn btn-danger btn-sm" onclick="deleteBusinesses(LT.ct.selectedIds())">Delete</button>`,
+  menu: r => [
+    { label: 'Open details', run: `openContactDetail(${r.id})` },
+    { label: 'Edit', run: `openBusinessForm(${r.id})` },
+    r.email_count > 0 && { label: 'Enroll in an email campaign…', run: `contactsToEmail([${r.id}])` },
+    !r.call_lead_id && { label: 'Add to Calling…', run: `contactsToCalling([${r.id}])` },
+    // Not offered for a number already ruled out as not on WhatsApp.
+    (!r.wa_stage || r.wa_stage === 'removed') && !r.do_not_contact
+      && { label: 'Add to WhatsApp…', run: `contactsToWhatsApp([${r.id}])` },
+    { label: 'Delete', run: `deleteBusinesses([${r.id}])`, danger: true },
+  ],
+  onLoad: data => {
+    const c = data.counts || {};
+    setTabCount('contacts', 'all', c.all);
+    setTabCount('contacts', 'unassigned', c.unassigned, true);
+    setTabCount('contacts', 'dnc', c.dnc);
+  },
 });
 
-function toggleContactSelect(id, checked) {
-  if (checked) contactSelectedIds.add(id);
-  else contactSelectedIds.delete(id);
-  _updateDeleteSelectedBtn();
-  _syncSelectAllCheckbox();
-  _renderSelectAllMatchingBar();
+onTab('contacts', name => {
+  _ctView = name;
+  LT.ct.cfg.columns = name === 'unassigned'
+    ? [_CT_COLUMNS_BASE[0], _CT_REASON_COLUMN, ..._CT_COLUMNS_BASE.slice(2)]
+    : _CT_COLUMNS_BASE;
+  document.getElementById('ct-channel').style.display = name === 'all' ? '' : 'none';
+  const hint = document.getElementById('ct-view-hint');
+  hint.style.display = CT_VIEW_HINTS[name] ? 'block' : 'none';
+  hint.textContent = CT_VIEW_HINTS[name] || '';
+  LT.ct.load({ resetPage: true, keepSelection: false });
+});
+
+async function loadContacts() {
+  const sources = await api('/api/contacts/sources') || [];
+  const sel = document.getElementById('ct-source');
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">All lists</option>' +
+    sources.map(s => `<option value="${esc(String(s.job_id))}">${esc(s.label)} (${s.count})</option>`).join('');
+  sel.value = keep;
+  setTab('contacts', currentTab('contacts', 'all'));
 }
 
-function toggleSelectAllContacts(checked) {
-  contactRows.forEach(c =>
-    checked ? contactSelectedIds.add(c.id) : contactSelectedIds.delete(c.id));
-  _updateDeleteSelectedBtn();
-  renderContactsTable();
+// From anywhere in the app: jump to one business in Contacts.
+async function openBusiness(id) {
+  showSection('contacts');
+  openContactDetail(id);
 }
 
-function _syncSelectAllCheckbox() {
-  const cb = document.querySelector('#contacts-thead input[type=checkbox]');
-  if (cb) {
-    cb.checked = contactRows.length > 0 &&
-                 contactRows.every(c => contactSelectedIds.has(c.id));
+// ── Detail panel ─────────────────────────────────────────────────────────────
+
+function closeContactDetail() {
+  _ctDetailId = null;
+  LT.ct.currentId = null;
+  LT.ct.render();
+  document.getElementById('ct-detail').style.display = 'none';
+  document.getElementById('ct-split').style.gridTemplateColumns = '1fr';
+}
+
+async function openContactDetail(id) {
+  const d = await api(`/api/businesses/${id}`);
+  if (!d || d.error) { toast((d && d.error) || 'Could not open that contact', 'err'); return; }
+  _ctDetailId = id;
+  LT.ct.currentId = id;
+  LT.ct.render();
+  const panel = document.getElementById('ct-detail');
+  document.getElementById('ct-split').style.gridTemplateColumns = '';
+  panel.style.display = 'block';
+
+  const links = [];
+  if (d.phone) links.push(`<a href="tel:${esc(d.phone)}" style="color:var(--blue)">${esc(d.phone)}</a>`);
+  if (d.website) links.push(`<a href="${esc(d.website)}" target="_blank" rel="noopener" style="color:var(--blue)">${esc(d.domain || d.website)}</a>`);
+  const facts = [d.category, d.city || d.address, d.rating != null ? `${d.rating}★ (${d.review_count ?? 0})` : '']
+    .filter(Boolean).map(esc).join(' · ');
+
+  const where = [];
+  (d.enrollments || []).slice(0, 3).forEach(e =>
+    where.push(`<div>${pill('Email', 'green')} ${esc(e.campaign)} — ${esc(e.status === 'queued' ? `step ${e.current_step}` : e.status)}</div>`));
+  if ((d.emails || []).length && !(d.enrollments || []).length) {
+    where.push(`<div>${pill('Email', 'green')} not in a campaign yet</div>`);
+  }
+  if (d.call && !d.call.removed_at) {
+    const camps = (d.call.campaigns || []).map(c => esc(c.name)).join(', ');
+    where.push(`<div>${pill('Calling', 'blue')} ${esc(callOutcomeLabel(d.call.call_status))}${
+      d.call.next_call_at ? ` · next ${esc(d.call.next_call_at.substring(0, 16))}` : ''}${camps ? ` · ${camps}` : ''}</div>`);
+  }
+  if (d.whatsapp) {
+    const w = d.whatsapp;
+    const off = w.moved_to || w.removed_at;
+    where.push(`<div>${pill('WhatsApp', off ? 'dashed' : 'purple')} ${
+      off ? (w.moved_to ? 'not on WhatsApp' : 'taken off') : esc(w.campaign_name || 'no campaign')}${
+      w.replied ? ' · replied' : ''}</div>`);
+  }
+  if (d.do_not_contact) where.push(`<div>${pill('Do not contact', 'red')} asked to be left alone</div>`);
+  if (!where.length) where.push(`<div>${pill('Unassigned', 'dashed')} not on any channel</div>`);
+
+  const onWa = d.whatsapp && !d.whatsapp.moved_to && !d.whatsapp.removed_at;
+  const canWa = !onWa && !(d.whatsapp && d.whatsapp.moved_to) && !d.do_not_contact;
+  const onCall = d.call && !d.call.removed_at;
+
+  panel.innerHTML = `
+    <div class="flex items-center gap-2" style="justify-content:space-between">
+      <h3>${esc(d.company || 'Unnamed business')}</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeContactDetail()" title="Close">✕</button>
+    </div>
+    <div class="text-small" style="display:flex;gap:10px;flex-wrap:wrap">${links.join('')}</div>
+    ${facts ? `<div class="text-muted text-small" style="margin-top:2px">${facts}</div>` : ''}
+
+    <span class="field-label">Where it is</span>
+    <div style="display:flex;flex-direction:column;gap:6px;font-size:12.5px">${where.join('')}</div>
+    <div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px">
+      ${(d.emails || []).length ? `<button class="btn btn-ghost btn-sm" onclick="contactsToEmail([${d.id}])">+ Email campaign</button>` : ''}
+      ${!onCall && !d.do_not_contact ? `<button class="btn btn-ghost btn-sm" onclick="contactsToCalling([${d.id}])">+ Calling</button>` : ''}
+      ${canWa ? `<button class="btn btn-ghost btn-sm" onclick="contactsToWhatsApp([${d.id}])">+ WhatsApp</button>` : ''}
+      <button class="btn btn-ghost btn-sm" onclick="openBusinessForm(${d.id})">✎ Edit</button>
+    </div>
+
+    ${(d.emails || []).length ? `<span class="field-label">Email addresses</span>
+      <div style="display:flex;flex-direction:column;gap:4px">${d.emails.map(e =>
+        `<div class="text-small"><span class="mono">${esc(e.email)}</span> ${
+          e.status !== 'active' ? pill(e.status, 'red') : ''}${e.duplicate_of ? ' <span class="text-muted">(backup)</span>' : ''}</div>`).join('')}</div>` : ''}
+
+    <span class="field-label">Notes</span>
+    <textarea class="soft-input" id="ct-notes" style="min-height:70px"
+              placeholder="Anything worth remembering about this business…"
+              onchange="saveContactNotes(${d.id}, this.value)">${esc(d.notes || '')}</textarea>
+
+    <span class="field-label">History</span>
+    ${(d.timeline || []).length ? `<div class="timeline">${d.timeline.slice(0, 40).map(t => `
+      <div class="item">
+        <span class="when">${esc((t.at || '').substring(0, 16))}</span>
+        <span class="channel-${t.channel}">●</span> ${esc(t.text)}
+        ${t.detail ? `<div class="detail">${esc(t.detail.length > 240 ? t.detail.substring(0, 240) + '…' : t.detail)}</div>` : ''}
+      </div>`).join('')}</div>` : '<div class="text-muted text-small">Nothing sent, called or messaged yet.</div>'}
+  `;
+}
+
+async function saveContactNotes(id, notes) {
+  const res = await api(`/api/businesses/${id}`, 'PUT', { notes });
+  if (!res || res.error) { toast((res && res.error) || 'Could not save the note', 'err'); return; }
+  toast('Note saved');
+}
+
+function _refreshContactsAfterChange() {
+  if (document.getElementById('section-contacts').classList.contains('active')) {
+    LT.ct.load();
+    if (_ctDetailId) openContactDetail(_ctDetailId);
   }
 }
 
-function _updateDeleteSelectedBtn() {
-  const n = contactSelectedIds.size;
-  const btn = document.getElementById('contacts-delete-selected-btn');
-  if (btn) {
-    btn.disabled = n === 0;
-    btn.textContent = n > 0 ? `✕ Delete Selected (${n})` : '✕ Delete Selected';
-  }
-  const callBtn = document.getElementById('contacts-call-campaign-btn');
-  if (callBtn) {
-    callBtn.disabled = n === 0;
-    callBtn.textContent = n > 0 ? `☎ Add to Call Campaign (${n})` : '☎ Add to Call Campaign';
-  }
-}
+// ── Add / edit ───────────────────────────────────────────────────────────────
 
-// Building a call list is a decision — "these ten clinics, today" — so it
-// starts from whatever you have already filtered and selected here rather than
-// from a separate picker that would make you find the same leads twice.
-async function addSelectedToCallCampaign() {
-  const ids = [...contactSelectedIds];
-  if (!ids.length) return;
-
-  const campaigns = await api('/api/call-campaigns') || [];
-  const menu = campaigns.map((c, i) => `${i + 1}. ${c.name} (${c.total} leads)`).join('\n');
-  const answer = prompt(
-    `Add ${ids.length} contact${ids.length === 1 ? '' : 's'} to which campaign?\n\n`
-    + (menu ? menu + '\n\n' : '')
-    + `Enter a number, or type a new campaign name.`
-  );
-  if (!answer || !answer.trim()) return;
-
-  const pick = parseInt(answer.trim());
-  let campaignId, campaignName;
-  if (!isNaN(pick) && pick >= 1 && pick <= campaigns.length) {
-    campaignId   = campaigns[pick - 1].id;
-    campaignName = campaigns[pick - 1].name;
-  } else {
-    const created = await api('/api/call-campaigns', 'POST', { name: answer.trim() });
-    if (!created || created.error) {
-      toast((created && created.error) || 'Could not create the campaign', 'err');
-      return;
-    }
-    campaignId   = created.id;
-    campaignName = answer.trim();
-  }
-
-  const res = await api(`/api/call-campaigns/${campaignId}/members`, 'POST', { contact_ids: ids });
-  if (!res || res.error) { toast((res && res.error) || 'Could not add them', 'err'); return; }
-
-  // Say what was skipped rather than silently adding fewer than asked.
-  const skipped = res.already_present
-    ? ` (${res.already_present} already there)` : '';
-  toast(`Added ${res.added} to "${campaignName}"${skipped}`);
-  contactSelectedIds.clear();
-  _updateDeleteSelectedBtn();
-  renderContactsTable();
-}
-
-async function deleteSelectedContacts() {
-  const n = contactSelectedIds.size;
-  if (!n) return;
-  // Selection can now reach past the visible page, so name the number and say
-  // where it came from before doing something irreversible.
-  const scope = n > contactRows.length ? ' (including rows on other pages)' : '';
-  if (!confirm(`Permanently delete ${n} contact${n > 1 ? 's' : ''}${scope}? This cannot be undone.`)) return;
-  const res = await api('/api/contacts/bulk-delete', 'POST', { ids: [...contactSelectedIds] });
-  if (res && res.error) { toast(res.error, 'err'); return; }
-  toast(`Deleted ${n} contact${n > 1 ? 's' : ''}`);
-  loadContacts();
-}
-
-// ── Import ────────────────────────────────────────────────────────────────────
-
-function openImportModal() { openModal('modal-import'); }
-
-async function importContacts() {
-  const fileInput = document.getElementById('import-file');
-  const paste     = document.getElementById('import-paste').value.trim();
-
-  if (fileInput.files.length) {
-    const form = new FormData();
-    form.append('file', fileInput.files[0]);
-    // Raw fetch (FormData sets its own Content-Type with boundary), but the
-    // CSRF middleware requires the X-CSRF-Token header on every non-GET.
-    const csrf = await _getCsrfToken();
-    const res  = await fetch('/api/contacts/import', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'X-CSRF-Token': csrf },
-      body: form,
+async function openBusinessForm(id = null) {
+  _ctEditId = id;
+  const fields = ['name', 'phone', 'email', 'website', 'category', 'city', 'address', 'notes'];
+  fields.forEach(f => { document.getElementById(`bf-${f}`).value = ''; });
+  document.getElementById('bf-title').textContent = id ? 'Edit contact' : 'Add contact';
+  document.getElementById('bf-email-group').style.display = id ? 'none' : '';
+  document.getElementById('bf-hint').style.display = id ? 'none' : '';
+  if (id) {
+    const d = await api(`/api/businesses/${id}`);
+    if (!d || d.error) { toast('Could not load that contact', 'err'); return; }
+    fields.forEach(f => {
+      if (f !== 'email') document.getElementById(`bf-${f}`).value = d[f] || '';
     });
-    if (res.status === 401) { window.location.href = '/login'; return; }
-    const first = await res.json();
-    // A CSV held-back conflict is re-submitted as JSON rows, not a re-upload
-    // -- the flagged rows are already sitting in the response.
-    const final = await confirmChannelConflicts(first, () =>
-      api('/api/contacts/import', 'POST', {
-        rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
-      })
-    );
-    reportImport(mergeImportResults(first, final));
-    return;
   }
-
-  if (paste) {
-    const rows = paste.split('\n').map(line => ({ email: line.trim() })).filter(r => r.email);
-    const first = await api('/api/contacts/import', 'POST', { rows });
-    const final = await confirmChannelConflicts(first, () =>
-      api('/api/contacts/import', 'POST', {
-        rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
-      })
-    );
-    reportImport(mergeImportResults(first, final));
-    return;
-  }
-
-  toast('Select a file or paste emails', 'err');
+  openModal('modal-business');
 }
 
-// confirmChannelConflicts returns the SAME object back when the operator
-// declines, or a fresh response from the confirmed resend when they accept --
-// that reference difference is how much this needs to know to combine the
-// two calls' counts into one honest total instead of reporting only the last.
-function mergeImportResults(first, final) {
-  if (final === first) return first;
-  return {
-    inserted:   (first.inserted || 0) + (final.inserted || 0),
-    invalid_mx: (first.invalid_mx || 0) + (final.invalid_mx || 0),
-    conflicts:  [],
-    // Only the first call runs the cross-owner check; the resend is the
-    // operator confirming rows they have already been told about.
-    overlaps:   first.overlaps || [],
-  };
-}
-
-function reportImport(data) {
-  const inv = data.invalid_mx ? ` (${data.invalid_mx} invalid MX — see Invalid Emails list)` : '';
-  const held = data.conflicts && data.conflicts.length
-    ? ` — ${data.conflicts.length} skipped (already on another channel)` : '';
-  toast(`Imported ${data.inserted} contacts ✓${inv}${held}`);
-  closeModal('modal-import');
-  loadContacts();
-  notifyCrossOwnerOverlap(data);
-}
-
-// ── Add / Edit ────────────────────────────────────────────────────────────────
-
-function openAddContactModal() {
-  contactEditId = null;
-  document.getElementById('contact-modal-title').textContent = 'Add Contact';
-  document.getElementById('cf-email').value      = '';
-  document.getElementById('cf-first').value      = '';
-  document.getElementById('cf-last').value       = '';
-  document.getElementById('cf-company').value    = '';
-  document.getElementById('cf-website').value    = '';
-  document.getElementById('cf-address').value    = '';
-  document.getElementById('cf-status').value     = 'active';
-  document.getElementById('cf-email').disabled   = false;
-  openModal('modal-contact');
-}
-
-function openEditContactModal(id) {
-  const c = allContacts.find(x => x.id === id);
-  if (!c) return;
-  contactEditId = id;
-  document.getElementById('contact-modal-title').textContent = 'Edit Contact';
-  document.getElementById('cf-email').value    = c.email    || '';
-  document.getElementById('cf-first').value    = c.first_name || '';
-  document.getElementById('cf-last').value     = c.last_name  || '';
-  document.getElementById('cf-company').value  = c.company  || '';
-  document.getElementById('cf-website').value  = c.website  || '';
-  document.getElementById('cf-address').value  = c.address  || '';
-  document.getElementById('cf-status').value   = c.status   || 'active';
-  document.getElementById('cf-email').disabled = false;
-  openModal('modal-contact');
-}
-
-async function saveContact() {
-  const payload = {
-    email:      document.getElementById('cf-email').value.trim(),
-    first_name: document.getElementById('cf-first').value.trim(),
-    last_name:  document.getElementById('cf-last').value.trim(),
-    company:    document.getElementById('cf-company').value.trim(),
-    website:    document.getElementById('cf-website').value.trim(),
-    address:    document.getElementById('cf-address').value.trim(),
-    status:     document.getElementById('cf-status').value,
-  };
-
-  if (!payload.email && !contactEditId) { toast('Email is required', 'err'); return; }
-
+async function saveBusinessForm() {
+  const payload = {};
+  ['name', 'phone', 'email', 'website', 'category', 'city', 'address', 'notes'].forEach(f => {
+    payload[f] = document.getElementById(`bf-${f}`).value.trim();
+  });
+  if (!payload.name) { toast('Give the business a name', 'err'); return; }
   let res;
-  if (contactEditId) {
-    res = await api(`/api/contacts/${contactEditId}`, 'PUT', payload);
+  if (_ctEditId) {
+    delete payload.email;
+    res = await api(`/api/businesses/${_ctEditId}`, 'PUT', payload);
   } else {
-    res = await api('/api/contacts', 'POST', payload);
+    res = await api('/api/businesses', 'POST', payload);
   }
-
-  if (!res.ok) { toast(res.error || 'Failed to save contact', 'err'); return; }
-
-  toast(contactEditId ? 'Contact updated ✓' : 'Contact added ✓');
-  closeModal('modal-contact');
-  loadContacts();
+  if (!res || res.error) { toast((res && res.error) || 'Could not save it', 'err'); return; }
+  closeModal('modal-business');
+  toast(_ctEditId ? 'Saved ✓' : (res.created ? 'Contact added ✓' : 'You already had this one — opened it'));
+  if (!_ctEditId && document.getElementById('section-contacts').classList.contains('active')) {
+    LT.ct.load();
+    openContactDetail(res.id);
+  } else {
+    _refreshContactsAfterChange();
+  }
 }
 
-// ── Delete ────────────────────────────────────────────────────────────────────
+// ── Sending contacts to a channel ────────────────────────────────────────────
+//
+// Shared by the Contacts table, its row menus and the detail panel. Each asks
+// the one question that channel needs answered -- which campaign, and for
+// WhatsApp which country -- then reports anything it had to skip, and why.
 
-async function deleteContact(id) {
-  const c = allContacts.find(x => x.id === id);
-  const label = c ? (c.email || c.company || `#${id}`) : `#${id}`;
-  if (!confirm(`Delete ${label}?\n\nThis is a soft delete — the record is kept but marked as deleted.`)) return;
-  await api(`/api/contacts/${id}`, 'DELETE');
-  toast('Contact deleted');
-  loadContacts();
-}
-
-// ── Enroll ────────────────────────────────────────────────────────────────────
-
-// The enroll list searches server-side for the same reason the main table
-// does: it can only ever show a slice, and filtering a slice in the browser
-// would hide contacts that genuinely match.
-const ENROLL_PAGE_SIZE = 200;
-let _enrollSearchTimer = null;
-
-async function openEnrollModal() {
-  const filterEl = document.getElementById('enroll-filter');
-  if (filterEl) filterEl.value = '';
-  await fetchEnrollList('');
-  openModal('modal-enroll');
-}
-
-async function fetchEnrollList(q) {
-  const p = new URLSearchParams({ status: 'active', per_page: ENROLL_PAGE_SIZE });
-  if (q) p.set('q', q);
-  const data = await api('/api/contacts?' + p.toString());
-  renderEnrollList(data && data.rows ? data.rows : [], data ? data.total : 0);
-}
-
-function renderEnrollList(contacts, total = 0) {
-  const el = document.getElementById('enroll-list');
-  if (!contacts.length) {
-    el.innerHTML = '<div class="empty-state"><p>No active contacts</p></div>';
+async function contactsToEmail(ids) {
+  if (!ids.length) return;
+  const campaigns = await api('/api/campaigns') || [];
+  if (!campaigns.length) {
+    toast('Create an email campaign first (Email → + New campaign)', 'err');
     return;
   }
-  const truncated = total > contacts.length
-    ? `<div class="text-muted" style="padding:8px 14px;font-size:11px;border-bottom:1px solid var(--border)">
-         Showing ${contacts.length} of ${total} — search to narrow, or use Enroll All.
-       </div>`
-    : '';
-  el.innerHTML = truncated + contacts.map(c => `
-    <label style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer">
-      <input type="checkbox" value="${c.id}" class="enroll-cb" />
-      <div>
-        <div style="font-size:13px">${esc(c.first_name)} ${esc(c.last_name)} <span class="text-muted mono" style="font-size:11px">${esc(c.email)}</span></div>
-        ${c.company ? `<div class="text-muted" style="font-size:11px">${esc(c.company)}</div>` : ''}
-      </div>
-    </label>
-  `).join('');
+  const cid = await chooseDialog({
+    title: `Enroll ${ids.length} in an email campaign`,
+    body: `<label class="field-label">Campaign</label>
+      ${campaignSelectHtml('ct-email-camp', campaigns, { allowNew: false })}
+      <div class="form-hint">Each business is enrolled by its best address. Businesses with no email
+      address, or already in another campaign, are skipped and counted.</div>`,
+    confirm: 'Enroll',
+    collect: () => document.getElementById('ct-email-camp').value,
+  });
+  if (!cid) return;
+  const res = await api('/api/businesses/enroll', 'POST', { business_ids: ids, campaign_id: cid });
+  if (!res || res.error) { toast((res && res.error) || 'Could not enroll them', 'err'); return; }
+  const skipped = Object.values(res.skipped || {}).reduce((a, b) => a + b, 0);
+  toast(`Enrolled ${res.enrolled}` + [
+    res.no_email ? `${res.no_email} had no email address` : '',
+    skipped ? `${skipped} skipped (already being emailed)` : '',
+  ].filter(Boolean).map((s, i) => (i ? ', ' : ' — ') + s).join(''));
+  LT.ct.clear();
+  _refreshContactsAfterChange();
 }
 
-function filterEnrollList() {
-  clearTimeout(_enrollSearchTimer);
-  const q = document.getElementById('enroll-filter').value.trim();
-  _enrollSearchTimer = setTimeout(() => fetchEnrollList(q), 300);
+async function contactsToCalling(ids, { onDone } = {}) {
+  if (!ids.length) return;
+  const campaigns = await api('/api/call-campaigns') || [];
+  const picked = await chooseDialog({
+    title: `Add ${ids.length} to Calling`,
+    body: `<label class="field-label">Call campaign (optional)</label>
+      ${campaignSelectHtml('ct-call-camp', campaigns, { allowNone: true, noneLabel: 'Just add them to Calling' })}
+      <div class="form-hint">Businesses with no phone number, or who asked not to be contacted, are skipped and counted.</div>`,
+    confirm: 'Add to Calling',
+    collect: () => ({ ready: true }),
+  });
+  if (!picked) return;
+  const campaignId = await resolveCampaignSelect('ct-call-camp', '/api/call-campaigns');
+  if (campaignId === null) return;
+  const first = await api('/api/calls/add', 'POST', { business_ids: ids, call_campaign_id: campaignId || null });
+  if (!first || first.error) { toast((first && first.error) || 'Could not add them', 'err'); return; }
+  const final = await confirmChannelConflicts(first, () => api('/api/calls/add', 'POST', {
+    business_ids: first.conflicts.map(c => c.business_id), call_campaign_id: campaignId || null,
+    confirm_conflicts: true,
+  }));
+  toast(describeAdd(_sumCounts(first, final), 'Added to Calling:'));
+  if (LT.ct) LT.ct.clear();
+  _refreshContactsAfterChange();
+  if (onDone) onDone();
 }
 
-// Some contacts are deliberately skipped: already in another campaign, or a
-// duplicate address at a business we already have a better contact for.
-// Report that, or enrolling 9 of 12 looks like a silent failure.
-function _enrollResultMessage(res) {
-  return res.message || `Enrolled ${res.enrolled} contacts`;
+async function contactsToWhatsApp(ids, { onDone } = {}) {
+  if (!ids.length) return;
+  const campaigns = (await api('/api/wa/campaigns') || []).filter(c => c.status !== 'archived');
+  const picked = await chooseDialog({
+    title: `Add ${ids.length} to WhatsApp`,
+    body: `<label class="field-label">WhatsApp campaign</label>
+      ${campaignSelectHtml('ct-wa-camp', campaigns, { selected: campaigns[0] ? campaigns[0].id : '' })}
+      <label class="field-label">Country the numbers are in</label>
+      <select id="ct-wa-country" class="filter-select" style="max-width:100%;width:100%">
+        <option value="AE" ${campaigns[0] && campaigns[0].country === 'QA' ? '' : 'selected'}>United Arab Emirates</option>
+        <option value="QA" ${campaigns[0] && campaigns[0].country === 'QA' ? 'selected' : ''}>Qatar</option>
+      </select>
+      <div class="form-hint">Their messages are written from the campaign's templates. Businesses with no
+      phone, already ruled out as not on WhatsApp, or who asked not to be contacted are skipped and counted.</div>`,
+    confirm: 'Add to WhatsApp',
+    collect: () => {
+      const v = document.getElementById('ct-wa-camp').value;
+      if (!v) { toast('Pick a campaign', 'err'); return null; }
+      return { country: document.getElementById('ct-wa-country').value };
+    },
+  });
+  if (!picked) return;
+  const campaignId = await resolveCampaignSelect('ct-wa-camp', '/api/wa/campaigns', { country: picked.country });
+  if (!campaignId) return;
+  const body = { business_ids: ids, country: picked.country, wa_campaign_id: campaignId };
+  const first = await api('/api/wa/add-existing', 'POST', body);
+  if (!first || first.error) { toast((first && first.error) || 'Could not add them', 'err'); return; }
+  const final = await confirmChannelConflicts(first, () => api('/api/wa/add-existing', 'POST', {
+    ...body, business_ids: first.conflicts.map(c => c.business_id), confirm_conflicts: true,
+  }));
+  toast(describeAdd(_sumCounts(first, final), 'Added to WhatsApp:'));
+  if (LT.ct) LT.ct.clear();
+  _refreshContactsAfterChange();
+  if (onDone) onDone();
 }
 
-async function enrollSelected() {
-  const ids = [...document.querySelectorAll('.enroll-cb:checked')].map(cb => +cb.value);
-  if (!ids.length) { toast('Select at least one contact', 'err'); return; }
-  const res = await api(`/api/campaigns/${currentCampaignId}/contacts`, 'POST', { contact_ids: ids });
-  toast(_enrollResultMessage(res));
-  closeModal('modal-enroll');
-  openCampaign(currentCampaignId);
+// confirmChannelConflicts hands back the first response when declined, or the
+// confirmed resend's -- add the two so the toast counts everything.
+function _sumCounts(first, final) {
+  if (final === first) return first;
+  const out = { ...first };
+  ['added', 'already', 'no_phone', 'opted_out', 'ruled_out', 'in_campaign'].forEach(k => {
+    out[k] = (first[k] || 0) + (final[k] || 0);
+  });
+  return out;
 }
 
-async function enrollAll() {
-  const res = await api(`/api/campaigns/${currentCampaignId}/contacts`, 'POST', { all: true });
-  toast(_enrollResultMessage(res));
-  closeModal('modal-enroll');
-  openCampaign(currentCampaignId);
+async function deleteBusinesses(ids) {
+  if (!ids.length) return;
+  const ok = await chooseDialog({
+    title: `Delete ${ids.length} contact${ids.length === 1 ? '' : 's'}?`,
+    body: `<p class="text-small" style="line-height:1.6">This removes ${ids.length === 1 ? 'the business' : 'them'} from every
+      channel — email addresses, call history and WhatsApp messages included. It can't be undone.</p>
+      <p class="text-muted text-small" style="margin-top:8px;line-height:1.6">Anyone who unsubscribed, bounced or asked
+      not to be contacted is kept, so a later scrape can't put them back on a list.</p>`,
+    confirm: 'Delete', danger: true,
+  });
+  if (!ok) return;
+  const res = await api('/api/businesses/delete', 'POST', { business_ids: ids });
+  if (!res || res.error) { toast((res && res.error) || 'Could not delete them', 'err'); return; }
+  toast(`Deleted ${res.deleted}` + (res.kept ? ` — kept ${res.kept} who asked not to be contacted` : ''));
+  LT.ct.clear();
+  if (ids.includes(_ctDetailId)) closeContactDetail();
+  LT.ct.load();
 }

@@ -81,15 +81,28 @@ def main():
             ids = [r["id"] for r in conn.execute(
                 "SELECT id FROM businesses ORDER BY id").fetchall()]
 
-        print("\n1. A NEVER-CALLED LEAD STARTS IN THE NEW PILE")
+        print("\n1. A LEAD IS ON CALLING BECAUSE YOU PUT IT THERE")
+        check("importing a business does not put it on Calling",
+              db.get_call_queue("new") == [], str(len(db.get_call_queue("new"))))
+        counts = db.add_to_calling(ids)
+        check("adding them does", counts["added"] == 6, str(counts))
         new = db.get_call_queue("new")
-        check("every phone-bearing lead is callable", len(new) == 6, str(len(new)))
-        check("and none is due yet", db.get_call_queue("today") == [])
+        check("and they start in the never-called pile", len(new) == 6, str(len(new)))
+        check("none is due yet", db.get_call_queue("today") == [])
+        again = db.add_to_calling(ids[:2])
+        check("adding again is reported as already there, not added twice",
+              again["added"] == 0 and again["already"] == 2, str(again))
 
         print("\n2. LEADS WITHOUT A PHONE ARE NOT CALLABLE")
         db.upsert_businesses([{"email": "nophone@x.ca", "company": "No Phone",
                                "website": "https://nophone.ca"}])
-        check("a lead with no number never enters the queue",
+        with db.get_db() as conn:
+            no_phone_id = conn.execute(
+                "SELECT id FROM businesses WHERE name='No Phone'").fetchone()["id"]
+        skipped = db.add_to_calling([no_phone_id])
+        check("a lead with no number is skipped and counted, not added",
+              skipped["added"] == 0 and skipped["no_phone"] == 1, str(skipped))
+        check("and never enters the queue",
               all(l["company"] != "No Phone" for l in db.get_call_queue("all")))
 
         print("\n3. A CALLBACK COMES BACK WHEN IT IS DUE, NOT BEFORE")
@@ -400,7 +413,58 @@ def main():
               s["calls_made"] >= 1, str(s["calls_made"]))
         check("today's calls are counted", s["calls_today"] >= 1, str(s["calls_today"]))
 
-        print("\n21. THE ROUTES ARE ADMIN-ONLY")
+        print("\n21. TAKING A LEAD OFF CALLING KEEPS ITS HISTORY")
+        history_before = len(db.get_call_history(ids[2]))
+        camp2 = db.create_call_campaign("Second batch")
+        db.add_to_call_campaign(camp2, [ids[2]])
+        r = client.post("/api/calls/remove", json={"business_ids": [ids[2]]}, headers=hdr)
+        check("the remove route answers", r.status_code == 200 and r.get_json()["removed"] == 1,
+              str(r.get_json()))
+        for bucket in ("today", "new", "upcoming", "all", "worked"):
+            check(f"gone from '{bucket}'",
+                  all(l["id"] != ids[2] for l in db.get_call_queue(bucket)))
+        check("gone from the Leads table",
+              all(row["id"] != ids[2] for row in db.get_call_leads_page(per_page=500)["rows"]))
+        stats2 = {c["id"]: c for c in db.get_call_campaigns()}[camp2]
+        check("and out of its campaign", stats2["total"] == 0, str(stats2))
+        check("but the business is still there", db.get_business(ids[2]) is not None)
+        r = client.post("/api/calls/add", json={"business_ids": [ids[2]]}, headers=hdr)
+        body = r.get_json()
+        check("a lead also on Email is held for a yes first",
+              body["added"] == 0 and [c["business_id"] for c in body["conflicts"]] == [ids[2]],
+              str(body))
+        r = client.post("/api/calls/add", json={"business_ids": [ids[2]],
+                                                "confirm_conflicts": True}, headers=hdr)
+        body = r.get_json()
+        check("adding it back works", r.status_code == 200 and body["added"] == 1, str(body))
+        check("and brings its call history with it",
+              len(db.get_call_history(ids[2])) == history_before, str(history_before))
+
+        print("\n22. THE LEADS TABLE SHOWS EVERYONE ON CALLING")
+        page = db.get_call_leads_page(per_page=500)
+        statuses = {row["id"]: row["call_status"] for row in page["rows"]}
+        check("closed-out leads are listed too, unlike the queue",
+              statuses.get(fid) == dead, str(statuses.get(fid)))
+        never = db.get_call_leads_page(per_page=500, outcome="none")
+        check("filtering to never-called works",
+              never["rows"] and all(row["call_status"] == "" for row in never["rows"]),
+              str(len(never["rows"])))
+        r = client.get("/api/calls/leads?per_page=2")
+        check("the route pages", r.status_code == 200 and len(r.get_json()["rows"]) == 2,
+              str(r.get_json())[:120])
+
+        print("\n23. A WHATSAPP LEAD IS NOT A CALLING LEAD")
+        db.upsert_wa_leads([{"company": "Only On WhatsApp", "phone": "050 123 4567"}],
+                           default_country="AE")
+        with db.get_db() as conn:
+            wa_biz = conn.execute(
+                "SELECT id FROM businesses WHERE name='Only On WhatsApp'").fetchone()["id"]
+        check("it is not in the never-called pile",
+              all(l["id"] != wa_biz for l in db.get_call_queue("new")))
+        check("nor anywhere in the queue",
+              all(l["id"] != wa_biz for l in db.get_call_queue("all")))
+
+        print("\n24. THE ROUTES ARE ADMIN-ONLY")
         anon = app_mod.app.test_client()
         for path in ("/api/calls/queue", "/api/call-script", "/api/call-campaigns",
                      "/api/call-outcomes", f"/api/calls/{ids[0]}/ics"):

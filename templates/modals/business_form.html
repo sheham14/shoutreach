@@ -1,0 +1,33 @@
+<!-- Add or edit one business. Adding matches against what you already have,
+     the same way an import does, so typing in a clinic you already hold opens
+     that one rather than making a second. -->
+<div class="modal-overlay" id="modal-business">
+  <div class="modal" style="max-width:560px">
+    <button class="modal-close" onclick="closeModal('modal-business')">✕</button>
+    <h2 id="bf-title">Add contact</h2>
+    <div class="form-group"><label>Business name *</label><input id="bf-name" placeholder="Pearl Dental Clinic" /></div>
+    <div class="form-grid">
+      <div class="form-group"><label>Phone</label><input id="bf-phone" placeholder="+971 50 123 4567" /></div>
+      <div class="form-group" id="bf-email-group"><label>Email</label><input id="bf-email" type="email" placeholder="hello@clinic.ae" /></div>
+    </div>
+    <div class="form-grid">
+      <div class="form-group"><label>Website</label><input id="bf-website" placeholder="https://clinic.ae" /></div>
+      <div class="form-group"><label>Category</label><input id="bf-category" placeholder="Dentist" /></div>
+    </div>
+    <div class="form-grid">
+      <div class="form-group"><label>City</label><input id="bf-city" placeholder="Dubai" /></div>
+      <div class="form-group"><label>Address</label><input id="bf-address" placeholder="Al Wasl Rd, Jumeirah" /></div>
+    </div>
+    <div class="form-group">
+      <label>Notes</label>
+      <textarea id="bf-notes" class="soft-input" style="min-height:70px;font-family:var(--font)" placeholder="Who you spoke to, anything worth remembering…"></textarea>
+    </div>
+    <div class="form-hint" id="bf-hint" style="margin:-6px 0 14px">
+      An email address puts it on Email. Add it to Calling or WhatsApp from the Contacts table afterwards.
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="saveBusinessForm()">Save</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-business')">Cancel</button>
+    </div>
+  </div>
+</div>

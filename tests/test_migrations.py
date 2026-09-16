@@ -325,6 +325,52 @@ def test_refuses_double_migration(work):
           table_exists(path, "contacts"))
 
 
+def test_calling_made_explicit(work):
+    """
+    Calling used to be "every business with a phone". The switch to explicit
+    membership has to keep that list as it was -- minus WhatsApp leads, which
+    were the bug -- and must never run twice.
+    """
+    print("\n5. CALLING BECOMES EXPLICIT WITHOUT LOSING THE CALL LIST")
+    path = os.path.join(work, "calling.db")
+    db = load_db(path)
+    db.init_db()
+    # Stand in for a database from before the switch: no marker yet.
+    conn = sqlite3.connect(path)
+    conn.execute("DELETE FROM settings WHERE key='_migrated_calling_explicit'")
+    conn.execute("INSERT INTO scrape_jobs(id, niche, city, destination) VALUES(7, 'x', 'y', 'whatsapp')")
+    for name, phone, dnc, job in (("Callable", "709-555-0001", 0, None),
+                                  ("On WhatsApp", "050 123 4567", 0, None),
+                                  ("From a WhatsApp scrape", "050 765 4321", 0, 7),
+                                  ("Opted Out", "709-555-0002", 1, None),
+                                  ("No Phone", "", 0, None)):
+        conn.execute("INSERT INTO businesses(name, phone, do_not_contact, source_job_id) "
+                     "VALUES(?,?,?,?)", (name, phone, dnc, job))
+    conn.execute("INSERT INTO wa_leads(business_id) "
+                 "SELECT id FROM businesses WHERE name='On WhatsApp'")
+    conn.commit()
+    conn.close()
+
+    db = load_db(path)
+    db.init_db()
+    on_calling = {r[0] for r in rows(path, """
+        SELECT b.name FROM call_leads cl JOIN businesses b ON b.id = cl.business_id
+         WHERE cl.removed_at IS NULL""")}
+    check("a lead that was showing on Calling is still there", "Callable" in on_calling,
+          str(on_calling))
+    check("WhatsApp leads are not carried over", not {"On WhatsApp", "From a WhatsApp scrape"}
+          & on_calling, str(on_calling))
+    check("nor opted-out or phoneless ones", not {"Opted Out", "No Phone"} & on_calling,
+          str(on_calling))
+
+    callable_id = scalar(path, "SELECT id FROM businesses WHERE name='Callable'")
+    db.remove_from_calling([callable_id])
+    db.init_db()
+    check("a lead taken off Calling stays off across restarts",
+          scalar(path, "SELECT COUNT(*) FROM call_leads WHERE removed_at IS NULL") == 0,
+          str(scalar(path, "SELECT COUNT(*) FROM call_leads WHERE removed_at IS NULL")))
+
+
 def main():
     work = tempfile.mkdtemp(prefix="shoutreach_mig_")
     try:
@@ -332,6 +378,7 @@ def main():
         legacy_path = test_split_migration(work)
         test_idempotent(legacy_path)
         test_refuses_double_migration(work)
+        test_calling_made_explicit(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

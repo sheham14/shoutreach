@@ -58,10 +58,11 @@ function _populateTimezoneSelect(elId, selectedValue) {
 }
 
 async function loadCampaigns() {
-  const campaigns = await api('/api/campaigns');
+  const campaigns = await api('/api/campaigns') || [];
+  setTabCount('email', 'campaigns', campaigns.length);
   const el = document.getElementById('campaigns-list');
   if (!campaigns.length) {
-    el.innerHTML = '<div class="empty-state"><div class="icon">⚡</div><p>No campaigns yet. Create your first one.</p></div>';
+    el.innerHTML = '<div class="empty-state"><div class="icon">✉</div><p>No email campaigns yet. Create one, then enroll leads from the Leads tab.</p></div>';
     return;
   }
   el.innerHTML = campaigns.map(c => `
@@ -69,7 +70,7 @@ async function loadCampaigns() {
       <div class="flex items-center gap-3">
         <div>
           <div style="font-weight:600;font-size:15px;color:#fff">${esc(c.name)}</div>
-          <div class="text-muted text-small mono">${c.contact_count} contacts · ${c.step_count} steps · ${c.daily_limit}/day limit</div>
+          <div class="text-muted text-small mono">${c.contact_count} leads · ${c.step_count} steps · ${c.sent_count} sent · ${c.reply_rate}% replied · ${c.daily_limit}/day limit</div>
         </div>
         <div class="ml-auto flex gap-2 items-center">
           ${statusBadge(c.status)}

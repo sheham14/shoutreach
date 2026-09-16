@@ -2,11 +2,13 @@ function showSection(name) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
   document.getElementById('section-' + name)?.classList.add('active');
-  document.querySelector(`nav a[data-section="${name}"]`)?.classList.add('active');
+  // A campaign's own page is still part of Email as far as the sidebar goes.
+  const navName = name === 'campaign-detail' ? 'email' : name;
+  document.querySelector(`nav a[data-section="${navName}"]`)?.classList.add('active');
   toggleSidebar(false); // a tap that navigates should close the drawer behind it
 
   if (name === 'dashboard')  refreshDashboard();
-  if (name === 'campaigns')  loadCampaigns();
+  if (name === 'email')      loadEmail();
   if (name === 'contacts')   loadContacts();
   if (name === 'calling')    loadCalling();
   if (name === 'whatsapp')   loadWhatsApp();

@@ -12,6 +12,13 @@ each with their own leads, campaigns and messages — see
 
 Self-hosted. No per-seat SaaS fees. Runs on a small VM, or on your own machine.
 
+**How it's laid out.** **Contacts** holds every business you have, with a
+Channels column showing where each one is — and an **Unassigned** view for the
+ones on no channel yet. **Email**, **Calling** and **WhatsApp** each have the
+same tabs: the work to do, every lead on that channel as a table, and its
+campaigns and copy. The **Dashboard** shows what's waiting on you across all
+three. See [How it's organised](#how-its-organised).
+
 ---
 
 ## Requirements
@@ -143,10 +150,14 @@ Scrapes Google Maps for a niche in a city. Each scrape sends its leads to one
 place:
 
 - **Email** — visits each business website and pulls out an email address.
-  Leads land in Contacts.
-- **WhatsApp** — skips the websites entirely, which makes it much faster, and
-  uses the phone number from the listing. Pick the country the numbers are in
-  (UAE or Qatar). Leads land in WhatsApp and nowhere else.
+  Addresses land on Email; businesses with none found wait in
+  Contacts → Unassigned.
+- **Calling** — skips the websites entirely, which makes it much faster, and
+  uses the phone number from the listing. Leads land on Calling, optionally in
+  a call campaign, and nowhere else.
+- **WhatsApp** — also phone-only. Pick the country the numbers are in (UAE or
+  Qatar) and the WhatsApp campaign they go into; their messages are written from
+  that campaign's templates.
 
 **The scraper does not run on the server.** Google serves CAPTCHAs that a human
 has to see and solve, so the browser has to open on a screen you are actually
@@ -217,11 +228,11 @@ while progress streams back to the page — Google Maps scrolling included, not
 just the email-scraping step. If a CAPTCHA appears, solve it in that Chrome
 window and click **Resume** in the UI.
 
-On an email scrape, leads with an email are imported to Contacts automatically.
-Businesses with a site but no findable address are stored as prospects to chase
-by hand, and
-businesses with **no website at all** are kept too — for a web-design offer,
-those are the strongest leads on the list. Phone, category, rating and review
+On an email scrape, leads with an email are imported to Email automatically.
+Businesses with a site but no findable address, and businesses with **no
+website at all**, are kept in Contacts under Unassigned — for a web-design
+offer, those are the strongest leads on the list, and one click puts them on
+Calling or WhatsApp. Phone, category, rating and review
 count come along too — enough to qualify a list before spending a single send
 on it.
 
@@ -229,8 +240,8 @@ Duplicate protection is on by default: one address per business is enrollable
 (personal beats `info@` beats `billing@`), and a contact already in one campaign
 will not be enrolled in a second.
 
-**Lead lists.** Every lead remembers which scrape found it, so **Contacts** has
-a list filter — "dentists — Toronto Canada · Aug 4", "plumbers — Calgary
+**Lead lists.** Every lead remembers which scrape found it, so every leads
+table has a list filter — "dentists — Toronto Canada · Aug 4", "plumbers — Calgary
 Canada · Aug 6", plus a bucket for anything added by hand or CSV. It is a
 filter over one shared table, not separate tables per scrape, and that is
 deliberate: deduplication, unsubscribes and bounce suppression all have to
@@ -258,7 +269,7 @@ python gmaps_email_scraper.py --niche "HVAC" --city "Calgary Canada" --max 40
 ---
 
 ### 1. Import Contacts
-Go to **Contacts → Import CSV**
+Go to **Email → Import CSV** (or Contacts → Import CSV)
 
 CSV format:
 ```csv
@@ -270,7 +281,7 @@ office@wellnessclinic.com,Sarah,Jones,Wellness Clinic
 Or paste raw emails (one per line) for quick imports.
 
 ### 2. Create a Campaign
-Click **Campaigns → New Campaign**
+Click **Email → + New campaign**
 
 Settings to configure:
 - **Daily Limit** — how many emails to send per day (follow warmup schedule above)
@@ -411,19 +422,28 @@ Each contact's assigned variant shows in the campaign's contact table, and
 > anything — at a 1–3% reply rate, early results are mostly noise.
 
 ### 4. Enroll Contacts
-In the campaign detail view, click **Enroll** and select your contacts.
+In the campaign detail view, click **Enroll** and select your contacts — or tick
+addresses in **Email → Leads** (or businesses in **Contacts**) and choose
+**Enroll in campaign**.
 
 ### 5. Activate
 Click **▶ Activate**. The scheduler takes over.
 
 ---
 
-## Cold Calling
+## Calling
 
 A working queue, not a CRM screen. You dial on your own phone; this is the
 notebook beside it.
 
-**The buckets.** *Due now* is callbacks you promised, oldest first. *Never
+**Who's on it.** A lead is on Calling because you put it there — from a Calling
+scrape, **+ Add leads**, Contacts, or "Not on WhatsApp → Move to Calling".
+Scraping for Email or WhatsApp no longer fills the call list on the side. The
+**Leads** tab shows everyone on Calling as a table, closed-out leads included;
+**Take off Calling** removes a lead from every queue and campaign but keeps its
+call history, and adding it back brings that history with it.
+
+**The buckets** (on the **To do** tab). *Due now* is callbacks you promised, oldest first. *Never
 called* is the fresh pile. *Scheduled* is everything booked for later. Leads
 without a phone number never appear, and a finished lead never reappears.
 
@@ -454,7 +474,7 @@ you to substitute mid-sentence. Sections collapse individually so you can reach
 the right objection in a second.
 
 **Outcomes are editable.** The nine built-in ones are a starting point, not the
-vocabulary — press **⊙ Outcomes** to add your own. Each carries three switches:
+vocabulary — add your own under **Script & outcomes**. Each carries three switches:
 *needs a date* (required rather than merely allowed), *ends the lead* (drops it
 from every queue), and *stops email*. That first distinction matters: "Callback
 booked" demands a time, whereas something like "Follow up later" shouldn't
@@ -463,25 +483,22 @@ isn't final. Built-ins can be renamed and recoloured but keep their behaviour;
 custom ones that have already been used are archived rather than deleted, so
 old call history stays readable.
 
-**Adding leads to a campaign**: select the campaign, then **+ Add leads** —
-pick from your existing contacts (filtered, with *never called* on by default),
-type a few in as `name, phone, website`, or import a CSV. The same action is on
-the Contacts page via bulk-select, for when you're already looking at a filtered
-list there.
+**Adding leads**: **+ Add leads** — pick from businesses you already have
+(*not on Calling yet* on by default), type a few in as `name, phone, website`,
+or import a CSV — optionally straight into a campaign. From Contacts or the
+Leads tab, tick rows and use **+ Calling** or **Add to campaign**.
 
 **Campaigns** group leads by a decision — "ten dental clinics in St John's" —
 as opposed to a lead list, which groups by whenever the scrape happened to run.
-Select contacts in **Contacts** and press **☎ Add to Call Campaign**; the
-picker on the calling page then scopes every bucket to that batch, and the
-overview cards show what's left, what's due, and what's booked per campaign.
-Deleting a campaign removes only the grouping — the contacts and their call
-history stay.
+The **Campaigns** tab shows what's left, what's due, and what's booked per
+campaign; **Work it** scopes the To do queue to that batch. A lead can be in
+more than one. Deleting a campaign removes only the grouping — the leads and
+their call history stay on Calling.
 
 **A closed-out lead doesn't disappear.** Terminal outcomes drop a lead from
-every calling queue, which is the point, but they stay visible in two places:
-the **Worked** bucket on the calling page, where **↩ Reopen** puts one back if
-you marked it wrongly, and **Contacts**, which has a **Call status** column and
-filter. Note that *Not interested* leaves the contact otherwise untouched,
+every calling queue, which is the point, but it stays in the **Closed out**
+bucket, where **↩ Reopen** puts one back if you marked it wrongly, and in the
+**Leads** tab. Note that *Not interested* leaves the contact otherwise untouched,
 while *Do not call* also marks them unsubscribed.
 
 **Prior contact is shown, never used to hide a lead.** A lead you emailed with
@@ -501,27 +518,80 @@ For clinics you'd rather message than email. **Nothing is ever sent
 automatically** — the app prepares the message, and you tap Send yourself inside
 WhatsApp.
 
-**The flow.** Leads come in through **+ Add leads**: pick from leads you already
-have, paste or upload a CSV, or jump to the Lead Scraper already set to
-WhatsApp. For each lead, the app quietly checks the clinic's website for online
-booking and puts what it found under **Needs review**. You confirm or correct
-that, then **Write messages** drafts an opener for every confirmed lead at once
-(optionally reworded by AI, so they don't all read the same). **Open in
-WhatsApp** opens the chat with the message already filled in.
+**Campaigns.** Every WhatsApp lead is in a campaign, and a campaign carries its
+own templates, follow-up gap, default country and variables — so leads for
+different services get different pitches. Start a new one from the starter
+templates or as a copy of another. The **Campaigns** tab shows each one's
+leads, reviews waiting, follow-ups due and reply rate.
+
+**The flow.** Leads come in through **+ Add leads** into a campaign: pick from
+businesses you already have, paste or upload a CSV, or jump to the Lead Scraper
+already set to WhatsApp. For each lead, the app quietly checks the clinic's
+website for online booking. The **To do** tab lists what needs you, with the
+lead you're on beside the list:
+
+- **Needs review** — say whether they can book online, tap a phrase for what
+  you saw (or type your own), and watch the message preview fill in. **Confirm
+  & next** moves to the next one.
+- **Write messages** drafts an opener for every confirmed lead at once
+  (optionally reworded by AI, so they don't all read the same).
+- **Ready to send** — edit if you like, then **Open in WhatsApp** opens the
+  chat with the message filled in.
+- **Follow-up due** — the same, for follow-ups.
+
+The **Leads** tab has every WhatsApp lead as a table, with its stage, campaign
+and version: move leads between campaigns, pause follow-ups, or take them off.
 
 **Follow-ups never stop on their own.** A lead you've messaged comes back under
 **Follow-up due** every few days — you set the interval — until they reply or
 you pause them. "Sent" only means you opened the link, because WhatsApp doesn't
 tell the app whether a message went, so a sent date can be corrected by hand.
 
-**Numbers that aren't on WhatsApp.** A link that goes nowhere is the check. Move
-the lead to Calling or Email from its card, and it won't be put back in the
-WhatsApp queue later.
+**Numbers that aren't on WhatsApp.** A link that goes nowhere is the check.
+**Not on WhatsApp…** asks where the lead goes: Calling (into a campaign if you
+like), Email (if there's an address), or nowhere — it waits in Contacts under
+Unassigned. The number is never put back on WhatsApp by a later scrape. To drop
+a lead that *is* on WhatsApp, use **Take off WhatsApp**; that one can be added
+back.
 
-**Templates are yours** — each person writes their own. Any of the three (gap
-found, no gap, follow-up) can hold up to four versions to test against each
-other. New leads are dealt between them in turn, a lead keeps its version
-through its follow-ups, and reply rates show under each version.
+**Templates** belong to the campaign. Each of the three (no online booking,
+has online booking, follow-up) can hold up to four versions to test against
+each other. New leads are dealt between them in turn — continuing where the
+campaign left off, so small batches still alternate — a lead keeps its version
+through its follow-ups, and reply rates show under each version. Templates can
+use `{{business_name}}`, `{{signal_detail}}`, `{{city}}`, `{{category}}`,
+`{{rating}}` and your own campaign variables like `{{my_name}}`, with fallbacks
+(`{{city|your area}}`); the editor shows how many of the campaign's leads have
+each detail, and previews every version against a real lead.
+
+---
+
+## How it's organised
+
+**Contacts** is every business you have. Its **Channels** column shows where
+each one is ("Email · step 2", "Calling · callback", "WhatsApp · replied");
+tick rows to send them to Email, Calling or WhatsApp, and click one for its
+details, notes and a timeline of every email, call and WhatsApp message.
+
+- **Unassigned** lists businesses on no channel, with why: taken off WhatsApp or
+  Calling, an email scrape that found no address, or added by hand.
+- **Do not contact** lists anyone who unsubscribed or asked to be left alone.
+  Deleting leaves them in place — their row is what stops a later import
+  putting them back on a list.
+
+What "on a channel" means: an email address that isn't deleted (Email), a call
+lead that hasn't been taken off (Calling), a WhatsApp lead that isn't ruled out
+or taken off (WhatsApp).
+
+**Email, Calling and WhatsApp** share one layout — **To do** (Calling and
+WhatsApp), **Leads**, **Campaigns**, and the copy (Templates, Script & outcomes).
+Every leads table works the same way: search and filter, sort by a column, tick
+rows (or "select all N matching") for bulk actions, and the **⋯** at the end of
+a row for everything you can do to that one.
+
+The **Dashboard** starts with today's to-do — reviews, messages ready, follow-ups
+and callbacks due, each opening the list it counts — then each channel's
+numbers, then every campaign on every channel in one table.
 
 ---
 
@@ -529,9 +599,9 @@ through its follow-ups, and reply rates show under each version.
 
 Two people can share one install, each doing their own outreach.
 
-**Walled off from each other:** leads, email campaigns, call campaigns, the call
-script, custom call outcomes, WhatsApp templates and follow-up interval,
-scrapes, and scrape worker keys. Neither person sees the other's.
+**Walled off from each other:** leads, email campaigns, call campaigns, WhatsApp
+campaigns and their templates, the call script, custom call outcomes, scrapes,
+and scrape worker keys. Neither person sees the other's.
 
 **Shared:** the sending email accounts, the daily sending cap, AI keys and
 sending rules — you both send as the same company. So an unsubscribe or a bounce
@@ -571,7 +641,7 @@ Each person who runs a scraper uses their own worker key — see
 | **Random delays**           | 45–120 second random gap between sends (humanises the pattern)        |
 | **Jitter on scheduling**    | Next-step time has ±30 min random offset (not robotic patterns)       |
 | **Bounce circuit-breaker**  | Auto-pauses campaign when bounce rate exceeds 5%                      |
-| **Reply detection**         | IMAP scan every 5 min (switchable off on the Dashboard); stops the sequence for anyone who replied |
+| **Reply detection**         | IMAP scan every 5 min (switchable off in Settings); stops the sequence for anyone who replied |
 | **Unsubscribe link**        | Every email has a working unsubscribe link (CAN-SPAM compliant)       |
 | **List-Unsubscribe header** | Machine-readable header (required by Gmail/Yahoo 2024 sender policy)  |
 | **Multipart emails**        | Sends text + HTML both (better deliverability than HTML-only)         |
@@ -615,7 +685,7 @@ shoutreach/
 ├── cookies/                   # Saved Maps browser sessions (git-ignored)
 │
 ├── templates/, static/        # Dashboard UI — one section template + one JS file per screen
-├── tests/                     # python tests/<name>.py — 19 files, no framework
+├── tests/                     # python tests/<name>.py — 20 files, no framework
 ├── docs/Handover.md           # Current state of the project — start here
 ├── docs/audits/               # Audit findings and their resolution state
 ├── .github/workflows/         # Deploy on push to master, over SSH
@@ -702,11 +772,12 @@ python tests/test_variants.py         # A/B variant assignment and backfill
 python tests/test_rendering.py        # {{variable}} substitution and fallbacks
 python tests/test_send_window.py      # sending days, send window, why-not-sending
 python tests/test_dedupe_and_guards.py # duplicate sends, bounce breaker, business identity
-python tests/test_calling.py          # call queue, outcomes, email crossover
+python tests/test_calling.py          # Calling leads, queue, outcomes, email crossover
 python tests/test_resilience.py       # worker batching and crash recovery
 python tests/test_security.py         # regression tests for closed audit findings
 python tests/test_cross_channel.py    # one business across email, calling and WhatsApp
-python tests/test_whatsapp.py         # WhatsApp numbers, signals, drafts, A/B, cadence
+python tests/test_whatsapp.py         # WhatsApp campaigns, numbers, signals, drafts, A/B, cadence
+python tests/test_contacts_hub.py     # Contacts as every business, Unassigned, the Dashboard
 python tests/test_ownership.py        # two accounts walled off from each other
 python tests/test_email_checking_toggle.py  # switching automatic reply checks off
 python tests/test_clear_logs.py       # clearing the activity log

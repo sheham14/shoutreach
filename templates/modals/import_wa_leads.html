@@ -6,15 +6,19 @@
     <button class="modal-close" onclick="closeModal('modal-import-wa')">✕</button>
     <h2>Add WhatsApp leads</h2>
 
-    <div class="form-group">
-      <label>Country the numbers are in</label>
-      <select id="wa-import-country">
-        <option value="AE">United Arab Emirates</option>
-        <option value="QA">Qatar</option>
-      </select>
-      <div class="form-hint">
-        Turns a local number ("050 123 4567") into the international form a
-        WhatsApp link needs.
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Campaign</label>
+        <div id="wa-add-campaign-wrap"></div>
+        <div class="form-hint">Their messages are written from this campaign's templates.</div>
+      </div>
+      <div class="form-group">
+        <label>Country the numbers are in</label>
+        <select id="wa-import-country">
+          <option value="AE">United Arab Emirates</option>
+          <option value="QA">Qatar</option>
+        </select>
+        <div class="form-hint">Turns "050 123 4567" into the form a WhatsApp link needs.</div>
       </div>
     </div>
 
@@ -51,7 +55,8 @@
         </table>
       </div>
       <div class="form-hint" style="margin-top:8px">
-        Leads with no phone number are skipped, and you're told how many.
+        Leads with no phone number, already ruled out as not on WhatsApp, or who asked not to be
+        contacted are skipped, and you're told how many.
       </div>
     </div>
 
@@ -59,7 +64,7 @@
     <div id="wa-add-pane-import" style="display:none">
       <p class="text-muted text-small" style="margin-bottom:14px">
         CSV columns: <span class="mono">company, phone, website, address, category, rating, email</span>
-        (company and phone matter most — email is optional and only used for the Contacts side).
+        (company and phone matter most — an email column also puts the address on Email).
         A <span class="mono">country</span> column overrides the country above, row by row.
       </p>
       <div class="form-group">

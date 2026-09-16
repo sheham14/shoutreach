@@ -156,7 +156,10 @@ def main():
         # earlier sections -- section 5 deliberately gave call_biz an email
         # too, so by now it is genuinely active on both and reusing it would
         # be testing yesterday's state, not this section's setup.
-        db.upsert_businesses([{"email": "c@onlyemail3.ca", "company": "Only Email 3"}])
+        # With a phone: a lead with no number is never put on Calling at all,
+        # which would be testing that rule instead of the hold-back.
+        db.upsert_businesses([{"email": "c@onlyemail3.ca", "company": "Only Email 3",
+                               "phone": "709-555-0033"}])
         db.upsert_businesses([{"company": "Only Call 2", "phone": "709-555-0003"}])
         email_biz3 = db.get_email_lead_by_email("c@onlyemail3.ca")["business_id"]
         with db.get_db() as conn:

@@ -1,123 +1,46 @@
+<!-- Contacts: every business you have, whichever channel it's on -- or none.
+     Each channel page lists only its own leads; this is the one place a
+     business on no channel can still be found (Unassigned), and where you
+     decide which channel something goes to next. -->
 <div class="section" id="section-contacts">
   <div class="page-header">
     <div>
       <div class="page-title">Contacts</div>
-      <div class="page-sub">Your global contact database</div>
+      <div class="page-sub">Every business you have — on any channel, or none yet</div>
     </div>
     <div class="flex gap-2">
-      <button id="contacts-call-campaign-btn" class="btn btn-ghost" onclick="addSelectedToCallCampaign()" disabled>☎ Add to Call Campaign</button>
-      <button id="contacts-delete-selected-btn" class="btn btn-danger" onclick="deleteSelectedContacts()" disabled>✕ Delete Selected</button>
-      <button class="btn btn-ghost" onclick="openAddContactModal()">+ Add Contact</button>
-      <button class="btn btn-primary" onclick="openImportModal()">⬆ Import CSV</button>
+      <button class="btn btn-ghost" onclick="openImportModal()">⬆ Import CSV</button>
+      <button class="btn btn-primary" onclick="openBusinessForm()">+ Add contact</button>
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-header">
-      <div class="flex gap-2 items-center">
-        <input id="contacts-search" class="search-input" placeholder="Search..."
-               oninput="contactSearch()" />
-        <select id="contacts-source-filter" class="filter-select" onchange="contactFilterChanged()"
-                title="Filter by the scrape that produced these leads">
+  <div class="tabs" data-tab-group="contacts">
+    <button class="tab active" data-tab="all" onclick="setTab('contacts','all')">All contacts <span class="count">0</span></button>
+    <button class="tab" data-tab="unassigned" onclick="setTab('contacts','unassigned')"
+            title="Businesses that aren't on Email, Calling or WhatsApp">Unassigned <span class="count">0</span></button>
+    <button class="tab" data-tab="dnc" onclick="setTab('contacts','dnc')"
+            title="Asked not to be contacted, or unsubscribed">Do not contact <span class="count">0</span></button>
+  </div>
+
+  <div class="work-split" id="ct-split" style="grid-template-columns:1fr">
+    <div class="card">
+      <div class="lt-toolbar">
+        <input id="ct-search" class="search-input" placeholder="Search name, phone, email, city…" oninput="LT.ct.search()" />
+        <select id="ct-channel" class="filter-select" onchange="LT.ct.filter()">
+          <option value="">Any channel</option>
+          <option value="email">On Email</option>
+          <option value="calling">On Calling</option>
+          <option value="whatsapp">On WhatsApp</option>
+        </select>
+        <select id="ct-source" class="filter-select" onchange="LT.ct.filter()" title="Which scrape found them">
           <option value="">All lists</option>
         </select>
-        <!-- This table is email addresses now, not businesses -- a lead
-             scraped with no website or no email found has no row here at all,
-             so those statuses are gone from this filter. They're still
-             findable: "no website" is the strongest pitch for a web-design
-             offer, and that list lives in Calling's "add leads" search, which
-             looks at businesses directly rather than at addresses. -->
-        <select id="contacts-status-filter" class="filter-select" onchange="contactFilterChanged()"
-                title="Filter by this address's status">
-          <option value="">Any status</option>
-          <option value="active">Active</option>
-          <option value="bounced">Bounced</option>
-          <option value="unsubscribed">Unsubscribed</option>
-        </select>
-        <!-- Where a closed-out lead goes. A terminal call outcome drops a lead
-             from every calling queue, so this is the only place it can be
-             found again or reopened. -->
-        <select id="contacts-call-filter" class="filter-select" onchange="contactFilterChanged()"
-                title="Filter by what happened when you called">
-          <option value="">Any call status</option>
-          <option value="none">Never called</option>
-          <option value="any">Called (any outcome)</option>
-          <option value="callback">Callback booked</option>
-          <option value="interested">Interested</option>
-          <option value="proposal_sent">Proposal sent</option>
-          <option value="booked">Meeting booked</option>
-          <option value="not_interested">Not interested</option>
-          <option value="wrong_number">Wrong number</option>
-          <option value="do_not_call">Do not call</option>
-        </select>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
-          <input type="checkbox" id="contacts-show-deleted" onchange="contactFilterChanged()" style="cursor:pointer" />
-          Show deleted
-        </label>
+        <span class="lt-count" id="ct-count"></span>
       </div>
-      <div class="flex gap-2 items-center">
-        <span id="contacts-count" class="text-muted text-small mono"></span>
-        <div id="contacts-col-toggle-wrap" style="position:relative">
-          <button class="btn btn-ghost btn-sm" onclick="contactsToggleColDropdown()">⊞ Columns</button>
-          <div id="contacts-col-dropdown"
-               style="display:none;position:absolute;top:calc(100% + 4px);right:0;z-index:200;
-                      background:var(--bg2);border:1px solid var(--border2);border-radius:8px;
-                      padding:6px 0;min-width:160px;
-                      box-shadow:0 4px 20px rgba(0,0,0,.5)"></div>
-        </div>
-      </div>
+      <div class="text-muted text-small" id="ct-view-hint" style="display:none;padding:10px 16px;border-bottom:1px solid var(--border)"></div>
+      <div id="ct-body"></div>
     </div>
-    <div id="contacts-selectall-bar"
-         style="display:none;padding:8px 16px;background:var(--bg3);
-                border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)"></div>
-    <div class="table-wrap">
-      <table>
-        <thead id="contacts-thead"></thead>
-        <tbody id="contacts-table"></tbody>
-      </table>
-    </div>
-    <div style="display:flex;align-items:center;justify-content:space-between;
-                padding:12px 16px;border-top:1px solid var(--border)">
-      <button class="btn btn-ghost btn-sm" id="contacts-prev" onclick="contactPageStep(-1)">← Prev</button>
-      <span id="contacts-page-label" class="text-muted text-small mono"></span>
-      <button class="btn btn-ghost btn-sm" id="contacts-next" onclick="contactPageStep(1)">Next →</button>
-    </div>
-  </div>
 
-  <div class="section-gap"></div>
-
-  <div>
-    <div class="flex items-center" style="margin-bottom:14px">
-      <div class="card-title">Unsubscribed</div>
-      <div class="flex gap-2 ml-auto items-center">
-        <span id="unsub-count" class="text-muted text-small"></span>
-        <button class="btn btn-ghost btn-sm" onclick="exportUnsubscribed()">⬇ Export CSV</button>
-      </div>
-    </div>
-    <div class="card" style="max-height:320px;overflow-y:auto;overflow-x:auto">
-      <table>
-        <thead><tr><th>Email</th><th>Name</th><th>Company</th><th>Unsubscribed</th></tr></thead>
-        <tbody id="unsub-table"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <div style="margin-top:32px">
-    <div class="flex items-center" style="margin-bottom:8px">
-      <div>
-        <div class="card-title">Invalid Emails</div>
-        <p class="text-muted text-small" style="margin-top:2px">Businesses whose email domain has no MX records — their email infrastructure may be broken or misconfigured. A potential sales signal.</p>
-      </div>
-      <div class="flex gap-2 ml-auto items-center">
-        <span id="invalid-mx-count" class="text-muted text-small"></span>
-        <button class="btn btn-ghost btn-sm" onclick="exportInvalidMx()">⬇ Export CSV</button>
-      </div>
-    </div>
-    <div class="card" style="max-height:320px;overflow-y:auto;overflow-x:auto">
-      <table>
-        <thead><tr><th>Email</th><th>Company</th><th>Website</th><th>Found</th></tr></thead>
-        <tbody id="invalid-mx-table"></tbody>
-      </table>
-    </div>
+    <div class="card work-panel" id="ct-detail" style="display:none"></div>
   </div>
 </div>

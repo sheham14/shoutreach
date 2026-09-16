@@ -4,13 +4,15 @@ async function loadScraper() {
   // Arriving from WhatsApp's "Scrape Google Maps" button: aim the form at
   // WhatsApp so what this finds lands there. One-shot, so a later visit from
   // the sidebar opens on whatever was last picked rather than being re-forced.
+  let presetCampaign = '';
   if (window._scraperPreset) {
-    const { destination, country } = window._scraperPreset;
+    const { destination, country, campaign_id } = window._scraperPreset;
     window._scraperPreset = null;
     document.getElementById('sc-destination').value = destination;
     if (country) document.getElementById('sc-country').value = country;
+    presetCampaign = campaign_id ? String(campaign_id) : '';
   }
-  scraperDestinationChanged();
+  await scraperDestinationChanged(presetCampaign);
   await pollScraperStatus();
   // Keep polling while the section is open so the worker indicator stays
   // honest even when no job is running -- otherwise you only learn the worker
@@ -26,10 +28,16 @@ async function startScraper() {
   const autoImport = document.getElementById('sc-autoimport').checked;
   const destination = document.getElementById('sc-destination').value;
   const country     = destination === 'whatsapp' ? document.getElementById('sc-country').value : '';
+  const campaignId  = destination === 'email' ? '' : document.getElementById('sc-campaign').value;
   if (!niche || !city) { toast('Enter a niche and city', 'err'); return; }
+  if (destination === 'whatsapp' && !campaignId) {
+    toast('Pick the WhatsApp campaign these leads go into', 'err');
+    return;
+  }
 
   const res = await api('/api/scraper/start', 'POST',
-    { niche, city, max_results: maxResults, auto_import: autoImport, destination, country });
+    { niche, city, max_results: maxResults, auto_import: autoImport, destination, country,
+      campaign_id: campaignId || null });
   if (!res.ok) { toast(res.error || 'Failed to queue the scrape', 'err'); return; }
 
   // Queued with no worker connected is a real outcome, not an error -- it will
@@ -46,22 +54,52 @@ async function startScraper() {
 
 const _SCRAPER_DESTINATIONS = {
   email: {
-    hint: "Visits each business's website looking for an email address. Leads go to Contacts.",
-    importLabel: "Import leads into Contacts as they're found",
+    label: 'Email',
+    hint: "Visits each business's website looking for an email address. Leads go to Email; "
+        + "businesses with no email found stay in Contacts under Unassigned.",
+    importLabel: "Import leads as they're found",
+  },
+  calling: {
+    label: 'Calling',
+    hint: "Uses the phone number from Google Maps and skips the websites, so it's much faster. "
+        + "Leads go to Calling and nowhere else.",
+    importLabel: "Import leads into Calling as they're found",
+    campaigns: '/api/call-campaigns',
+    campaignHint: 'Optional. Leads always land on your Calling list; this also puts them in a campaign.',
+    campaignOptional: true,
   },
   whatsapp: {
-    hint: "Uses the phone number from Google Maps and skips the websites, so it's much faster. Leads go to WhatsApp and nowhere else.",
+    label: 'WhatsApp',
+    hint: "Uses the phone number from Google Maps and skips the websites, so it's much faster. "
+        + "Leads go to WhatsApp and nowhere else.",
     importLabel: "Import leads into WhatsApp as they're found",
+    campaigns: '/api/wa/campaigns',
+    campaignHint: "Their messages are written from this campaign's templates.",
+    campaignOptional: false,
   },
 };
 
-function scraperDestinationChanged() {
+async function scraperDestinationChanged(selectCampaign = '') {
   const destination = document.getElementById('sc-destination').value;
   const spec = _SCRAPER_DESTINATIONS[destination] || _SCRAPER_DESTINATIONS.email;
   document.getElementById('sc-destination-hint').textContent = spec.hint;
   document.getElementById('sc-autoimport-label').textContent = spec.importLabel;
   document.getElementById('sc-country-group').style.display =
     destination === 'whatsapp' ? 'block' : 'none';
+
+  const group = document.getElementById('sc-campaign-group');
+  if (!spec.campaigns) { group.style.display = 'none'; return; }
+  group.style.display = 'block';
+  document.getElementById('sc-campaign-label').textContent = `${spec.label} campaign`;
+  document.getElementById('sc-campaign-hint').textContent = spec.campaignHint;
+  const sel = document.getElementById('sc-campaign');
+  const campaigns = (await api(spec.campaigns)) || [];
+  const list = Array.isArray(campaigns) ? campaigns : [];
+  sel.innerHTML =
+    (spec.campaignOptional ? '<option value="">No campaign</option>'
+                           : (list.length ? '' : '<option value="">Create a campaign in WhatsApp first</option>')) +
+    list.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  if (selectCampaign) sel.value = selectCampaign;
 }
 
 async function stopScraper() {
@@ -110,7 +148,7 @@ async function pollScraperStatus() {
   const pct = d.total ? Math.round(d.progress / d.total * 100) : 0;
   document.getElementById('sc-progress-bar').style.width = pct + '%';
   document.getElementById('sc-progress-text').textContent =
-    d.total ? `${d.progress} / ${d.total} businesses → ${d.destination === 'whatsapp' ? 'WhatsApp' : 'Contacts'}`
+    d.total ? `${d.progress} / ${d.total} businesses → ${(_SCRAPER_DESTINATIONS[d.destination] || _SCRAPER_DESTINATIONS.email).label}`
             : (d.status === 'idle' ? 'Idle' : (d.status || 'Idle'));
   document.getElementById('sc-found').textContent    = d.found    ?? '—';
   document.getElementById('sc-scraped').textContent  = d.progress ?? '—';

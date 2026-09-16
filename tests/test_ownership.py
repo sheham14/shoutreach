@@ -422,6 +422,12 @@ def test_routes_enforce_the_wall(work):
     wa = ca.get("/api/wa/leads").get_json()
     check("the WhatsApp list shows only your own", wa == [], f"got {wa}")
 
+    # Calling is explicit: a lead is on it because its owner put it there.
+    for owner in (a, b):
+        with db_mod.get_db() as conn:
+            own = [r["id"] for r in conn.execute(
+                "SELECT id FROM businesses WHERE owner_id=?", (owner,))]
+        db_mod.add_to_calling(own, owner_id=owner)
     calls = ca.get("/api/calls/queue?bucket=new").get_json()
     names = {l.get("company") or l.get("name") for l in calls["leads"]}
     check("the call queue shows only your own", names == {"Alice Clinic"}, f"got {names}")
@@ -490,24 +496,73 @@ def test_routes_enforce_the_wall(work):
 
     # ── WhatsApp templates are personal ──────────────────────────────────────
     print("\n13. EACH OPERATOR WRITES THEIR OWN MESSAGES")
-    saved = ca.put("/api/wa/templates", headers=hdr, json={
+    made_wa = ca.post("/api/wa/campaigns", headers=hdr, json={"name": "Alice WhatsApp"})
+    a_wa_camp = (made_wa.get_json() or {}).get("id")
+    check("an operator can start their own WhatsApp campaign", made_wa.status_code == 200
+          and a_wa_camp, f"got {made_wa.status_code} {made_wa.get_json()}")
+    saved = ca.patch(f"/api/wa/campaigns/{a_wa_camp}", headers=hdr, json={
         "templates": {"gap": ["Alice's own opener for {{business_name}}"]},
-        "followup_days": 9,
+        "followup_days": 9, "variables": {"sender": "Alice"},
     })
-    check("an operator can save their own templates without being an admin",
+    check("and write its copy",
           saved.status_code == 200, f"got {saved.status_code} {saved.get_json()}")
 
-    mine = ca.get("/api/wa/templates").get_json()
-    theirs = cb.get("/api/wa/templates").get_json()
+    mine = ca.get(f"/api/wa/campaigns/{a_wa_camp}").get_json()
     check("their own copy is what they get back",
-          mine["gap"] == ["Alice's own opener for {{business_name}}"], f"got {mine['gap']}")
-    check("the other operator does not see it", "Alice" not in json.dumps(theirs["gap"]),
-          f"got {theirs['gap']}")
-    check("nor inherits their follow-up interval",
-          mine["followup_days"] == 9 and theirs["followup_days"] != 9,
-          f"mine={mine['followup_days']} theirs={theirs['followup_days']}")
-    check("and the other operator still has working copy of their own",
-          bool(theirs["gap"] and theirs["gap"][0].strip()), f"got {theirs['gap']}")
+          mine["templates"]["gap"] == ["Alice's own opener for {{business_name}}"],
+          f"got {mine['templates']['gap']}")
+    theirs = cb.get("/api/wa/campaigns").get_json()
+    check("the other operator's campaign list doesn't include it",
+          all(c["id"] != a_wa_camp for c in theirs) and "Alice" not in json.dumps(theirs),
+          json.dumps(theirs)[:160])
+    b_wa_camp = cb.post("/api/wa/campaigns", headers=hdr, json={"name": "Bob WhatsApp"}).get_json()["id"]
+    theirs_one = cb.get(f"/api/wa/campaigns/{b_wa_camp}").get_json()
+    check("a new campaign of theirs starts from factory copy, not the other operator's",
+          "Alice" not in json.dumps(theirs_one) and theirs_one["followup_days"] != 9,
+          json.dumps(theirs_one["templates"])[:160])
+
+    db_mod.upsert_wa_leads([{"company": "Alice WA Lead", "phone": "+971 50 555 4444"}],
+                           default_country="AE", owner_id=a, wa_campaign_id=a_wa_camp)
+    a_wa = next(l["id"] for l in db_mod.get_wa_leads(owner_id=a) if l["company"] == "Alice WA Lead")
+    probes = [
+        ("read another's WhatsApp campaign", cb.get(f"/api/wa/campaigns/{a_wa_camp}")),
+        ("edit another's WhatsApp campaign", cb.patch(f"/api/wa/campaigns/{a_wa_camp}", headers=hdr,
+                                                      json={"name": "mine now"})),
+        ("delete another's WhatsApp campaign", cb.delete(f"/api/wa/campaigns/{a_wa_camp}",
+                                                         headers=hdr)),
+        ("copy another's WhatsApp campaign", cb.post("/api/wa/campaigns", headers=hdr,
+                                                     json={"name": "x", "copy_from": a_wa_camp})),
+        ("add leads into another's WhatsApp campaign",
+         cb.post("/api/wa/add-existing", headers=hdr,
+                 json={"business_ids": [b_business_id(db_mod, b)], "country": "AE",
+                       "wa_campaign_id": a_wa_camp, "confirm_conflicts": True})),
+        ("move leads into another's WhatsApp campaign",
+         cb.post("/api/wa/leads/bulk", headers=hdr,
+                 json={"action": "campaign", "wa_lead_ids": [b_wa], "wa_campaign_id": a_wa_camp})),
+    ]
+    for label, resp in probes:
+        check(f"cannot {label}", resp.status_code == 404, f"got {resp.status_code}")
+    check("the campaign is untouched", db_mod.get_wa_campaign(a_wa_camp)["name"] == "Alice WhatsApp")
+
+    removed = cb.post("/api/wa/leads/bulk", headers=hdr,
+                      json={"action": "remove", "wa_lead_ids": [a_wa]}).get_json()
+    check("cannot take another's lead off WhatsApp by naming its id",
+          removed.get("updated") == 0 and db_mod.get_wa_lead(a_wa)["removed_at"] is None, str(removed))
+    moved = cb.post("/api/wa/leads/bulk", headers=hdr,
+                    json={"action": "campaign", "wa_lead_ids": [a_wa], "wa_campaign_id": b_wa_camp}).get_json()
+    check("nor pull it into your own campaign",
+          moved.get("updated") == 0 and db_mod.get_wa_lead(a_wa)["wa_campaign_id"] == a_wa_camp, str(moved))
+    own_page = ca.get("/api/wa/leads/page").get_json()
+    check("(fixture) the owner's own table does list it",
+          "Alice WA Lead" in json.dumps(own_page), json.dumps(own_page)[:160])
+    page = cb.get("/api/wa/leads/page").get_json()
+    check("but the other operator's WhatsApp leads table never does",
+          "Alice" not in json.dumps(page), json.dumps(page)[:160])
+    started = cb.post("/api/scraper/start", headers=hdr,
+                      json={"niche": "x", "city": "Dubai", "destination": "whatsapp",
+                            "country": "AE", "campaign_id": a_wa_camp})
+    check("nor aim a scrape at another's WhatsApp campaign", started.status_code == 400,
+          f"got {started.status_code}")
 
     # ── Calling ──────────────────────────────────────────────────────────────
     print("\n14. THE CALLING SECTION SHOWS NOTHING OF THE OTHER OPERATOR")
@@ -598,7 +653,18 @@ def test_wa_copy_is_not_inherited(work):
           db.get_settings().get("wa_template_gap") in (None, ""),
           f"got {db.get_settings().get('wa_template_gap')!r}")
 
+    first_campaigns = db.get_wa_campaigns(owner_id=a)
+    check("the copy is carried into a first campaign, where it's edited now",
+          len(first_campaigns) == 1
+          and first_campaigns[0]["templates"]["gap"] == ["First operator's own pitch"]
+          and first_campaigns[0]["followup_days"] == 7,
+          f"got {[(c['name'], c['templates']['gap'], c['followup_days']) for c in first_campaigns]}")
+    db.init_db()
+    check("and a restart doesn't make a second one", len(db.get_wa_campaigns(owner_id=a)) == 1)
+
     b = db.create_user("second", "pw", is_admin=False)
+    check("a second operator starts with no campaign of the first's",
+          db.get_wa_campaigns(owner_id=b) == [])
     theirs = db.get_wa_templates(owner_id=b)
     check("a second operator does not inherit a word of it",
           "First operator" not in json.dumps(theirs["gap"]), f"got {theirs['gap']}")
