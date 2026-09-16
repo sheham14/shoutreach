@@ -10,16 +10,18 @@ fix this file.
 
 ## 0. Read this first
 
-- **Not everything is deployed.** Everything after `076b20c` is committed but
-  **not pushed** (`git log origin/master..HEAD` lists it): per-account scrape
-  workers (`bfe08c7`), and the **channel redesign** — Contacts as every
-  business, a Leads table and tabs on every channel, WhatsApp campaigns,
-  explicit Calling membership, a three-channel Dashboard (§2a). Pushing deploys
-  all of it (§6) and runs three one-shot migrations against the live database:
-  the worker key moves to the founding admin; every lead that was implicitly
-  on Calling gets a real row, minus WhatsApp leads (`_make_calling_explicit`);
-  and each operator's WhatsApp leads and templates move into a campaign named
-  "My first campaign" (`_migrate_wa_campaigns`). **Take a backup first.**
+- **Everything is deployed** as of 2026-09-16 (`bed7f2a`): per-account scrape
+  workers, and the **channel redesign** — Contacts as every business, a Leads
+  table and tabs on every channel, WhatsApp campaigns, explicit Calling
+  membership, a three-channel Dashboard (§2, §2a). That deploy ran three
+  one-shot migrations on the live database: the worker key moved to the
+  founding admin; every lead that was implicitly on Calling got a real row,
+  minus WhatsApp leads (`_make_calling_explicit`); each operator's WhatsApp
+  leads and templates moved into a campaign named "My first campaign"
+  (`_migrate_wa_campaigns`). Before pushing, the upgrade was rehearsed on a
+  database built by the previously-live code (`076b20c`) — templates, leads,
+  call history and campaigns all carried over. No fresh backup was taken for
+  this deploy; the newest on the VM is `~/outreach.db.bak-2026-09-15`.
 - **Two people use this install, walled off from each other.** Almost every
   query is scoped to an owner, and a handful deliberately aren't. Read §3
   before adding a query, a route, or a background job.
@@ -34,8 +36,8 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
-| (redesign) | 09-16 | Contacts hub, Leads tabs on every channel, WhatsApp campaigns, explicit Calling, Dashboard | **No — not pushed** |
-| `bfe08c7` | 09-15 | Each account gets its own scrape worker | **No — not pushed** |
+| `bed7f2a` | 09-16 | Contacts hub, Leads tabs on every channel, WhatsApp campaigns, explicit Calling, Dashboard | Yes |
+| `bfe08c7` | 09-15 | Each account gets its own scrape worker | Yes |
 | `076b20c` | 09-15 | Scrapes can feed WhatsApp; add existing leads to WhatsApp | Yes |
 | `364857a` | 09-15 | `reset_password.py` for a locked-out admin | Yes |
 | `a5e985d` | 09-09 | WhatsApp copy never inherited across accounts; user-admin fixes | Yes |
@@ -177,7 +179,7 @@ of this.
 
 ## 4. Scraper and workers
 
-### Per-account workers — `bfe08c7`, not yet deployed
+### Per-account workers — `bfe08c7`, live
 
 Each account has its own key in `worker_keys`. `worker_owner_for_key` maps the
 `X-API-Key` a worker presents to an account (timing-safe; compares against
@@ -191,9 +193,6 @@ every key without stopping early). From there:
 - Rotating a key disconnects only that person's worker.
 - `_migrate_worker_key` moves the old install-wide `_worker_api_key` setting
   onto the founding admin at startup.
-
-**Until it's pushed, production still has one shared key, and any running
-worker takes the next scrape no matter who started it.**
 
 ### Destinations
 
@@ -235,7 +234,7 @@ whose scrapes that machine should run.
 
 ### The cofounder's laptop — planned, not done
 
-Do this after `bfe08c7` is live:
+Not started (per-account workers are live, so nothing blocks it):
 
 1. Create his account: Settings → Users, **Admin off**.
 2. On his laptop: install Python and Chrome. Copy `scraper_worker.py`,
@@ -382,13 +381,13 @@ disposable** — importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
-1. Back up the live database, then push and verify per §6.
-2. After deploying, check: WhatsApp → Campaigns shows "My first campaign"
+1. Deployed and verified per §6 on 2026-09-16. Still to do by hand, in the
+   app: WhatsApp → Campaigns shows "My first campaign"
    holding the existing leads and the operator's own templates (rename it);
    Calling → Leads still has the old call list minus WhatsApp leads; Contacts →
    Unassigned looks sensible.
-3. A test scrape to each destination, with a campaign picked.
-4. Create the cofounder's account and set up his laptop (§4), with the current
+2. A test scrape to each destination, with a campaign picked.
+3. Create the cofounder's account and set up his laptop (§4), with the current
    `scraper_worker.py`.
 
 **From the full audit** — `docs/audits/Full App Audit 2026-09-09.md`, local and
