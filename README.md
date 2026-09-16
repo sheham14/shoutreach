@@ -442,7 +442,7 @@ A working queue, not a CRM screen. You dial on your own phone; this is the
 notebook beside it.
 
 **Who's on it.** A lead is on Calling because you put it there — from a Calling
-scrape, **+ Add leads**, Contacts, or "Not on WhatsApp → Move to Calling".
+scrape, **+ Add leads**, Contacts, or WhatsApp's "Move off WhatsApp → Calling".
 Scraping for Email or WhatsApp no longer fills the call list on the side. The
 **Leads** tab shows everyone on Calling as a table, closed-out leads included;
 **Take off Calling** removes a lead from every queue and campaign but keeps its
@@ -536,10 +536,14 @@ already written. The **To do** tab is the work, with the lead you're on beside
 the list and a count of what you've sent today:
 
 - **Ready to send** — edit the message if you like, then **Open in WhatsApp**
-  opens the chat with it typed in and moves you to the next lead. On a
-  computer that's WhatsApp Web, in one tab reused for every lead (or the
-  desktop app, if you switch to it); on a phone, the WhatsApp app.
-  **Reword with AI** is there if you want a message to read differently.
+  opens the chat with it typed in. On a computer that's WhatsApp Web, in one
+  tab reused for every lead (or the desktop app, if you switch to it); on a
+  phone, the WhatsApp app. Send it there, come back, and answer **Did it
+  send?** — **Sent** moves you to the next lead, **Not on WhatsApp** marks it
+  and moves on, **Didn't send** leaves it where it is. Nothing counts as sent
+  until you say so, and a lead you opened but didn't answer keeps asking.
+  Landlines are at the bottom of the list. **Reword with AI** is there if you
+  want a message to read differently.
 - **Follow-up due** — the same, for follow-ups.
 
 Notes and the audit sit folded under every lead and never have to be done first.
@@ -551,15 +555,18 @@ follow-ups, or take them off.
 
 **Follow-ups never stop on their own.** A lead you've messaged comes back under
 **Follow-up due** every few days — you set the interval — until they reply or
-you pause them. "Sent" only means you opened the chat, because WhatsApp doesn't
-tell the app whether a message went, so a sent date can be corrected by hand.
+you pause them. WhatsApp doesn't tell the app whether a message went, so
+"sent" is your word for it, and a sent date can be corrected by hand.
 
 **Numbers that aren't on WhatsApp.** A chat that won't open is the check.
-**Not on WhatsApp…** asks where the lead goes: Calling (into a campaign if you
-like), Email (if there's an address), or nowhere — it waits in Contacts under
-Unassigned. The number is never put back on WhatsApp by a later scrape. To drop
-a lead that *is* on WhatsApp, use **Take off WhatsApp**; that one can be added
-back.
+**Not on WhatsApp** marks the lead and takes it out of your to-do, so you can
+keep going. When you're ready, the "marked not on WhatsApp" link (or Leads →
+Not on WhatsApp) lists them all: tick them and **Move off WhatsApp…** to
+Calling (into a campaign if you like), Email (those with an address), or
+nowhere — they wait in Contacts under Unassigned. Anything that can't go where
+you sent it stays marked, and you're told why. A moved number is never put
+back on WhatsApp by a later scrape. To drop a lead that *is* on WhatsApp, use
+**Take off WhatsApp**; that one can be added back.
 
 **Templates** belong to the campaign: an opening message and a follow-up, each
 with up to four versions to test against each other. New leads take turns — A,

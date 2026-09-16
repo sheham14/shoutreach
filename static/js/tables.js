@@ -46,7 +46,8 @@ const WA_STAGE_META = {
   waiting:  ['Waiting for reply', ''],
   replied:  ['Replied', 'green'],
   paused:   ['Paused', ''],
-  moved:    ['Not on WhatsApp', 'dashed'],
+  no_whatsapp: ['Not on WhatsApp', 'red'],
+  moved:    ['Moved off WhatsApp', 'dashed'],
   removed:  ['Taken off', 'dashed'],
 };
 

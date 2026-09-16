@@ -730,6 +730,14 @@
     padding: 4px 11px; border: 1px solid var(--border2); border-radius: 999px;
   }
   .sent-today b { font: 700 13px var(--mono); color: var(--green); margin-right: 2px; }
+  #wa-no-wa-link:not([hidden]) + .sent-today { margin-left: 0; }
+
+  /* "Did it send?" after opening a chat -- the one place a send is recorded. */
+  .confirm-send {
+    margin-top: 12px; padding: 12px 14px; border-radius: 10px;
+    border: 1px solid rgba(245,166,35,.4); background: rgba(245,166,35,.06);
+  }
+  .confirm-send .confirm-title { font-weight: 600; font-size: 14px; color: #fff; margin-bottom: 2px; }
 
   /* ── Lead panel: folded sections, the audit ─────────────────────────────── */
   .panel-fold { border-top: 1px solid var(--border); }

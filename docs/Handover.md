@@ -42,6 +42,7 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
+| (local) | 09-16 | Confirm a send after opening WhatsApp; mark "not on WhatsApp" and move off in bulk; landlines last | **No** |
 | `be439b5` | 09-16 | Operator's own files (reference pages, AGENTS.md, the full audit doc) | Yes |
 | `cf49426` | 09-16 | Lean WhatsApp flow, lead audit, every country, lead side panels, add a whole scrape | Yes |
 | `bed7f2a` | 09-16 | Contacts hub, Leads tabs on every channel, WhatsApp campaigns, explicit Calling, Dashboard | Yes |
@@ -88,7 +89,8 @@ wasn't explicitly confirmed back in the session.
   meetings.
 - **WhatsApp** — import into a **campaign** → the lead lands in **Ready to
   send**, its message read live from the campaign's template → the operator
-  taps *Open in WhatsApp* and sends it themselves → follow-ups at the
+  taps *Open in WhatsApp*, sends it themselves, and comes back to say *Sent*,
+  *Not on WhatsApp* or *Didn't send* → follow-ups at the
   campaign's gap, forever, until replied or paused. The audit is optional and
   never in the way. Tabs: To do (Ready to send, Follow-up due, "sent today"),
   Leads, Campaigns, Templates. Design history:
@@ -110,7 +112,12 @@ wasn't explicitly confirmed back in the session.
 |---|---|---|
 | Email | an `email_leads` row with `status != 'deleted'` | deleting the address |
 | Calling | a `call_leads` row with `removed_at IS NULL` | `remove_from_calling` (history kept; adding back clears `removed_at`) |
-| WhatsApp | a `wa_leads` row with `moved_to = ''` and `removed_at IS NULL` | `move_wa_lead` (rules the number out for good) or `remove_wa_leads` (can be re-added) |
+| WhatsApp | a `wa_leads` row with `moved_to = ''` and `removed_at IS NULL` | `move_wa_lead` / `move_wa_leads` (rules the number out for good) or `remove_wa_leads` (can be re-added) |
+
+A WhatsApp lead **marked not on WhatsApp** (`no_whatsapp_at`) is still on the
+channel — it isn't Unassigned and the add-leads picker won't offer it — but
+it's in no queue and no ready/due count (`_WA_WORKABLE`) until it's moved off
+or the mark is taken back.
 
 A business on none of them, and not `do_not_contact`, is **Unassigned**; the
 reason is derived in `_business_rows_sql`. Rules that are easy to break:
@@ -321,17 +328,34 @@ job removed). The focus is volume.
   prefix fallback for AE/QA. `GET /api/countries` lists every region and the
   ones this operator uses; the picker is a searchable `<datalist>`.
 - **Open in WhatsApp** (`openWhatsAppChat` in `lead_panel.js`): on a computer,
-  `web.whatsapp.com/send?...` in one named tab reused for every lead; on a
-  phone, or when the operator picks "desktop app", `whatsapp://send`. It's a
-  link the operator opens — nothing reads or drives that page. "Sent today"
-  counts `wa_log` rows since the browser's local midnight (`since`).
+  `web.whatsapp.com/send?...` in one named tab reused for every lead (focused,
+  since a reused tab often stays in the background); on a phone, or when the
+  operator picks "desktop app", `whatsapp://send`. It's a link the operator
+  opens — nothing reads or drives that page.
+- **Nothing is sent until the operator says so.** Opening a chat only sets
+  `wa_leads.opened_at` (`POST /api/wa/leads/<id>/opened`); the lead stays put
+  and asks "Did it send?" (`waConfirmHtml`): **Sent** (`POST .../sent`, the
+  only thing that writes `wa_log` and moves the lead on), **Not on WhatsApp**
+  (marks it), **Didn't send** (`DELETE .../opened`). A lead opened and not
+  answered keeps asking, with the time, so it isn't messaged twice. This
+  replaced marking sent on click, which let a second click on a tab that
+  hadn't come to the front mark the next lead. "Sent today" counts `wa_log`
+  rows since the browser's local midnight (`since`).
+- **Ready to send lists landlines last** (`number_type`), oldest first within
+  each.
 - **Reword with AI** is an optional button per lead (`POST .../reword`), saved
   like a hand edit. `wa_leads.paraphrased` and `wa_log.paraphrased` keep a
   rewrite from being credited to a version.
-- **"Not on WhatsApp"** is `POST /api/wa/leads/<id>/move` with destination
-  `call` (optional call campaign), `email` (needs an active address; optional
-  enrolment) or `none`. The other channel is set up first, so a refusal leaves
-  the lead on WhatsApp.
+- **"Not on WhatsApp" marks, then you move them off in bulk.** Marking
+  (`/api/wa/leads/bulk` `no_whatsapp`; `on_whatsapp` undoes it) sets
+  `no_whatsapp_at` and takes the lead out of every queue (stage
+  `no_whatsapp`). The Leads tab filters to them, and **Move off WhatsApp…**
+  (bulk `move`, `move_wa_leads`) sends them to `call` (optional call
+  campaign), `email` (needs an active address; optional enrolment) or `none`.
+  Each goes through `move_wa_lead`, which sets up the other channel first: a
+  lead that can't go (no address, no phone, opted out) stays marked and is
+  counted by why (`WaMoveRefused.reason`). The single
+  `POST /api/wa/leads/<id>/move` route still works.
 - **Reply rates** come from `get_wa_variant_stats`, counted per **lead** rather
   than per message, and split by paraphrased. Nothing declares a winner.
 
@@ -448,7 +472,10 @@ disposable** — importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
-0. The lean WhatsApp flow is deployed and the app is up (`/login` 200,
+0. **Not yet pushed:** confirming a send after opening WhatsApp, marking "not
+   on WhatsApp" with bulk move-off, landlines last. It adds two nullable
+   columns (`opened_at`, `no_whatsapp_at`) and no data migration.
+   The lean WhatsApp flow is deployed and the app is up (`/login` 200,
    `/api/users/me` 401, run log `Updating 4f7ea0f..be439b5`). Still to check
    by hand, in the app: WhatsApp → To do shows the old review/confirmed leads
    under Ready to send with messages filled in; each campaign's Templates tab

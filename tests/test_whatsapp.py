@@ -150,13 +150,32 @@ def test_ready_on_arrival(db, client, token, camp):
 
 
 def test_send_and_versions(db, client, token, camp):
-    print("\n6. 'SENT' MEANS THE LINK WAS OPENED -- AND IT'S CORRECTABLE")
+    print("\n6. OPENING WHATSAPP RECORDS NOTHING; ONLY YOUR 'SENT' DOES")
     c0 = lead_named(db, "Clinic 0")
+    s, body = api(client, token, "post", f"/api/wa/leads/{c0['id']}/opened")
+    check("opening the chat is noted", s == 200 and body["opened_at"], str(body))
+    lead = lead_named(db, "Clinic 0")
+    check("but the lead isn't sent", lead["wa_status"] == "drafted" and lead["sent_date"] is None)
+    with db.get_db() as conn:
+        logged = conn.execute("SELECT COUNT(*) FROM wa_log WHERE wa_lead_id=?", (c0["id"],)).fetchone()[0]
+    check("nothing is logged as sent", logged == 0, str(logged))
+    s, summary = api(client, token, "get", "/api/wa/summary?since=2000-01-01 00:00:00")
+    check("and sent-today doesn't count it", summary["sent_today"] == 0, str(summary))
+    ready = {l["id"]: l for l in db.get_wa_ready()}
+    check("it stays in Ready to send, showing when it was opened",
+          c0["id"] in ready and ready[c0["id"]]["opened_at"], str(ready.get(c0["id"], {}).get("opened_at")))
+    s, body = api(client, token, "delete", f"/api/wa/leads/{c0['id']}/opened")
+    check("'didn't send' clears it", s == 200 and body["opened_at"] is None
+          and lead_named(db, "Clinic 0")["opened_at"] is None, str(body))
+    api(client, token, "post", f"/api/wa/leads/{c0['id']}/opened")
+
+    print("\n6b. 'SENT' IS YOUR WORD -- AND IT'S CORRECTABLE")
     s, body = api(client, token, "post", f"/api/wa/leads/{c0['id']}/sent",
                   json={"kind": "opener", "message": "What was actually in the box"})
     check("marking sent succeeds", s == 200, str(body))
     lead = lead_named(db, "Clinic 0")
     check("the lead leaves Ready to send", lead["wa_status"] == "sent" and lead["sent_date"])
+    check("and stops asking whether it sent", lead["opened_at"] is None)
     with db.get_db() as conn:
         logged = conn.execute("SELECT kind, message, template_variant FROM wa_log WHERE wa_lead_id=?",
                               (c0["id"],)).fetchall()
@@ -277,6 +296,78 @@ def test_not_on_whatsapp(db, client, token, camp):
     offered = {r["company"] for r in db.search_businesses(q="No Email Clinic", not_on_channel="whatsapp")["rows"]}
     check("so the picker never offers it back", "No Email Clinic" not in offered, str(offered))
 
+    print("\n11b. MARKED 'NOT ON WHATSAPP': KEPT, OUT OF THE QUEUES, MOVED OFF IN BULK")
+    db.upsert_businesses([{"company": "Marked Email Co", "email": "hi@markedemail.ae", "phone": "050 555 0201"}])
+    db.upsert_wa_leads([{"company": "Marked Call Co", "phone": "050 555 0200"},
+                        {"company": "Marked Email Co", "phone": "050 555 0201"},
+                        {"company": "Marked Bare Co", "phone": "050 555 0202"},
+                        {"company": "Marked Due Co", "phone": "050 555 0203"}],
+                       default_country="AE", wa_campaign_id=camp)
+    marked = {n: lead_named(db, n) for n in ("Marked Call Co", "Marked Email Co", "Marked Bare Co", "Marked Due Co")}
+    db.mark_wa_sent(marked["Marked Due Co"]["id"], "hello")
+    with db.get_db() as conn:
+        conn.execute("UPDATE wa_leads SET sent_date=datetime('now','-30 days') WHERE id=?",
+                     (marked["Marked Due Co"]["id"],))
+    api(client, token, "post", f"/api/wa/leads/{marked['Marked Call Co']['id']}/opened")
+    before = api(client, token, "get", "/api/wa/summary")[1]
+    ids = [l["id"] for l in marked.values()]
+    s, body = api(client, token, "post", "/api/wa/leads/bulk", json={"action": "no_whatsapp", "wa_lead_ids": ids})
+    check("marking works", s == 200 and body["updated"] == 4, str(body))
+    check("marked leads leave Ready to send", all(l["id"] not in ids for l in db.get_wa_ready()))
+    check("and Follow-up due", all(l["id"] not in ids for l in db.get_wa_followups_due()))
+    check("and stop asking whether they sent", db.get_wa_lead(marked["Marked Call Co"]["id"])["opened_at"] is None)
+    after = api(client, token, "get", "/api/wa/summary")[1]
+    check("the counts follow", after["ready_to_send"] == before["ready_to_send"] - 3
+          and after["due"] == before["due"] - 1 and after["no_whatsapp"] == 4, f"{before} -> {after}")
+    s, page = api(client, token, "get", "/api/wa/leads/page?per_page=500")
+    stages = {r["company"]: r["stage"] for r in page["rows"]}
+    check("they're still on WhatsApp, in their own stage",
+          all(stages.get(n) == "no_whatsapp" for n in marked), str({n: stages.get(n) for n in marked}))
+    s, page = api(client, token, "get", "/api/wa/leads/page?stage=no_whatsapp&per_page=500")
+    check("which has its own filter", {r["company"] for r in page["rows"]} == set(marked),
+          str([r["company"] for r in page["rows"]]))
+    s, camps = api(client, token, "get", "/api/wa/campaigns")
+    check("the campaign counts them too", next(c for c in camps if c["id"] == camp)["no_whatsapp"] == 4)
+    offered = {r["company"] for r in db.search_businesses(q="Marked", not_on_channel="whatsapp")["rows"]}
+    check("the add-leads picker doesn't offer them (they're on WhatsApp)", not offered, str(offered))
+
+    s, body = api(client, token, "post", "/api/wa/leads/bulk",
+                  json={"action": "on_whatsapp", "wa_lead_ids": [marked["Marked Bare Co"]["id"]]})
+    check("taking the mark off puts a lead back in Ready to send",
+          body["updated"] == 1 and any(l["id"] == marked["Marked Bare Co"]["id"] for l in db.get_wa_ready()))
+    api(client, token, "post", "/api/wa/leads/bulk",
+        json={"action": "no_whatsapp", "wa_lead_ids": [marked["Marked Bare Co"]["id"]]})
+
+    s, body = api(client, token, "post", "/api/wa/leads/bulk",
+                  json={"action": "move", "wa_lead_ids": ids, "destination": "bogus"})
+    check("a bulk move needs a real destination", s == 400, str(body))
+    s, body = api(client, token, "post", "/api/wa/leads/bulk",
+                  json={"action": "move", "wa_lead_ids": ids, "destination": "call", "campaign_id": 99999})
+    check("and a campaign of your own", s == 404, str(body))
+    s, body = api(client, token, "post", "/api/wa/leads/bulk", json={
+        "action": "move", "destination": "email",
+        "wa_lead_ids": [marked["Marked Email Co"]["id"], marked["Marked Bare Co"]["id"]]})
+    check("moving to Email moves the one with an address and counts the other",
+          body.get("moved") == 1 and body.get("no_email") == 1, str(body))
+    check("the one with no address stays, still marked",
+          db.get_wa_lead(marked["Marked Bare Co"]["id"])["moved_to"] == ""
+          and db.get_wa_lead(marked["Marked Bare Co"]["id"])["no_whatsapp_at"])
+    call_camp = db.create_call_campaign("From WhatsApp in bulk")
+    s, body = api(client, token, "post", "/api/wa/leads/bulk", json={
+        "action": "move", "destination": "call", "campaign_id": call_camp,
+        "wa_lead_ids": [marked["Marked Call Co"]["id"], marked["Marked Due Co"]["id"], marked["Marked Email Co"]["id"]]})
+    check("moving to Calling moves the rest, skipping one already moved",
+          body.get("moved") == 2, str(body))
+    queue = {l["id"] for l in db.get_call_queue("all", call_campaign_id=call_camp)}
+    check("into the call campaign picked",
+          {marked["Marked Call Co"]["business_id"], marked["Marked Due Co"]["business_id"]} <= queue, str(queue))
+    s, body = api(client, token, "post", "/api/wa/leads/bulk", json={
+        "action": "move", "destination": "none", "wa_lead_ids": [marked["Marked Bare Co"]["id"]]})
+    check("'nowhere' takes the last one off", body.get("moved") == 1
+          and db.get_wa_lead(marked["Marked Bare Co"]["id"])["moved_to"] == "none", str(body))
+    s, page = api(client, token, "get", "/api/wa/leads/page?stage=no_whatsapp")
+    check("nothing is left marked", page["total"] == 0, str(page["total"]))
+
 
 def test_campaigns_and_leads_table(db, client, token, camp):
     print("\n12. CAMPAIGNS: OWN COPY, FALLBACKS, SEPARATE FOLLOW-UP GAPS")
@@ -373,6 +464,17 @@ def test_import_rules(db, client, token, camp):
     check("and it's ready to send straight away",
           any(l["company"] == "Existing With Phone" for l in db.get_wa_ready()))
 
+    print("\n15b. LANDLINES GO TO THE BOTTOM OF READY TO SEND")
+    db.upsert_wa_leads([{"company": "Early Landline", "phone": "04 339 2046"},
+                        {"company": "Later Mobile", "phone": "050 111 9988"}],
+                       default_country="AE", wa_campaign_id=camp)
+    order = [l["company"] for l in db.get_wa_ready()]
+    check("a landline added first still comes after a mobile added later",
+          order.index("Early Landline") > order.index("Later Mobile"), str(order[-4:]))
+    types = [l["number_type"] for l in db.get_wa_ready()]
+    check("every landline is below every mobile",
+          "landline" not in types or all(t == "landline" for t in types[types.index("landline"):]), str(types))
+
 
 def test_migration(db):
     print("\n16. LEADS WAITING FOR THE OLD REVIEW MOVE TO READY TO SEND")
@@ -413,6 +515,8 @@ def test_http_auth(app_mod):
                  "/api/wa/campaigns", "/api/wa/leads/page", "/api/countries"):
         r = anon.get(path)
         check(f"{path} requires a session", r.status_code in (401, 403), f"got {r.status_code}")
+    r = anon.post("/api/wa/leads/1/opened")
+    check("/api/wa/leads/<id>/opened requires a session", r.status_code in (401, 403), f"got {r.status_code}")
 
 
 def main():

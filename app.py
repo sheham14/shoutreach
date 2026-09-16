@@ -2826,15 +2826,27 @@ def api_wa_reword(wid):
     return jsonify({"ok": True, "message": reworded})
 
 
+@app.route("/api/wa/leads/<int:wid>/opened", methods=["POST", "DELETE"])
+@login_required
+@owned("wa_lead", "wid")
+def api_wa_mark_opened(wid):
+    """
+    POST: the operator opened this lead's chat in WhatsApp. DELETE: they say
+    it didn't send. Neither records a send -- see db.mark_wa_opened.
+    """
+    db.mark_wa_opened(wid, request.method == "POST")
+    return jsonify({"ok": True, "opened_at": db.get_wa_lead(wid)["opened_at"]})
+
+
 @app.route("/api/wa/leads/<int:wid>/sent", methods=["POST"])
 @login_required
 @owned("wa_lead", "wid")
 def api_wa_mark_sent(wid):
     """
-    Records that the operator clicked Open in WhatsApp. This is the entire
-    "send" surface of this module — nothing here transmits a message, it
-    logs that the link was opened, which is all that can be observed from
-    outside WhatsApp.
+    Records that the operator says the message went, after opening the chat
+    themselves. This is the entire "send" surface of this module — nothing
+    here transmits a message; it logs the operator's own confirmation, which
+    is all that can be known from outside WhatsApp.
     """
     d = request.json or {}
     kind = d.get("kind", "opener")
@@ -2914,6 +2926,9 @@ def api_wa_leads_bulk():
       pause / resume  -- follow-ups
       remove          -- take off WhatsApp (can be added back)
       campaign        -- move into `wa_campaign_id`
+      no_whatsapp / on_whatsapp -- mark as not on WhatsApp, or take the mark off
+      move            -- off WhatsApp for good: `destination` 'call', 'email' or
+                         'none', optionally into `campaign_id` on that channel
     Ids come from the body, so each is checked against the caller's own leads
     inside the db call rather than trusted.
     """
@@ -2931,6 +2946,19 @@ def api_wa_leads_bulk():
         if err:
             return err
         n = db.set_wa_leads_campaign(ids, cid, owner_id=me())
+    elif action in ("no_whatsapp", "on_whatsapp"):
+        n = db.set_wa_no_whatsapp(ids, action == "no_whatsapp", owner_id=me())
+    elif action == "move":
+        destination = (d.get("destination") or "").strip()
+        if destination not in db.WA_MOVE_DESTINATIONS:
+            return jsonify({"ok": False, "error": "Pick where they go"}), 400
+        campaign_id = d.get("campaign_id") or None
+        if campaign_id:
+            kind = {"call": "call_campaign", "email": "campaign"}.get(destination)
+            if not kind or not db.owns(kind, campaign_id, me()):
+                return jsonify({"ok": False, "error": "Not found"}), 404
+        counts = db.move_wa_leads(ids, destination, owner_id=me(), campaign_id=campaign_id)
+        return jsonify({"ok": True, "updated": counts["moved"], **counts})
     else:
         return jsonify({"ok": False, "error": "Unknown action"}), 400
     return jsonify({"ok": True, "updated": n})

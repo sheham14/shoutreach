@@ -10,7 +10,9 @@
 // A lead arrives ready to send, its message written live from its campaign's
 // template. The To do tab is two lists -- Ready to send and Follow-up due --
 // worked one lead at a time; everything else (notes, the audit) is optional
-// and never in the way of sending.
+// and never in the way of sending. Opening the chat records nothing: the
+// operator comes back and says whether it sent, or that the number isn't on
+// WhatsApp, because WhatsApp can't tell the app either.
 
 let _waBucket = 'ready';
 let _waQueue = [];
@@ -89,6 +91,9 @@ async function refreshWaCounts() {
   document.getElementById('wa-count-ready').textContent = s.ready_to_send || 0;
   document.getElementById('wa-count-due').textContent = s.due || 0;
   document.getElementById('wa-sent-today').textContent = s.sent_today || 0;
+  const marked = document.getElementById('wa-no-wa-link');
+  marked.hidden = !s.no_whatsapp;
+  marked.textContent = `${s.no_whatsapp || 0} marked not on WhatsApp →`;
   const work = (s.ready_to_send || 0) + (s.due || 0);
   setTabCount('whatsapp', 'todo', work, true);
   if (!_waFilter()) {
@@ -102,6 +107,12 @@ async function loadWaTodo() {
   ['ready', 'due'].forEach(b =>
     document.getElementById(`wa-chip-${b}`).classList.toggle('active', b === _waBucket));
   await Promise.all([refreshWaCounts(), loadWaQueue()]);
+}
+
+// Leads tab, filtered to the ones marked not on WhatsApp, ready to move off.
+function openWaNotOnWhatsApp() {
+  document.getElementById('wl-stage').value = 'no_whatsapp';
+  setTab('whatsapp', 'leads');
 }
 
 function setWaBucket(bucket) {
@@ -146,6 +157,7 @@ function _renderWaQueue() {
   }
   tbody.innerHTML = _waQueue.map(l => {
     const name = `<span class="biz-name">${esc(l.company || 'Unnamed business')}</span>${
+      l.opened_at ? ` ${pill('opened', 'amber', "Opened in WhatsApp — say whether it sent")}` : ''}${
       l.city || l.category ? `<span class="sub">${esc([l.category, l.city].filter(Boolean).join(' · '))}</span>` : ''}`;
     const camp = l.campaign_name ? esc(l.campaign_name) : pill('No campaign', 'amber');
     const cells = _waBucket === 'ready'
@@ -202,15 +214,8 @@ async function openWaLead(id) {
               ${ready ? `onchange="saveWaMessage(${l.id}, this.value)"` : ''}>${esc(message)}</textarea>
     <div class="text-muted text-small" id="wa-msg-note">${ready ? _waEditedNote(l) : ''}</div>
 
-    <div class="flex gap-2" style="flex-wrap:wrap;margin-top:12px;align-items:center">
-      <button class="btn btn-primary" onclick="openWaLink(${l.id}, '${ready ? 'opener' : 'followup'}')">Open in WhatsApp</button>
-      <button class="btn btn-ghost" onclick="skipWaLead()">Skip</button>
-      ${ready ? `<button class="btn btn-ghost btn-sm" onclick="rewordWaMessage(${l.id})">✨ Reword with AI</button>`
-              : `<button class="btn btn-ghost btn-sm" onclick="waMarkReplied(${l.id})">They replied</button>
-                 <button class="btn btn-ghost btn-sm" onclick="waSetPaused([${l.id}], true)">Pause</button>`}
-    </div>
+    <div id="wa-actions">${_waActionsHtml(l)}</div>
     <div class="text-muted text-small" style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">
-      <span>Nothing is sent until you tap Send inside WhatsApp.</span>
       ${waOpensInToggleHtml()}
       ${!ready ? `<a style="color:var(--blue);cursor:pointer" onclick="correctWaSentDate(${l.id})">Didn't actually send the last one?</a>` : ''}
     </div>
@@ -218,11 +223,30 @@ async function openWaLead(id) {
     <div style="margin-top:14px">${detail && !detail.error ? sharedSectionsHtml(detail, { open: 'none' }) : ''}</div>`;
 }
 
+// Before opening the chat: open it. After: did it send?
+function _waActionsHtml(l) {
+  const kind = _waBucket === 'ready' ? 'opener' : 'followup';
+  if (l.opened_at) return waConfirmHtml(l.id, kind, l.opened_at, l.wa_number);
+  return `<div class="flex gap-2" style="flex-wrap:wrap;margin-top:12px;align-items:center">
+      <button class="btn btn-primary" onclick="openWaLink(${l.id})">Open in WhatsApp</button>
+      <button class="btn btn-ghost" onclick="skipWaLead()">Skip</button>
+      ${kind === 'opener' ? `<button class="btn btn-ghost btn-sm" onclick="rewordWaMessage(${l.id})">✨ Reword with AI</button>`
+              : `<button class="btn btn-ghost btn-sm" onclick="waMarkReplied(${l.id})">They replied</button>
+                 <button class="btn btn-ghost btn-sm" onclick="waSetPaused([${l.id}], true)">Pause</button>`}
+    </div>
+    <div class="text-muted text-small" style="margin-top:8px">Nothing is recorded until you come back and say whether it sent.</div>`;
+}
+
+function _renderWaActions(l) {
+  const el = document.getElementById('wa-actions');
+  if (el && _waCurrent === l.id) el.innerHTML = _waActionsHtml(l);
+}
+
 function _waMoreMenu(l) {
   return `<div class="row-menu">
     <button class="btn btn-ghost btn-sm" onclick="toggleRowMenu(this)" title="More">⋯</button>
     <div class="row-menu-list">
-      <button onclick="moveWaLead(${l.id})">Not on WhatsApp…</button>
+      <button onclick="markNotOnWhatsApp([${l.id}])">Not on WhatsApp</button>
       <button onclick="moveWaLeadsToCampaign([${l.id}])">Move to another campaign…</button>
       <button onclick="openBusinessForm(${l.business_id})">Edit details…</button>
       <button class="danger" onclick="removeWaLeads([${l.id}])">Take off WhatsApp</button>
@@ -251,32 +275,60 @@ function _onTodo(id) {
 }
 
 // Opens WhatsApp with whatever is in the message box right now -- an edit made
-// just before clicking is what goes, not what was written originally. Counts
-// it as sent at the click; see mark_wa_sent for why that's the best there is.
-function openWaLink(id, kind) {
+// just before clicking is what goes, not what was written originally. Records
+// only that the chat was opened; the lead then asks whether it sent.
+function openWaLink(id) {
   const lead = _waQueue.find(l => l.id === id);
   if (!lead || !lead.wa_number) { toast('No WhatsApp number on file for this lead', 'err'); return; }
   const message = document.getElementById('wa-msg').value;
   openWhatsAppChat(lead.wa_number, message);
-  api(`/api/wa/leads/${id}/sent`, 'POST', { kind, message }).then(res => {
-    if (!res || res.error) { toast((res && res.error) || 'Opened, but could not record it', 'err'); return; }
-    _advanceWa(id);
+  lead.opened_at = utcNow();
+  _renderWaQueue();
+  _renderWaActions(lead);
+  api(`/api/wa/leads/${id}/opened`, 'POST').then(res => {
+    if (res && res.opened_at) lead.opened_at = res.opened_at;
   });
 }
 
 // The same, from a lead's side panel on the Leads tab.
-function sendFromPanel(id, kind, number, panelId) {
+function openFromPanel(id, kind, number, panelId) {
   const box = document.getElementById('wl-msg');
   if (!number) { toast('No WhatsApp number on file for this lead', 'err'); return; }
-  const message = box ? box.value : '';
-  openWhatsAppChat(number, message);
-  api(`/api/wa/leads/${id}/sent`, 'POST', { kind, message }).then(res => {
-    if (!res || res.error) { toast((res && res.error) || 'Opened, but could not record it', 'err'); return; }
+  openWhatsAppChat(number, box ? box.value : '');
+  const actions = document.getElementById('wl-actions');
+  if (actions) actions.innerHTML = waConfirmHtml(id, kind, utcNow(), number, panelId);
+  api(`/api/wa/leads/${id}/opened`, 'POST').then(() => { if (LT.wl) LT.wl.load(); });
+}
+
+// "Open the chat again", from the did-it-send box.
+function reopenWaChat(id, number, panelId = null) {
+  const box = document.getElementById(panelId ? 'wl-msg' : 'wa-msg');
+  openWhatsAppChat(number, box ? box.value : '');
+  api(`/api/wa/leads/${id}/opened`, 'POST');
+}
+
+// "Sent": the one thing that records a message as sent.
+async function confirmWaSent(id, kind, panelId = null) {
+  await _waSaving;
+  const box = document.getElementById(panelId ? 'wl-msg' : 'wa-msg');
+  const res = await api(`/api/wa/leads/${id}/sent`, 'POST', { kind, message: box ? box.value : '' });
+  if (!res || res.error) { toast((res && res.error) || 'Could not record it', 'err'); return; }
+  if (panelId) {
     toast('Recorded as sent');
     LT.wl.load();
     refreshLeadPanel(panelId);
     refreshWaCounts();
-  });
+    return;
+  }
+  _advanceWa(id);
+}
+
+async function waDidntSend(id, panelId = null) {
+  const res = await api(`/api/wa/leads/${id}/opened`, 'DELETE');
+  if (!res || res.error) { toast((res && res.error) || 'Could not update', 'err'); return; }
+  if (panelId) { refreshLeadPanel(panelId); LT.wl.load(); return; }
+  const l = _waQueue.find(x => x.id === id);
+  if (l) { l.opened_at = null; _renderWaQueue(); _renderWaActions(l); }
 }
 
 // Saving an edit happens when the box loses focus -- which is also what
@@ -325,8 +377,8 @@ async function rewordWaMessage(id, panelId = null) {
 async function correctWaSentDate(id) {
   const value = await chooseDialog({
     title: "Didn't actually send it?",
-    body: `<p class="text-small" style="line-height:1.6;margin-bottom:10px">Opening WhatsApp is recorded as sent, since
-      there's no way to see what happened inside WhatsApp. Put in the real time, or clear it.</p>
+    body: `<p class="text-small" style="line-height:1.6;margin-bottom:10px">It was recorded as sent when you said so.
+      Put in the real time, or clear it.</p>
       ${choiceCard({ name: 'wa-sd', value: 'clear', title: "I didn't send it", checked: true,
         hint: 'Clears the date. If it was the first message, the lead goes back to Ready to send.' })}
       ${choiceCard({ name: 'wa-sd', value: 'set', title: 'I sent it at a different time',
@@ -375,29 +427,49 @@ function _reloadWaView() {
   if (tab === 'campaigns') renderWaCampaigns();
 }
 
-// "Not on WhatsApp": a proper choice of where the lead goes next.
-async function moveWaLead(id) {
-  const lead = _waQueue.find(l => l.id === id) || (LT.wl && LT.wl.rowById(id)) || await api(`/api/wa/leads/${id}`);
-  if (!lead || lead.error) return;
-  const [biz, callCamps, emailCamps] = await Promise.all([
-    api(`/api/businesses/${lead.business_id}`), api('/api/call-campaigns'), api('/api/campaigns'),
-  ]);
-  const emails = (biz && biz.emails || []).filter(e => e.status === 'active');
-  const hasPhone = !!(biz && biz.phone);
+// "Not on WhatsApp": marked, out of every queue, still on WhatsApp -- so the
+// operator keeps sending and moves them all off in one go later.
+async function markNotOnWhatsApp(ids, panelId = null) {
+  if (!ids.length) return;
+  const res = await api('/api/wa/leads/bulk', 'POST', { action: 'no_whatsapp', wa_lead_ids: ids });
+  if (!res || res.error) { toast((res && res.error) || 'Could not mark them', 'err'); return; }
+  toast(ids.length === 1 ? 'Marked not on WhatsApp — move it off later from Leads'
+                         : `Marked ${res.updated} not on WhatsApp`);
+  if (ids.length === 1 && _onTodo(ids[0])) { _advanceWa(ids[0]); return; }
+  if (LT.wl) LT.wl.clear();
+  _reloadWaView();
+}
+
+async function unmarkNotOnWhatsApp(ids) {
+  if (!ids.length) return;
+  const res = await api('/api/wa/leads/bulk', 'POST', { action: 'on_whatsapp', wa_lead_ids: ids });
+  if (!res || res.error) { toast((res && res.error) || 'Could not update', 'err'); return; }
+  toast(`${res.updated} back in the queue`);
+  if (LT.wl) LT.wl.clear();
+  _reloadWaView();
+}
+
+// Off WhatsApp for good, to Calling, Email or nowhere -- one lead or all of them.
+async function moveWaLeadsOff(ids) {
+  if (!ids.length) return;
+  const [callCamps, emailCamps] = await Promise.all([api('/api/call-campaigns'), api('/api/campaigns')]);
+  const n = ids.length;
+  const box = 'onclick="event.stopPropagation()" style="margin-top:8px"';
   const choice = await chooseDialog({
-    title: `${lead.company || 'This business'} isn't on WhatsApp`,
+    title: `Move ${n === 1 ? 'this lead' : `${n} leads`} off WhatsApp`,
     width: 520,
-    body: `<p class="text-muted text-small" style="margin-bottom:12px">It comes off WhatsApp for good, so a later scrape can't put the number back. Where should it go?</p>
-      ${choiceCard({ name: 'wa-mv', value: 'call', title: 'Move to Calling', checked: hasPhone, disabled: !hasPhone,
-        hint: hasPhone ? 'Onto your call list, and into a campaign if you pick one.' : 'No phone number on file to call.',
-        extra: hasPhone ? `<div onclick="event.stopPropagation()" style="margin-top:8px">${campaignSelectHtml('wa-mv-call', callCamps || [],
-          { allowNone: true, noneLabel: 'No campaign — just add to Calling' })}</div>` : '' })}
-      ${choiceCard({ name: 'wa-mv', value: 'email', title: 'Move to Email', disabled: !emails.length,
-        hint: emails.length ? `Uses ${esc(emails[0].email)}.` : 'No email address on file.',
-        extra: emails.length ? `<div onclick="event.stopPropagation()" style="margin-top:8px">${campaignSelectHtml('wa-mv-email', emailCamps || [],
-          { allowNone: true, noneLabel: "Don't enroll yet", allowNew: false })}</div>` : '' })}
-      ${choiceCard({ name: 'wa-mv', value: 'none', title: 'Just take it off WhatsApp', checked: !hasPhone,
-        hint: 'It stays in Contacts, under Unassigned, until you decide.' })}`,
+    body: `<p class="text-muted text-small" style="margin-bottom:12px">They come off WhatsApp for good, so a later scrape
+        can't put the numbers back. Where should they go?</p>
+      ${choiceCard({ name: 'wa-mv', value: 'call', title: 'Calling', checked: true,
+        hint: 'Onto your call list, and into a campaign if you pick one.',
+        extra: `<div ${box}>${campaignSelectHtml('wa-mv-call', Array.isArray(callCamps) ? callCamps : [],
+          { allowNone: true, noneLabel: 'No campaign — just add to Calling' })}</div>` })}
+      ${choiceCard({ name: 'wa-mv', value: 'email', title: 'Email',
+        hint: 'Any with no email address on file stay here, still marked.',
+        extra: `<div ${box}>${campaignSelectHtml('wa-mv-email', Array.isArray(emailCamps) ? emailCamps : [],
+          { allowNone: true, noneLabel: "Don't enroll yet", allowNew: false })}</div>` })}
+      ${choiceCard({ name: 'wa-mv', value: 'none', title: 'Nowhere for now',
+        hint: 'They wait in Contacts, under Unassigned.' })}`,
     confirm: 'Move',
     collect: () => chosenRadio('wa-mv'),
   });
@@ -409,11 +481,18 @@ async function moveWaLead(id) {
   } else if (choice === 'email') {
     campaignId = document.getElementById('wa-mv-email').value;
   }
-  const res = await api(`/api/wa/leads/${id}/move`, 'POST', { destination: choice, campaign_id: campaignId || null });
-  if (!res || res.error) { toast((res && res.error) || 'Could not move it', 'err'); return; }
-  toast({ call: 'Moved to Calling', email: res.enrolled ? 'Moved to Email and enrolled' : 'Moved to Email',
-          none: 'Taken off WhatsApp — find it in Contacts → Unassigned' }[choice]);
-  if (_onTodo(id)) _advanceWa(id); else _reloadWaView();
+  const res = await api('/api/wa/leads/bulk', 'POST',
+                        { action: 'move', wa_lead_ids: ids, destination: choice, campaign_id: campaignId || null });
+  if (!res || res.error) { toast((res && res.error) || 'Could not move them', 'err'); return; }
+  const where = { call: 'Calling', email: 'Email', none: 'Contacts → Unassigned' }[choice];
+  const held = [res.no_phone && `${res.no_phone} had no phone number`,
+                res.no_email && `${res.no_email} had no email address`,
+                res.opted_out && `${res.opted_out} asked not to be contacted`].filter(Boolean);
+  toast(`Moved ${res.moved} to ${where}` + (held.length ? ` — ${held.join(', ')}, so still on WhatsApp` : ''),
+        res.moved ? 'ok' : 'err');
+  if (LT.wl) LT.wl.clear();
+  if (ids.length === 1 && res.moved && _onTodo(ids[0])) _advanceWa(ids[0]);
+  else _reloadWaView();
 }
 
 async function removeWaLeads(ids) {
@@ -422,7 +501,7 @@ async function removeWaLeads(ids) {
     title: `Take ${ids.length} off WhatsApp?`,
     body: `<p class="text-small" style="line-height:1.6">They drop out of every WhatsApp list. Their message history is kept,
       they stay in Contacts, and you can add them back any time. (If the number just isn't on WhatsApp,
-      use "Not on WhatsApp" instead, so it's never re-added.)</p>`,
+      mark it "Not on WhatsApp" instead.)</p>`,
     confirm: 'Take off WhatsApp', danger: true,
   });
   if (!ok) return;
@@ -469,7 +548,9 @@ createLeadTable({
       render: r => `<span class="biz-name">${esc(r.company || 'Unnamed business')}</span><span class="sub mono">${esc(prettyWaNumber(r.wa_number) || 'no number')}</span>` },
     { key: 'campaign_name', label: 'Campaign', sort: true,
       render: r => r.campaign_name ? esc(r.campaign_name) : pill('No campaign', 'amber') },
-    { key: 'stage', label: 'Stage', sort: true, render: r => waStagePill(r.stage) },
+    { key: 'stage', label: 'Stage', sort: true,
+      render: r => waStagePill(r.stage) + (r.opened_at && ['ready', 'due'].includes(r.stage)
+        ? ` ${pill('opened', 'amber', 'Opened in WhatsApp — say whether it sent')}` : '') },
     { key: 'template_variant', label: 'Version', sort: true, cls: 'num', render: r => esc(r.template_variant || '—') },
     { key: 'sent_date', label: 'Last sent', sort: true, cls: 'num', render: r => esc(shortDate(r.sent_date)) },
     { key: 'followup_count', label: 'Follow-ups', sort: true, cls: 'num', render: r => r.followup_count || 0 },
@@ -479,21 +560,28 @@ createLeadTable({
     channel: 'whatsapp', panelId: 'wl-panel', splitId: 'wl-split',
     onClose: () => { LT.wl.currentId = null; LT.wl.render(); },
   }),
-  bulk: () => `
+  bulk: () => document.getElementById('wl-stage')?.value === 'no_whatsapp' ? `
+    <button class="btn btn-primary btn-sm" onclick="moveWaLeadsOff(LT.wl.selectedIds())">Move off WhatsApp…</button>
+    <button class="btn btn-ghost btn-sm" onclick="unmarkNotOnWhatsApp(LT.wl.selectedIds())">They're on WhatsApp after all</button>
+    <button class="btn btn-danger btn-sm" onclick="removeWaLeads(LT.wl.selectedIds())">Take off WhatsApp</button>` : `
     <button class="btn btn-ghost btn-sm" onclick="moveWaLeadsToCampaign(LT.wl.selectedIds())">Move to campaign</button>
     <button class="btn btn-ghost btn-sm" onclick="waSetPaused(LT.wl.selectedIds(), true)">Pause follow-ups</button>
     <button class="btn btn-ghost btn-sm" onclick="waSetPaused(LT.wl.selectedIds(), false)">Resume</button>
+    <button class="btn btn-ghost btn-sm" onclick="markNotOnWhatsApp(LT.wl.selectedIds())">Not on WhatsApp</button>
     <button class="btn btn-danger btn-sm" onclick="removeWaLeads(LT.wl.selectedIds())">Take off WhatsApp</button>`,
   menu: r => {
     const on = !['moved', 'removed'].includes(r.stage);
+    const marked = r.stage === 'no_whatsapp';
     return [
       on && ['ready', 'due'].includes(r.stage) && { label: 'Work it in To do', run: `openWaLeadFromTable(LT.wl.rowById(${r.id}))` },
+      marked && { label: 'Move off WhatsApp…', run: `moveWaLeadsOff([${r.id}])` },
+      marked && { label: "It's on WhatsApp after all", run: `unmarkNotOnWhatsApp([${r.id}])` },
       on && { label: 'Move to another campaign…', run: `moveWaLeadsToCampaign([${r.id}])` },
-      on && r.sent_date && !r.replied && { label: r.paused ? 'Resume follow-ups' : 'Pause follow-ups', run: `waSetPaused([${r.id}], ${!r.paused})` },
+      on && !marked && r.sent_date && !r.replied && { label: r.paused ? 'Resume follow-ups' : 'Pause follow-ups', run: `waSetPaused([${r.id}], ${!r.paused})` },
       on && ['waiting', 'due', 'paused'].includes(r.stage) && { label: 'They replied', run: `waMarkReplied(${r.id}, true)` },
       r.stage === 'replied' && { label: "Undo 'replied'", run: `waMarkReplied(${r.id}, false)` },
       on && r.sent_date && { label: "Didn't actually send?", run: `correctWaSentDate(${r.id})` },
-      on && { label: 'Not on WhatsApp…', run: `moveWaLead(${r.id})` },
+      on && !marked && { label: 'Not on WhatsApp', run: `markNotOnWhatsApp([${r.id}])` },
       on && { label: 'Take off WhatsApp', run: `removeWaLeads([${r.id}])`, danger: true },
     ];
   },

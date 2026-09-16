@@ -232,6 +232,14 @@ def init_db():
                 -- moved_to, this doesn't rule the number out: adding the
                 -- lead again brings it back.
                 removed_at       TEXT    DEFAULT NULL,
+                -- When the operator last opened this lead's chat in WhatsApp
+                -- and hasn't yet said whether it sent. Nothing counts as sent
+                -- until they do; this is only so a lead opened and forgotten
+                -- asks again rather than looking untouched.
+                opened_at        TEXT    DEFAULT NULL,
+                -- Marked as not on WhatsApp but kept here, out of every queue,
+                -- until the operator moves it off in bulk (move_wa_leads).
+                no_whatsapp_at   TEXT    DEFAULT NULL,
                 -- The campaign whose templates, follow-up gap and variables
                 -- this lead's messages are written from. NULL only when its
                 -- campaign was deleted; such a lead can't be drafted until
@@ -546,6 +554,8 @@ def init_db():
             "ALTER TABLE wa_leads   ADD COLUMN message_edited INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE businesses ADD COLUMN audit TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE businesses ADD COLUMN audit_at TEXT DEFAULT NULL",
+            "ALTER TABLE wa_leads   ADD COLUMN opened_at TEXT DEFAULT NULL",
+            "ALTER TABLE wa_leads   ADD COLUMN no_whatsapp_at TEXT DEFAULT NULL",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -5032,9 +5042,11 @@ def delete_wa_campaign(cid: int) -> int:
         return left
 
 
-# A lead still being worked on WhatsApp: not ruled out as not on it, not taken
-# off by hand.
+# A lead still on WhatsApp: not moved off it, not taken off by hand.
 _WA_ACTIVE = "w.moved_to = '' AND w.removed_at IS NULL"
+# ...and one there's still work on: not marked as not on WhatsApp. A marked
+# lead stays on the channel, waiting to be moved off, but in no queue.
+_WA_WORKABLE = f"{_WA_ACTIVE} AND w.no_whatsapp_at IS NULL"
 
 
 def _wa_due_clause(days=None):
@@ -5056,13 +5068,15 @@ def get_wa_campaigns(owner_id=None) -> list:
         rows = conn.execute(f"""
             SELECT c.*,
               SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} THEN 1 ELSE 0 END) AS leads,
-              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} AND w.wa_status = 'drafted'
+              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_WORKABLE} AND w.wa_status = 'drafted'
                         AND w.paused = 0 THEN 1 ELSE 0 END)                       AS ready,
               SUM(CASE WHEN w.wa_status IN ('sent','replied') THEN 1 ELSE 0 END)  AS messaged,
               SUM(CASE WHEN w.replied = 1 THEN 1 ELSE 0 END)                      AS replied,
-              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE} AND w.wa_status = 'sent'
+              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_WORKABLE} AND w.wa_status = 'sent'
                         AND w.replied = 0 AND w.paused = 0 AND w.sent_date IS NOT NULL
-                        AND {due} THEN 1 ELSE 0 END)                              AS due
+                        AND {due} THEN 1 ELSE 0 END)                              AS due,
+              SUM(CASE WHEN w.id IS NOT NULL AND {_WA_ACTIVE}
+                        AND w.no_whatsapp_at IS NOT NULL THEN 1 ELSE 0 END)       AS no_whatsapp
               FROM wa_campaigns c
               LEFT JOIN wa_leads w ON w.wa_campaign_id = c.id
              WHERE c.owner_id = ?
@@ -5072,7 +5086,7 @@ def get_wa_campaigns(owner_id=None) -> list:
     out = []
     for r in rows:
         c = _parse_wa_campaign(r)
-        for k in ("leads", "ready", "messaged", "replied", "due"):
+        for k in ("leads", "ready", "messaged", "replied", "due", "no_whatsapp"):
             c[k] = c.get(k) or 0
         c["reply_rate"] = round(c["replied"] / c["messaged"] * 100, 1) if c["messaged"] else 0.0
         out.append(c)
@@ -5476,7 +5490,7 @@ _WA_LEAD_COLUMNS = """
     w.id, w.business_id, w.wa_number, w.country, w.number_type, w.wa_status,
     w.signal_type, w.signal_detail, w.draft_message, w.message_edited,
     w.template_variant, w.paraphrased, w.sent_date, w.replied, w.followup_count, w.paused,
-    w.moved_to, w.removed_at, w.notes, w.created_at, w.wa_campaign_id,
+    w.moved_to, w.removed_at, w.opened_at, w.no_whatsapp_at, w.notes, w.created_at, w.wa_campaign_id,
     c.name AS campaign_name, c.followup_days AS campaign_followup_days,
     b.name AS company, b.website, b.address, b.city, b.phone, b.category,
     b.rating, b.review_count, b.do_not_contact, b.source_job_id
@@ -5554,9 +5568,12 @@ def get_wa_leads(status: str = None, limit: int = 200, owner_id=None, wa_campaig
 
 
 def get_wa_ready(limit: int = 500, owner_id=None, wa_campaign_id=None) -> list:
-    """To do -> Ready to send: unsent leads, oldest first, messages filled in."""
+    """
+    To do -> Ready to send: unsent leads, oldest first, messages filled in.
+    Landlines go last -- they're the numbers least likely to be on WhatsApp.
+    """
     with get_db() as conn:
-        where = ["w.wa_status = 'drafted'", "w.paused = 0", _WA_ACTIVE, "b.owner_id = ?"]
+        where = ["w.wa_status = 'drafted'", "w.paused = 0", _WA_WORKABLE, "b.owner_id = ?"]
         params = [_resolve_owner_id(conn, owner_id)]
         if wa_campaign_id:
             where.append("w.wa_campaign_id = ?")
@@ -5564,7 +5581,7 @@ def get_wa_ready(limit: int = 500, owner_id=None, wa_campaign_id=None) -> list:
         rows = [dict(r) for r in conn.execute(f"""
             SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN}
              WHERE {' AND '.join(where)}
-             ORDER BY w.id ASC LIMIT ?
+             ORDER BY w.number_type = 'landline', w.id ASC LIMIT ?
         """, (*params, int(limit))).fetchall()]
     return _attach_wa_messages(rows)
 
@@ -5576,6 +5593,7 @@ def _wa_stage_sql() -> tuple:
         CASE
           WHEN w.removed_at IS NOT NULL THEN 'removed'
           WHEN w.moved_to != ''         THEN 'moved'
+          WHEN w.no_whatsapp_at IS NOT NULL THEN 'no_whatsapp'
           WHEN w.replied = 1            THEN 'replied'
           WHEN w.paused = 1             THEN 'paused'
           WHEN w.wa_status = 'sent' AND w.sent_date IS NOT NULL AND {due} THEN 'due'
@@ -5584,7 +5602,7 @@ def _wa_stage_sql() -> tuple:
         END""", params
 
 
-WA_STAGES = ("ready", "due", "waiting", "replied", "paused", "moved", "removed")
+WA_STAGES = ("ready", "due", "waiting", "replied", "paused", "no_whatsapp", "moved", "removed")
 
 _WA_LEAD_SORT = {
     "company": "company", "campaign_name": "campaign_name", "stage": "stage",
@@ -5662,10 +5680,11 @@ def get_wa_summary(owner_id=None, wa_campaign_id=None, since=None) -> dict:
         row = conn.execute(f"""
             SELECT
               SUM(CASE WHEN {_WA_ACTIVE} THEN 1 ELSE 0 END)                                AS total,
-              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='drafted' AND w.paused=0 THEN 1 ELSE 0 END) AS ready_to_send,
+              SUM(CASE WHEN {_WA_WORKABLE} AND w.wa_status='drafted' AND w.paused=0 THEN 1 ELSE 0 END) AS ready_to_send,
               SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='sent' THEN 1 ELSE 0 END)         AS in_cadence,
-              SUM(CASE WHEN {_WA_ACTIVE} AND w.wa_status='sent' AND w.replied=0 AND w.paused=0
+              SUM(CASE WHEN {_WA_WORKABLE} AND w.wa_status='sent' AND w.replied=0 AND w.paused=0
                         AND w.sent_date IS NOT NULL AND {due} THEN 1 ELSE 0 END)           AS due,
+              SUM(CASE WHEN {_WA_ACTIVE} AND w.no_whatsapp_at IS NOT NULL THEN 1 ELSE 0 END) AS no_whatsapp,
               SUM(CASE WHEN w.wa_status IN ('sent','replied') THEN 1 ELSE 0 END)           AS messaged,
               SUM(w.replied)                                                               AS replied,
               SUM(CASE WHEN w.moved_to != '' OR w.removed_at IS NOT NULL THEN 1 ELSE 0 END) AS moved,
@@ -5720,13 +5739,27 @@ def update_wa_message(wa_lead_id: int, message: str):
     set_wa_message(wa_lead_id, message)
 
 
+def mark_wa_opened(wa_lead_id: int, opened: bool = True):
+    """
+    The operator opened this lead's chat in WhatsApp, or said it didn't send
+    (`opened=False`). Records nothing as sent: WhatsApp can't tell the app
+    whether a message went -- or whether the number is even on WhatsApp -- so
+    only the operator's own "Sent" does that (mark_wa_sent).
+    """
+    with get_db() as conn:
+        if opened:
+            conn.execute("UPDATE wa_leads SET opened_at=datetime('now') WHERE id=?", (wa_lead_id,))
+        else:
+            conn.execute("UPDATE wa_leads SET opened_at=NULL WHERE id=?", (wa_lead_id,))
+
+
 def mark_wa_sent(wa_lead_id: int, message: str, kind: str = "opener",
                  template_variant: str = "", paraphrased: bool = False):
     """
-    Records that the operator clicked Open in WhatsApp -- an approximation,
-    not delivery confirmation; see wa_log's comment in init_db. Follow-ups
-    call this too, incrementing followup_count so the cadence knows how many
-    have gone out; the opener does not count as a follow-up.
+    Records that the operator says the message went -- their word, not
+    delivery confirmation; see wa_log's comment in init_db. Follow-ups call
+    this too, incrementing followup_count so the cadence knows how many have
+    gone out; the opener does not count as a follow-up.
     """
     with get_db() as conn:
         conn.execute("""
@@ -5736,13 +5769,13 @@ def mark_wa_sent(wa_lead_id: int, message: str, kind: str = "opener",
         if kind == "followup":
             conn.execute("""
                 UPDATE wa_leads SET
-                    sent_date=datetime('now'), wa_status='sent',
+                    sent_date=datetime('now'), wa_status='sent', opened_at=NULL,
                     followup_count = followup_count + 1
                  WHERE id=?
             """, (wa_lead_id,))
         else:
             conn.execute(
-                "UPDATE wa_leads SET sent_date=datetime('now'), wa_status='sent' WHERE id=?",
+                "UPDATE wa_leads SET sent_date=datetime('now'), wa_status='sent', opened_at=NULL WHERE id=?",
                 (wa_lead_id,),
             )
 
@@ -5802,7 +5835,7 @@ def get_wa_followups_due(days: int = None, limit: int = 200, owner_id=None,
     """
     due, due_params = _wa_due_clause(days)
     with get_db() as conn:
-        where = ["w.wa_status = 'sent'", "w.replied = 0", "w.paused = 0", _WA_ACTIVE,
+        where = ["w.wa_status = 'sent'", "w.replied = 0", "w.paused = 0", _WA_WORKABLE,
                  "w.sent_date IS NOT NULL", due, "b.owner_id = ?"]
         params = [*due_params, _resolve_owner_id(conn, owner_id)]
         if wa_campaign_id:
@@ -5817,6 +5850,15 @@ def get_wa_followups_due(days: int = None, limit: int = 200, owner_id=None,
 
 
 WA_MOVE_DESTINATIONS = ("call", "email", "none")
+
+
+class WaMoveRefused(ValueError):
+    """A lead that can't go where it was sent. `reason` is what a bulk move
+    counts it under: 'opted_out', 'no_phone' or 'no_email'."""
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
 
 
 def move_wa_lead(wa_lead_id: int, destination: str, owner_id=None, campaign_id=None) -> dict:
@@ -5847,9 +5889,9 @@ def move_wa_lead(wa_lead_id: int, destination: str, owner_id=None, campaign_id=N
     if destination == "call":
         counts = add_to_calling([business_id], owner_id=owner, call_campaign_id=campaign_id)
         if counts["opted_out"]:
-            raise ValueError("They asked not to be contacted, so they can't go on Calling")
+            raise WaMoveRefused("opted_out", "They asked not to be contacted, so they can't go on Calling")
         if counts["no_phone"]:
-            raise ValueError("There's no phone number on file to call")
+            raise WaMoveRefused("no_phone", "There's no phone number on file to call")
         with get_db() as conn:
             result["call_lead_id"] = conn.execute(
                 "SELECT id FROM call_leads WHERE business_id=?", (business_id,)
@@ -5863,7 +5905,7 @@ def move_wa_lead(wa_lead_id: int, destination: str, owner_id=None, campaign_id=N
                  ORDER BY duplicate_of IS NOT NULL, id LIMIT 1
             """, (business_id, owner)).fetchone()
         if not row:
-            raise ValueError("There's no email address on file for this business")
+            raise WaMoveRefused("no_email", "There's no email address on file for this business")
         result["email_lead_id"] = row["id"]
         if campaign_id:
             enrolled, skipped = enroll_contacts_bulk(int(campaign_id), [row["id"]], owner_id=owner)
@@ -5874,6 +5916,47 @@ def move_wa_lead(wa_lead_id: int, destination: str, owner_id=None, campaign_id=N
         conn.execute("UPDATE wa_leads SET moved_to=?, paused=1 WHERE id=?",
                      (destination, wa_lead_id))
     return result
+
+
+def move_wa_leads(wa_lead_ids, destination: str, owner_id=None, campaign_id=None) -> dict:
+    """
+    Move many leads off WhatsApp at once -- usually everything marked as not
+    on WhatsApp. Each goes through move_wa_lead, so a lead that can't go where
+    it was sent (no email address, say) stays on WhatsApp, still marked, and
+    is counted by why.
+    """
+    if destination not in WA_MOVE_DESTINATIONS:
+        raise ValueError(f"Unknown destination: {destination}")
+    owner = _owner_or_default(owner_id)
+    with get_db() as conn:
+        ids = [i for i in _own_wa_lead_ids(conn, wa_lead_ids, owner)
+               if conn.execute("SELECT 1 FROM wa_leads w WHERE w.id=? AND " + _WA_ACTIVE, (i,)).fetchone()]
+    out = {"moved": 0, "opted_out": 0, "no_phone": 0, "no_email": 0}
+    for lead_id in ids:
+        try:
+            move_wa_lead(lead_id, destination, owner_id=owner, campaign_id=campaign_id)
+            out["moved"] += 1
+        except WaMoveRefused as exc:
+            out[exc.reason] += 1
+    return out
+
+
+def set_wa_no_whatsapp(wa_lead_ids, marked: bool = True, owner_id=None) -> int:
+    """
+    Mark leads as not on WhatsApp, or take the mark off. A marked lead stays
+    on WhatsApp but drops out of Ready to send and Follow-up due, so the
+    operator can keep going and move them all off later.
+    """
+    with get_db() as conn:
+        ids = _own_wa_lead_ids(conn, wa_lead_ids, owner_id)
+        if not ids:
+            return 0
+        marks = ("no_whatsapp_at=datetime('now'), opened_at=NULL", "no_whatsapp_at IS NULL") if marked \
+            else ("no_whatsapp_at=NULL", "no_whatsapp_at IS NOT NULL")
+        return conn.execute(
+            f"UPDATE wa_leads SET {marks[0]} WHERE {marks[1]} AND moved_to = '' AND removed_at IS NULL "
+            f"AND id IN ({','.join('?' * len(ids))})", ids,
+        ).rowcount
 
 
 def remove_wa_leads(wa_lead_ids, owner_id=None) -> int:

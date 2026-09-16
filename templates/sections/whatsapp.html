@@ -22,16 +22,18 @@
 
   <!-- ── To do ──────────────────────────────────────────────────────────────
        A short list on the left and the lead you're on to the right, worked
-       through with "Open in WhatsApp", which moves straight on to the next.
-       Leads arrive with their message already written, so there is nothing
-       to prepare first. -->
+       through with "Open in WhatsApp", then "Did it send?" -- Sent, Not on
+       WhatsApp, or Didn't send. Leads arrive with their message already
+       written, so there is nothing to prepare first. -->
   <div class="tab-pane active" data-pane-group="whatsapp" data-pane="todo">
     <div class="flex gap-2 items-center" style="margin-bottom:14px;flex-wrap:wrap">
       <div class="chips">
         <button class="chip active" id="wa-chip-ready" onclick="setWaBucket('ready')">Ready to send <span class="count" id="wa-count-ready">0</span></button>
         <button class="chip" id="wa-chip-due" onclick="setWaBucket('due')">Follow-up due <span class="count" id="wa-count-due">0</span></button>
       </div>
-      <span class="sent-today" title="Messages and follow-ups opened in WhatsApp since midnight">
+      <a id="wa-no-wa-link" class="text-small" hidden style="margin-left:auto;color:var(--red);cursor:pointer"
+         onclick="openWaNotOnWhatsApp()" title="Leads you marked as not on WhatsApp, waiting to be moved off"></a>
+      <span class="sent-today" title="Messages and follow-ups you've marked as sent since midnight">
         <b id="wa-sent-today">0</b> sent today
       </span>
     </div>
@@ -64,6 +66,7 @@
           <option value="waiting">Waiting for reply</option>
           <option value="replied">Replied</option>
           <option value="paused">Paused</option>
+          <option value="no_whatsapp">Not on WhatsApp</option>
           <option value="off">Taken off WhatsApp</option>
         </select>
         <span class="lt-count" id="wl-count"></span>

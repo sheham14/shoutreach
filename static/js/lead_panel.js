@@ -92,7 +92,41 @@ function openWhatsAppChat(number, message) {
     window.location.href = `whatsapp://send?phone=${number}&text=${text}`;
     return;
   }
-  window.open(`https://web.whatsapp.com/send?phone=${number}&text=${text}`, 'shoutreach-whatsapp');
+  const tab = window.open(`https://web.whatsapp.com/send?phone=${number}&text=${text}`, 'shoutreach-whatsapp');
+  // A reused tab isn't always brought to the front on its own, which made it
+  // look as if nothing happened.
+  if (tab) { try { tab.focus(); } catch (_) { /* cross-origin in some browsers */ } }
+}
+
+// Now, in the database's own format (UTC), for a lead just opened.
+function utcNow() { return new Date().toISOString().replace('T', ' ').substring(0, 19); }
+
+// A database time (UTC) as the operator reads it: "at 15:42" today, else "on 16 Sep at 15:42".
+function whenLocal(ts) {
+  if (!ts) return '';
+  const d = new Date(String(ts).replace(' ', 'T') + 'Z');
+  if (isNaN(d)) return '';
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === new Date().toDateString()) return `at ${time}`;
+  return `on ${d.toLocaleDateString([], { day: 'numeric', month: 'short' })} at ${time}`;
+}
+
+// After opening a chat: nothing is recorded until the operator says what
+// happened. The same box on the To do tab and in a lead's side panel.
+function waConfirmHtml(id, kind, openedAt, number, panelId = null) {
+  const pid = panelId ? `'${panelId}'` : 'null';
+  return `<div class="confirm-send">
+    <div class="confirm-title">Did it send?</div>
+    <div class="text-muted text-small">You opened this chat in WhatsApp ${esc(whenLocal(openedAt))}.
+      Nothing is recorded until you say.</div>
+    <div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px">
+      <button class="btn btn-primary" onclick="confirmWaSent(${id}, '${kind}', ${pid})">Sent</button>
+      <button class="btn btn-ghost" onclick="markNotOnWhatsApp([${id}], ${pid})">Not on WhatsApp</button>
+      <button class="btn btn-ghost" onclick="waDidntSend(${id}, ${pid})">Didn't send</button>
+    </div>
+    <a class="text-small" style="color:var(--blue);cursor:pointer;display:inline-block;margin-top:8px"
+       onclick="reopenWaChat(${id}, '${esc(number || '')}', ${pid})">Open the chat again</a>
+  </div>`;
 }
 
 function waOpensInToggleHtml() {
@@ -328,7 +362,7 @@ function whereItIsHtml(d) {
   if (d.whatsapp) {
     const w = d.whatsapp;
     const off = w.moved_to || w.removed_at;
-    where.push(`<div>${pill('WhatsApp', off ? 'dashed' : 'purple')} ${off ? (w.moved_to ? 'not on WhatsApp' : 'taken off')
+    where.push(`<div>${pill('WhatsApp', off ? 'dashed' : 'purple')} ${off ? (w.moved_to ? 'moved off WhatsApp' : 'taken off')
       : `${esc((WA_STAGE_META[w.stage] || [w.stage])[0].toLowerCase())} · ${esc(w.campaign_name || 'no campaign')}`}</div>`);
   }
   if (d.do_not_contact) where.push(`<div>${pill('Do not contact', 'red')} asked to be left alone</div>`);
@@ -448,30 +482,45 @@ async function _waPanelSection(d) {
   const w = await api(`/api/wa/leads/${d.whatsapp.id}`);
   const stage = d.whatsapp.stage;
   const panelId = 'wl-panel';
+  const lastSent = w.sent_date ? `<div class="text-muted text-small" style="margin-top:8px">Last sent ${esc(whenLocal(w.sent_date))}
+      · ${w.followup_count || 0} follow-up${w.followup_count === 1 ? '' : 's'} so far</div>` : '';
   let body = '';
-  if (stage === 'ready') {
-    body = `<span class="field-label">Message${w.template_variant ? ` · version ${esc(w.template_variant)}` : ''}</span>
-      <textarea id="wl-msg" class="soft-input" style="min-height:120px"
-                onchange="saveWaMessage(${w.id}, this.value, '${panelId}')">${esc(w.message || '')}</textarea>
-      ${w.message_edited ? `<div class="text-muted text-small">${w.paraphrased ? 'Reworded by AI' : 'Edited by hand'} ·
+  if (stage === 'ready' || stage === 'due') {
+    const kind = stage === 'ready' ? 'opener' : 'followup';
+    const actions = w.opened_at
+      ? waConfirmHtml(w.id, kind, w.opened_at, w.wa_number, panelId)
+      : `<div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px;align-items:center">
+          <button class="btn btn-primary btn-sm" onclick="openFromPanel(${w.id}, '${kind}', '${esc(w.wa_number)}', '${panelId}')">Open in WhatsApp</button>
+          ${kind === 'opener'
+            ? `<button class="btn btn-ghost btn-sm" onclick="rewordWaMessage(${w.id}, '${panelId}')">✨ Reword with AI</button>`
+            : `<button class="btn btn-ghost btn-sm" onclick="waMarkReplied(${w.id}, true)">They replied</button>
+               <button class="btn btn-ghost btn-sm" onclick="waSetPaused([${w.id}], true)">Pause follow-ups</button>`}
+        </div>`;
+    body = `${kind === 'followup' ? lastSent : ''}
+      <span class="field-label">${kind === 'opener' ? `Message${w.template_variant ? ` · version ${esc(w.template_variant)}` : ''}` : 'Follow-up due'}</span>
+      <textarea id="wl-msg" class="soft-input" style="min-height:110px"
+                ${kind === 'opener' ? `onchange="saveWaMessage(${w.id}, this.value, '${panelId}')"` : ''}>${esc(kind === 'opener' ? (w.message || '') : (w.followup_message || ''))}</textarea>
+      ${kind === 'opener' && w.message_edited ? `<div class="text-muted text-small">${w.paraphrased ? 'Reworded by AI' : 'Edited by hand'} ·
         <a style="color:var(--blue);cursor:pointer" onclick="resetWaMessage(${w.id}, '${panelId}')">Reset to template</a></div>` : ''}
-      <div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px;align-items:center">
-        <button class="btn btn-primary btn-sm" onclick="sendFromPanel(${w.id}, 'opener', '${esc(w.wa_number)}', '${panelId}')">Open in WhatsApp</button>
-        <button class="btn btn-ghost btn-sm" onclick="rewordWaMessage(${w.id}, '${panelId}')">✨ Reword with AI</button>
-      </div>`;
-  } else if (stage === 'due' || stage === 'waiting' || stage === 'paused') {
-    body = `<div class="text-muted text-small" style="margin-top:8px">Last opened ${esc((w.sent_date || '').substring(0, 16))}
-        · ${w.followup_count || 0} follow-up${w.followup_count === 1 ? '' : 's'} so far</div>
-      <span class="field-label">${stage === 'due' ? 'Follow-up due' : 'Next follow-up'}</span>
-      <textarea id="wl-msg" class="soft-input" style="min-height:90px">${esc(w.followup_message || '')}</textarea>
+      <div id="wl-actions">${actions}</div>`;
+  } else if (stage === 'waiting' || stage === 'paused') {
+    body = `${lastSent}
+      <span class="field-label">Next follow-up</span>
+      <div class="box">${esc(w.followup_message || '')}</div>
       <div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px">
-        ${stage === 'due' ? `<button class="btn btn-primary btn-sm" onclick="sendFromPanel(${w.id}, 'followup', '${esc(w.wa_number)}', '${panelId}')">Open in WhatsApp</button>` : ''}
         <button class="btn btn-ghost btn-sm" onclick="waMarkReplied(${w.id}, true)">They replied</button>
         <button class="btn btn-ghost btn-sm" onclick="waSetPaused([${w.id}], ${stage !== 'paused'})">${stage === 'paused' ? 'Resume follow-ups' : 'Pause follow-ups'}</button>
       </div>`;
   } else if (stage === 'replied') {
     body = `<div class="text-small" style="margin-top:8px">${pill('Replied', 'green')} No more follow-ups.
       <a style="color:var(--blue);cursor:pointer" onclick="waMarkReplied(${w.id}, false)">Undo</a></div>`;
+  } else if (stage === 'no_whatsapp') {
+    body = `<div class="text-small" style="margin-top:8px;line-height:1.55">Marked not on WhatsApp ${esc(whenLocal(w.no_whatsapp_at))}.
+        It's out of every queue until you move it off.</div>
+      <div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px">
+        <button class="btn btn-primary btn-sm" onclick="moveWaLeadsOff([${w.id}])">Move off WhatsApp…</button>
+        <button class="btn btn-ghost btn-sm" onclick="unmarkNotOnWhatsApp([${w.id}])">It's on WhatsApp after all</button>
+      </div>`;
   }
   const on = !['moved', 'removed'].includes(stage);
   return `<span class="field-label">WhatsApp</span>
@@ -480,7 +529,7 @@ async function _waPanelSection(d) {
     ${body}
     ${on ? `<div class="flex gap-2" style="flex-wrap:wrap;margin-top:8px">
       <button class="btn btn-ghost btn-sm" onclick="moveWaLeadsToCampaign([${w.id}])">Move campaign</button>
-      <button class="btn btn-ghost btn-sm" onclick="moveWaLead(${w.id})">Not on WhatsApp…</button>
+      ${stage !== 'no_whatsapp' ? `<button class="btn btn-ghost btn-sm" onclick="markNotOnWhatsApp([${w.id}])">Not on WhatsApp</button>` : ''}
       <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="removeWaLeads([${w.id}])">Take off</button>
     </div>` : ''}`;
 }

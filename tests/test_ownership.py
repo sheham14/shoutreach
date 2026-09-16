@@ -552,6 +552,17 @@ def test_routes_enforce_the_wall(work):
                     json={"action": "campaign", "wa_lead_ids": [a_wa], "wa_campaign_id": b_wa_camp}).get_json()
     check("nor pull it into your own campaign",
           moved.get("updated") == 0 and db_mod.get_wa_lead(a_wa)["wa_campaign_id"] == a_wa_camp, str(moved))
+    marked = cb.post("/api/wa/leads/bulk", headers=hdr,
+                     json={"action": "no_whatsapp", "wa_lead_ids": [a_wa]}).get_json()
+    check("nor mark it as not on WhatsApp",
+          marked.get("updated") == 0 and db_mod.get_wa_lead(a_wa)["no_whatsapp_at"] is None, str(marked))
+    shoved = cb.post("/api/wa/leads/bulk", headers=hdr,
+                     json={"action": "move", "destination": "none", "wa_lead_ids": [a_wa]}).get_json()
+    check("nor move it off WhatsApp",
+          shoved.get("moved") == 0 and db_mod.get_wa_lead(a_wa)["moved_to"] == "", str(shoved))
+    opened = cb.post(f"/api/wa/leads/{a_wa}/opened", headers=hdr)
+    check("nor note it as opened", opened.status_code == 404
+          and db_mod.get_wa_lead(a_wa)["opened_at"] is None, f"got {opened.status_code}")
     own_page = ca.get("/api/wa/leads/page").get_json()
     check("(fixture) the owner's own table does list it",
           "Alice WA Lead" in json.dumps(own_page), json.dumps(own_page)[:160])
