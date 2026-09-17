@@ -613,8 +613,10 @@
   }
   .row-menu { position: relative; display: inline-block; }
   .row-menu > .btn { padding: 3px 9px; }
+  /* Fixed, and placed by toggleRowMenu, so a table or panel that scrolls can't
+     cut it off. Below the modal overlay (1000), which a menu item can open. */
   .row-menu-list {
-    display: none; position: absolute; right: 0; top: calc(100% + 4px); z-index: 300;
+    display: none; position: fixed; top: 0; left: 0; z-index: 900;
     min-width: 200px; padding: 5px 0; border-radius: 8px;
     background: var(--bg2); border: 1px solid var(--border2); box-shadow: 0 6px 24px rgba(0,0,0,.5);
   }

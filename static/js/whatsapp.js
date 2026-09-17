@@ -149,10 +149,10 @@ function _renderWaQueue() {
   const heads = _waBucket === 'ready'
     ? ['Business', 'Campaign', 'Version', 'Number']
     : ['Business', 'Campaign', 'Last sent', 'Follow-ups'];
-  document.getElementById('wa-queue-head').innerHTML = `<tr>${heads.map(h => `<th>${h}</th>`).join('')}</tr>`;
+  document.getElementById('wa-queue-head').innerHTML = `<tr>${heads.map(h => `<th>${h}</th>`).join('')}<th></th></tr>`;
   const tbody = document.getElementById('wa-queue');
   if (!_waQueue.length) {
-    tbody.innerHTML = `<tr><td colspan="4"><div class="empty-state"><p>Nothing here</p></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5"><div class="empty-state"><p>Nothing here</p></div></td></tr>`;
     return;
   }
   tbody.innerHTML = _waQueue.map(l => {
@@ -166,7 +166,9 @@ function _renderWaQueue() {
       : [`<span class="mono" style="font-size:12px">${esc(shortDate(l.sent_date))}</span>`,
          `<span class="mono">${l.followup_count || 0}</span>`];
     return `<tr class="clickable ${l.id === _waCurrent ? 'current' : ''}" onclick="openWaLead(${l.id})">
-      <td>${name}</td><td>${camp}</td><td>${cells[0]}</td><td class="nowrap">${cells[1]}</td></tr>`;
+      <td>${name}</td><td>${camp}</td><td>${cells[0]}</td><td class="nowrap">${cells[1]}</td>
+      <td class="nowrap" style="text-align:right">${l.wa_number ? `<button class="btn btn-primary btn-sm row-wa"
+        onclick="event.stopPropagation();openWaFromRow(${l.id})" title="Open this chat in WhatsApp">WhatsApp ↗</button>` : ''}</td></tr>`;
   }).join('');
 }
 
@@ -285,6 +287,24 @@ function openWaLink(id) {
   lead.opened_at = utcNow();
   _renderWaQueue();
   _renderWaActions(lead);
+  api(`/api/wa/leads/${id}/opened`, 'POST').then(res => {
+    if (res && res.opened_at) lead.opened_at = res.opened_at;
+  });
+}
+
+// Straight from the lead's row in the list: opens the chat and the lead
+// together, one click fewer than opening the lead first. The message is what's
+// in the box when it's the lead already open (edits included), otherwise the
+// lead's own message.
+function openWaFromRow(id) {
+  const lead = _waQueue.find(l => l.id === id);
+  if (!lead || !lead.wa_number) { toast('No WhatsApp number on file for this lead', 'err'); return; }
+  const box = document.getElementById('wa-msg');
+  const message = _waCurrent === id && box ? box.value
+    : ((_waBucket === 'ready' ? lead.message : lead.followup_draft) || '');
+  openWhatsAppChat(lead.wa_number, message);
+  lead.opened_at = utcNow();
+  if (_waCurrent === id) { _renderWaQueue(); _renderWaActions(lead); } else openWaLead(id);
   api(`/api/wa/leads/${id}/opened`, 'POST').then(res => {
     if (res && res.opened_at) lead.opened_at = res.opened_at;
   });

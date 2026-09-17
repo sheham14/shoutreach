@@ -352,7 +352,8 @@ job removed). The focus is volume.
   hadn't come to the front mark the next lead. "Sent today" counts `wa_log`
   rows since the browser's local midnight (`since`).
 - **Ready to send lists landlines last** (`number_type`), oldest first within
-  each.
+  each. Each To do row has its own **WhatsApp ↗** button (`openWaFromRow`),
+  which opens the chat and selects that lead in one click.
 - **Reword with AI** is an optional button per lead (`POST .../reword`), saved
   like a hand edit. `wa_leads.paraphrased` and `wa_log.paraphrased` keep a
   rewrite from being credited to a version.
@@ -536,7 +537,12 @@ retired `contacts` table.
   laptop worker.
 - `static/js/tables.js` — shared frontend pieces: tabs (`setTab`/`onTab`),
   `createLeadTable` (every leads table), `chooseDialog` (replaces `prompt()`),
-  pills, `fillPlaceholders`. `static/js/lead_panel.js` — the lead side panel,
+  pills, `fillPlaceholders`. Row ⋯ menus are `position: fixed`, placed by
+  `toggleRowMenu` against the window (opening upward when there's no room
+  below) and closed on any scroll: inside a table's `overflow-x: auto`
+  wrapper an absolute menu was clipped into a scrolling strip. Don't put one
+  under a `transform`ed ancestor, which would break fixed positioning.
+  `static/js/lead_panel.js` — the lead side panel,
   the country picker, opening WhatsApp, the audit section. One JS file per
   page: `contacts.js` (businesses, "Add all to…"), `email_leads.js` (Email →
   Leads and suppression), `calling.js`, `whatsapp.js`, `dashboard.js`.

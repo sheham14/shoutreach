@@ -207,15 +207,40 @@ async function resolveCampaignSelect(id, createUrl, extra = {}) {
 
 const LT = {};
 
+function closeRowMenus() {
+  document.querySelectorAll('.row-menu.open').forEach(m => m.classList.remove('open'));
+}
+
+// Close on a click anywhere else, and after picking an item.
 document.addEventListener('click', e => {
-  document.querySelectorAll('.row-menu.open').forEach(m => { if (!m.contains(e.target)) m.classList.remove('open'); });
+  const item = e.target.closest && e.target.closest('.row-menu-list button');
+  document.querySelectorAll('.row-menu.open').forEach(m => {
+    if (item || !m.contains(e.target)) m.classList.remove('open');
+  });
 });
+
+// A menu is placed against the window rather than inside its table -- a table
+// that scrolls sideways clips anything that spills out of it, which squeezed
+// menus on short tables into a scrolling strip. The price is that an open menu
+// can't follow the page when it scrolls, so it closes instead.
+window.addEventListener('scroll', closeRowMenus, true);
+window.addEventListener('resize', closeRowMenus);
 
 function toggleRowMenu(btn) {
   const menu = btn.closest('.row-menu');
   const open = !menu.classList.contains('open');
-  document.querySelectorAll('.row-menu.open').forEach(m => m.classList.remove('open'));
-  menu.classList.toggle('open', open);
+  closeRowMenus();
+  if (!open) return;
+  menu.classList.add('open');
+  const list = menu.querySelector('.row-menu-list');
+  const r = btn.getBoundingClientRect();
+  const h = list.offsetHeight, w = list.offsetWidth, gap = 4, edge = 8;
+  // Below the button when it fits, otherwise above it.
+  const fitsBelow = r.bottom + gap + h <= window.innerHeight - edge;
+  const fitsAbove = r.top - gap - h >= edge;
+  list.style.top = `${fitsBelow || !fitsAbove ? r.bottom + gap : r.top - gap - h}px`;
+  // Right edge lined up with the button's, kept on screen.
+  list.style.left = `${Math.max(edge, Math.min(r.right - w, window.innerWidth - w - edge))}px`;
 }
 
 /*

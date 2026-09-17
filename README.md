@@ -536,7 +536,8 @@ already written. The **To do** tab is the work, with the lead you're on beside
 the list and a count of what you've sent today:
 
 - **Ready to send** — edit the message if you like, then **Open in WhatsApp**
-  opens the chat with it typed in. On a computer that's WhatsApp Web, in one
+  opens the chat with it typed in (or use the **WhatsApp ↗** button on the
+  lead's row, which opens the lead and the chat in one click). On a computer that's WhatsApp Web, in one
   tab reused for every lead (or the desktop app, if you switch to it); on a
   phone, the WhatsApp app. Send it there, come back, and answer **Did it
   send?** — **Sent** moves you to the next lead, **Not on WhatsApp** marks it
