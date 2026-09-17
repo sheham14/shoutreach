@@ -806,7 +806,7 @@ python tests/test_calling.py          # Calling leads, queue, outcomes, email cr
 python tests/test_resilience.py       # worker batching and crash recovery
 python tests/test_security.py         # regression tests for closed audit findings
 python tests/test_cross_channel.py    # one business across email, calling and WhatsApp
-python tests/test_whatsapp.py         # WhatsApp campaigns, numbers, live messages, A/B, cadence
+python tests/test_whatsapp.py         # WhatsApp campaigns, numbers, live messages, confirming sends, A/B, cadence
 python tests/test_contacts_hub.py     # Contacts as every business, Unassigned, the Dashboard
 python tests/test_ownership.py        # two accounts walled off from each other
 python tests/test_email_checking_toggle.py  # switching automatic reply checks off

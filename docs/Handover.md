@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-09-16 (lean WhatsApp flow is live) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-09-16 (WhatsApp sends are confirmed by the operator; live) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -28,6 +28,15 @@ fix this file.
   every Leads tab; "Add all to…" for a whole scrape. The restart ran
   `_migrate_wa_no_review`. No backup was taken: the operator said the
   WhatsApp leads were only a test run and free to lose.
+- **Live since 2026-09-16 21:35 UTC (`9354245`): a send is only recorded when
+  the operator says so** (§5). Opening a chat asks "Did it send?" — Sent, Not
+  on WhatsApp, Didn't send. "Not on WhatsApp" marks a lead and keeps it on
+  WhatsApp for a bulk move-off; landlines sort last. It added two nullable
+  columns (`opened_at`, `no_whatsapp_at`) and changed no data. Prompted by a
+  real send: a number not on WhatsApp was marked sent, and the operator saw
+  other leads marked too — most likely extra clicks while the reused
+  WhatsApp tab stayed in the background (the code can only mark the lead
+  clicked).
 - **Two people use this install, walled off from each other.** Almost every
   query is scoped to an owner, and a handful deliberately aren't. Read §3
   before adding a query, a route, or a background job.
@@ -42,7 +51,8 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
-| (local) | 09-16 | Confirm a send after opening WhatsApp; mark "not on WhatsApp" and move off in bulk; landlines last | **No** |
+| `9354245` | 09-16 | Confirm a send after opening WhatsApp; mark "not on WhatsApp" and move off in bulk; landlines last | Yes |
+| `a534086` | 09-16 | Handover: lean flow recorded as live | Yes |
 | `be439b5` | 09-16 | Operator's own files (reference pages, AGENTS.md, the full audit doc) | Yes |
 | `cf49426` | 09-16 | Lean WhatsApp flow, lead audit, every country, lead side panels, add a whole scrape | Yes |
 | `bed7f2a` | 09-16 | Contacts hub, Leads tabs on every channel, WhatsApp campaigns, explicit Calling, Dashboard | Yes |
@@ -438,9 +448,10 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-20 files, all passing as of the lean WhatsApp flow. `tests/test_whatsapp.py`
-covers live messages, edits and reset, version dealing and removal, countries
-and sent today; `tests/test_contacts_hub.py` covers Contacts, Unassigned,
+20 files, all passing as of `9354245`. `tests/test_whatsapp.py` covers live
+messages, edits and reset, version dealing and removal, countries, sent today,
+opening versus confirming a send, marking not on WhatsApp and bulk move-off,
+and landlines last; `tests/test_contacts_hub.py` covers Contacts, Unassigned,
 deletion guards, the Dashboard, adding a whole list, and the audit.
 
 **Browser smoke test.** There's no UI test in the repo, but the redesign was
@@ -472,16 +483,15 @@ disposable** — importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
-0. **Not yet pushed:** confirming a send after opening WhatsApp, marking "not
-   on WhatsApp" with bulk move-off, landlines last. It adds two nullable
-   columns (`opened_at`, `no_whatsapp_at`) and no data migration.
-   The lean WhatsApp flow is deployed and the app is up (`/login` 200,
-   `/api/users/me` 401, run log `Updating 4f7ea0f..be439b5`). Still to check
-   by hand, in the app: WhatsApp → To do shows the old review/confirmed leads
-   under Ready to send with messages filled in; each campaign's Templates tab
-   shows one opening message (take `{{signal_detail}}` out of it); Run checks
-   on a lead with a website returns scores. A Google API key (Settings → Lead
-   audit) is optional.
+0. Both WhatsApp deploys are live and the app is up (`/login` 200,
+   `/api/users/me` 401; run logs `Updating 4f7ea0f..be439b5` and
+   `be439b5..9354245`). Still to check by hand, in the app: open a chat and
+   answer "Did it send?" each way; mark a lead not on WhatsApp and move it off
+   from Leads → Not on WhatsApp; each campaign's Templates tab shows one
+   opening message (take `{{signal_detail}}` out of it); Run checks on a lead
+   with a website returns scores. Leads wrongly marked sent before `9354245`
+   can be put back with ⋯ → "Didn't actually send?" (or deleted — they were
+   test leads). A Google API key (Settings → Lead audit) is optional.
 1. Deployed and verified per §6 on 2026-09-16. Still to do by hand, in the
    app: WhatsApp → Campaigns shows "My first campaign"
    holding the existing leads and the operator's own templates (rename it);
@@ -491,8 +501,9 @@ disposable** — importing runs `init_db()` against `./outreach.db`.
 3. Create the cofounder's account and set up his laptop (§4), with the current
    `scraper_worker.py`.
 
-**From the full audit** — `docs/audits/Full App Audit 2026-09-09.md`, local and
-untracked on purpose; its status block says what's done. The biggest open
+**From the full audit** — `docs/audits/Full App Audit 2026-09-09.md` (kept
+local until the operator committed it in `be439b5`; the repo is private); its
+status block says what's done. The biggest open
 items:
 
 - Secrets stored in plaintext: SMTP passwords, AI keys, the Flask `SECRET_KEY`.

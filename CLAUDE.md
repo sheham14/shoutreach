@@ -39,9 +39,9 @@ the redesign was smoke-tested in a real browser.
 ## Other docs
 
 - `docs/WhatsApp Module Handover.md` — how the WhatsApp module and the
-  `contacts` → `businesses` split were designed. Historical: its "uncommitted"
-  and "migration never ran" notes are out of date.
+  `contacts` → `businesses` split were designed. Historical: its booking-gap
+  check, review step and "uncommitted" notes are all superseded (Handover §5).
 - `docs/audits/` — security and architecture audits.
-  `Full App Audit 2026-09-09.md` is local and untracked on purpose; its status
-  block says what's still open.
+  `Full App Audit 2026-09-09.md` has a status block saying what's still open.
+  It lists unfixed security findings, so keep the repo private.
 - `README.md` — setup and user-facing overview.

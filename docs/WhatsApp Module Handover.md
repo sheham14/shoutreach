@@ -7,8 +7,14 @@
 > table described here gained per-operator ownership; WhatsApp templates became
 > per-operator with A/B versions; and scrapes can now feed WhatsApp directly.
 > So §4 ("Current repo state") and the production-migration item in §6 are out
-> of date. The design reasoning — signal detection, the manual-send
-> constraint, the infinite follow-up cadence, and the deferrals — still holds.
+> of date.
+>
+> **Also superseded (2026-09-16):** the booking-gap signal check, the review
+> step and batch drafting are gone — leads land ready to send, written live
+> from their campaign's template, with an optional on-click audit instead.
+> Opening a chat no longer counts as sent: the operator confirms it, or marks
+> the number not on WhatsApp for a bulk move-off. See Handover §5. The
+> manual-send constraint and the infinite follow-up cadence still hold.
 
 ---
 
