@@ -619,6 +619,11 @@ rows (or "select all N matching") for bulk actions, click a row to open that
 lead beside the table, and the **⋯** at the end of a row for everything you can
 do to that one.
 
+**On a phone**, lists show each lead as one row — its name and a line of what
+matters — and tapping a lead opens it full screen, with **← Back to list** (or
+the phone's own back gesture) to return. On WhatsApp's To do, **Sent** moves
+straight to the next lead.
+
 The **Dashboard** starts with today's to-do — messages ready, follow-ups due,
 WhatsApp messages sent today, callbacks due, never called — each opening the
 list it counts — then each channel's

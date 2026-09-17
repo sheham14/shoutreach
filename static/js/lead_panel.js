@@ -401,10 +401,14 @@ async function openLeadPanel(businessId, opts) {
   if (!panel) return;
   const [d] = await Promise.all([api(`/api/businesses/${businessId}`), loadAuditLinks()]);
   if (!d || d.error) { toast((d && d.error) || 'Could not open that lead', 'err'); return; }
+  const sameLead = LeadPanel.current[opts.panelId] && LeadPanel.current[opts.panelId].businessId === businessId;
   LeadPanel.current[opts.panelId] = { businessId, opts };
   const split = document.getElementById(opts.splitId);
   if (split) split.style.gridTemplateColumns = '';
   panel.style.display = 'block';
+  // Full screen on a phone; the phone's back gesture closes it like the ✕ does.
+  openSheet(opts.panelId, () => closeLeadPanel(opts.panelId));
+  if (!sameLead) panel.scrollTop = 0;
 
   let channelHtml = '';
   if (opts.channel === 'whatsapp' && d.whatsapp) channelHtml = await _waPanelSection(d);
@@ -418,6 +422,7 @@ async function openLeadPanel(businessId, opts) {
     .filter(Boolean).map(esc).join(' · ');
 
   panel.innerHTML = `
+    ${sheetBarHtml(`closeLeadPanel('${opts.panelId}')`)}
     <div class="flex items-center gap-2" style="justify-content:space-between">
       <h3>${esc(d.company || 'Unnamed business')}</h3>
       <div class="flex gap-2">
@@ -465,6 +470,7 @@ function closeLeadPanel(panelId) {
     if (cur.opts.onClose) cur.opts.onClose();
   }
   delete LeadPanel.current[panelId];
+  closeSheet(panelId);
 }
 
 function refreshLeadPanel(panelId) {

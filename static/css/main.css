@@ -793,3 +793,98 @@
     .lt-count { margin-left: 0; }
     .tab { padding: 9px 10px; }
   }
+
+  /* ── Phones ───────────────────────────────────────────────────────────────
+     Tables become one line per lead, a lead opens full screen, and the page
+     top gets out of the way. Desktop is untouched: everything phone-only
+     below sits inside the max-width: 768px block. */
+
+  /* The pieces that only exist on a phone. */
+  .lead-table td.m-card, .m-select-bar, .sheet-bar { display: none; }
+
+  /* Calling's dialler: the lead card and the script share a wrapper so a
+     phone can open them together. On a computer the wrapper steps aside and
+     the three cards sit in the grid as before. */
+  #cq-work { display: contents; }
+  @media (min-width: 769px) {
+    #calling-split { grid-template-rows: auto 1fr; }
+    #cq-queue-card  { grid-column: 1; grid-row: 1; }
+    #cq-lead-card   { grid-column: 1; grid-row: 2; }
+    #cq-script-card { grid-column: 2; grid-row: 1 / span 2; }
+  }
+
+  @media (max-width: 768px) {
+    /* Rows: the name and a line or two, instead of columns to swipe through. */
+    /* No column headings on a phone. "Select all" sits above the table
+       instead: inside it, Chrome sizes the checkbox column to fit the label. */
+    .m-table thead { display: none; }
+    .m-select-bar {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      font-size: 13px; color: var(--muted); border-bottom: 1px solid var(--border); cursor: pointer;
+    }
+    .m-select-bar input { width: 20px; height: 20px; }
+    .m-table tbody td:not(.check):not(.m-card):not(.m-keep):not([colspan]) { display: none; }
+    .m-table td.m-card { display: table-cell; width: 100%; padding: 12px 10px; }
+    .m-table td.m-keep { width: 1%; white-space: nowrap; padding-left: 4px; }
+    .m-card .biz-name { white-space: normal; }
+    .m-line {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px;
+      margin-top: 4px; font-size: 12.5px; color: var(--muted); line-height: 1.45;
+    }
+    .m-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .m-table tr:hover td { background: transparent; }
+
+    /* A lead opens full screen, over its list, with a back bar. */
+    .sheet:not(.sheet-open) { display: none !important; }
+    .sheet.sheet-open {
+      display: block !important; position: fixed !important; inset: 0; z-index: 400;
+      max-height: none !important; margin: 0; border: 0; border-radius: 0;
+      overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+      background: var(--bg); padding: 0 16px 48px !important;
+    }
+    .sheet-open .sheet-bar {
+      display: flex; align-items: center; gap: 10px;
+      position: sticky; top: 0; z-index: 5; margin: 0 -16px 14px; padding: 10px 16px;
+      background: var(--bg2); border-bottom: 1px solid var(--border);
+    }
+    #cq-work.sheet-open > .card {
+      position: static !important; max-height: none !important; overflow: visible !important;
+      margin-bottom: 14px;
+    }
+    body.sheet-lock { overflow: hidden; }
+
+    /* A shorter page top. */
+    .page-sub { display: none; }
+    .page-header { margin-bottom: 14px; gap: 10px; }
+    .page-header .filter-select { flex: 1 1 150px; width: auto; }
+    .tabs {
+      flex-wrap: nowrap; overflow-x: auto; margin-bottom: 14px;
+      scrollbar-width: none; -webkit-overflow-scrolling: touch;
+    }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tabs .tab { flex: 0 0 auto; white-space: nowrap; margin-bottom: 0; }
+    #section-calling .chips {
+      flex-wrap: nowrap; overflow-x: auto; width: 100%; padding-bottom: 2px; scrollbar-width: none;
+    }
+    #section-calling .chips::-webkit-scrollbar { display: none; }
+    #section-calling .chip { flex: 0 0 auto; }
+    #cq-summary {
+      display: flex !important; gap: 8px; overflow-x: auto; scrollbar-width: none; margin-bottom: 12px !important;
+    }
+    #cq-summary::-webkit-scrollbar { display: none; }
+    #cq-summary .stat-card { flex: 0 0 auto; min-width: 88px; padding: 8px 10px !important; }
+    #cq-summary .stat-label { font-size: 9.5px; margin-bottom: 2px; white-space: nowrap; }
+    #cq-summary .stat-value { font-size: 17px !important; }
+
+    /* Room for a finger. */
+    .lead-table input[type=checkbox] { width: 20px; height: 20px; }
+    .chip { padding: 8px 12px; font-size: 13.5px; }
+    .row-menu-list button { padding: 12px 18px; font-size: 15px; }
+    .panel-fold > summary { padding: 14px 0; }
+    .placeholder-list button { padding: 6px 10px; font-size: 12.5px; }
+    .work-panel a:not(.btn):not(.chip), .sheet a:not(.btn):not(.chip), .lt-bulk a {
+      display: inline-block; padding-block: 6px;
+    }
+    .audit-row, .audit-link-group { grid-template-columns: 1fr; gap: 4px; }
+    .audit-link-group .chip { padding: 7px 11px; }
+  }

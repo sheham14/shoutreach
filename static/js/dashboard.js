@@ -117,6 +117,8 @@ async function refreshDashboard() {
       <td><div class="bar" title="${cp.progress}%"><i style="width:${cp.progress}%"></i></div></td>
       <td class="nowrap">${esc(cp.result)}${cp.reply_rate ? ` <span class="text-muted">(${cp.reply_rate}%)</span>` : ''}</td>
       <td><button class="btn btn-ghost btn-sm">Open →</button></td>
+      <td class="m-card">${mCard(`<span class="biz-name">${esc(cp.name)}</span>`,
+        `<span class="${meta.cls}">${meta.label}</span> ${pill(cp.status, statusTone)} · ${cp.leads} leads · ${esc(cp.result)}`)}</td>
     </tr>`;
   }).join('');
 }

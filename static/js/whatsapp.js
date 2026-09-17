@@ -138,6 +138,7 @@ function _renderWaEmptyPanel() {
     ? 'Nothing waiting to be sent. Scrape with WhatsApp as the destination, or use + Add leads.'
     : 'No follow-ups due right now.';
   document.getElementById('wa-panel').innerHTML = `<div class="empty-state"><p>${esc(msg)}</p></div>`;
+  closeSheet('wa-panel');
 }
 
 function _waNumberCell(l) {
@@ -165,9 +166,15 @@ function _renderWaQueue() {
          `<span class="mono" style="font-size:12px">${_waNumberCell(l)}</span>`]
       : [`<span class="mono" style="font-size:12px">${esc(shortDate(l.sent_date))}</span>`,
          `<span class="mono">${l.followup_count || 0}</span>`];
-    return `<tr class="clickable ${l.id === _waCurrent ? 'current' : ''}" onclick="openWaLead(${l.id})">
+    const mobile = mCard(
+      `<span class="biz-name">${esc(l.company || 'Unnamed business')}</span>${l.opened_at ? ` ${pill('opened', 'amber')}` : ''}`,
+      _waBucket === 'ready'
+        ? `${l.campaign_name ? esc(l.campaign_name) : pill('No campaign', 'amber')} · <span class="mono">${_waNumberCell(l)}</span>`
+        : `${l.campaign_name ? esc(l.campaign_name) : pill('No campaign', 'amber')} · sent ${esc(shortDate(l.sent_date))} · ${l.followup_count || 0} follow-up${l.followup_count === 1 ? '' : 's'}`);
+    return `<tr class="clickable ${l.id === _waCurrent ? 'current' : ''}" onclick="openWaLead(${l.id}, true)">
       <td>${name}</td><td>${camp}</td><td>${cells[0]}</td><td class="nowrap">${cells[1]}</td>
-      <td class="nowrap" style="text-align:right">${l.wa_number ? `<button class="btn btn-primary btn-sm row-wa"
+      <td class="m-card">${mobile}</td>
+      <td class="nowrap m-keep" style="text-align:right">${l.wa_number ? `<button class="btn btn-primary btn-sm row-wa"
         onclick="event.stopPropagation();openWaFromRow(${l.id})" title="Open this chat in WhatsApp">WhatsApp ↗</button>` : ''}</td></tr>`;
   }).join('');
 }
@@ -180,8 +187,13 @@ function _waEditedNote(l) {
     <a style="color:var(--blue);cursor:pointer" onclick="resetWaMessage(${l.id})">Reset to template</a>`;
 }
 
-async function openWaLead(id) {
+// `show` opens the lead full screen on a phone: a tap on it, as opposed to
+// the list picking its first lead when it loads.
+let _waShownId = null;
+
+async function openWaLead(id, show = false) {
   _waCurrent = id;
+  if (show) openSheet('wa-panel');
   _renderWaQueue();
   const l = _waQueue.find(x => x.id === id);
   if (!l) return;
@@ -200,7 +212,11 @@ async function openWaLead(id) {
     !ready && `${l.followup_count || 0} follow-up${l.followup_count === 1 ? '' : 's'} so far`,
   ].filter(Boolean).join(' · ');
 
-  document.getElementById('wa-panel').innerHTML = `
+  const panel = document.getElementById('wa-panel');
+  if (_waShownId !== id) panel.scrollTop = 0;
+  _waShownId = id;
+  panel.innerHTML = `
+    ${sheetBarHtml("closeSheet('wa-panel')")}
     <div class="flex items-center gap-2" style="justify-content:space-between">
       <h3>${esc(l.company || 'Unnamed business')}</h3>
       <span class="flex items-center gap-2">
@@ -304,7 +320,7 @@ function openWaFromRow(id) {
     : ((_waBucket === 'ready' ? lead.message : lead.followup_draft) || '');
   openWhatsAppChat(lead.wa_number, message);
   lead.opened_at = utcNow();
-  if (_waCurrent === id) { _renderWaQueue(); _renderWaActions(lead); } else openWaLead(id);
+  if (_waCurrent === id) { _renderWaQueue(); _renderWaActions(lead); openSheet('wa-panel'); } else openWaLead(id, true);
   api(`/api/wa/leads/${id}/opened`, 'POST').then(res => {
     if (res && res.opened_at) lead.opened_at = res.opened_at;
   });
@@ -576,6 +592,9 @@ createLeadTable({
     { key: 'followup_count', label: 'Follow-ups', sort: true, cls: 'num', render: r => r.followup_count || 0 },
     { key: 'created_at', label: 'Added', sort: true, cls: 'num', render: r => esc(shortDate(r.created_at)) },
   ],
+  mobile: r => mCard(`<span class="biz-name">${esc(r.company || 'Unnamed business')}</span>`,
+    `${waStagePill(r.stage)}${r.opened_at && ['ready', 'due'].includes(r.stage) ? ` ${pill('opened', 'amber')}` : ''}
+     ${r.campaign_name ? esc(r.campaign_name) : pill('No campaign', 'amber')}`),
   onRowClick: r => openLeadPanel(r.business_id, {
     channel: 'whatsapp', panelId: 'wl-panel', splitId: 'wl-split',
     onClose: () => { LT.wl.currentId = null; LT.wl.render(); },
@@ -627,17 +646,8 @@ async function renderWaCampaigns() {
       Create one — it holds the message templates its leads are written from.</p></div></td></tr>`;
     return;
   }
-  tbody.innerHTML = _waCampaigns.map(c => `
-    <tr class="${c.status === 'archived' ? 'text-muted' : ''}">
-      <td><span class="biz-name">${esc(c.name)}</span>${c.status === 'archived' ? ' ' + pill('archived') : ''}
-        <span class="sub">${esc([countryName(c.country), c.notes].filter(Boolean).join(' · '))}</span></td>
-      <td class="num">${c.leads}</td>
-      <td class="num">${c.ready}</td>
-      <td class="num">${c.due ? `<span style="color:var(--amber)">${c.due}</span>` : 0}</td>
-      <td class="num">${c.messaged}</td>
-      <td class="num">${c.replied} <span class="text-muted">(${c.reply_rate}%)</span></td>
-      <td class="num">${c.followup_days} days</td>
-      <td class="nowrap">
+  tbody.innerHTML = _waCampaigns.map(c => {
+    const actions = `
         <button class="btn btn-ghost btn-sm" onclick="openWaTemplates(${c.id})">Templates</button>
         <button class="btn btn-ghost btn-sm" onclick="openWhatsAppCampaign(${c.id})">Leads</button>
         <div class="row-menu">
@@ -648,9 +658,24 @@ async function renderWaCampaigns() {
             <button onclick="setWaCampaignStatus(${c.id}, '${c.status === 'archived' ? 'active' : 'archived'}')">${c.status === 'archived' ? 'Unarchive' : 'Archive'}</button>
             <button class="danger" onclick="deleteWaCampaign(${c.id})">Delete campaign</button>
           </div>
-        </div>
-      </td>
-    </tr>`).join('');
+        </div>`;
+    return `
+    <tr class="${c.status === 'archived' ? 'text-muted' : ''}">
+      <td><span class="biz-name">${esc(c.name)}</span>${c.status === 'archived' ? ' ' + pill('archived') : ''}
+        <span class="sub">${esc([countryName(c.country), c.notes].filter(Boolean).join(' · '))}</span></td>
+      <td class="num">${c.leads}</td>
+      <td class="num">${c.ready}</td>
+      <td class="num">${c.due ? `<span style="color:var(--amber)">${c.due}</span>` : 0}</td>
+      <td class="num">${c.messaged}</td>
+      <td class="num">${c.replied} <span class="text-muted">(${c.reply_rate}%)</span></td>
+      <td class="num">${c.followup_days} days</td>
+      <td class="nowrap">${actions}</td>
+      <td class="m-card">${mCard(
+        `<span class="biz-name">${esc(c.name)}</span>${c.status === 'archived' ? ' ' + pill('archived') : ''}`,
+        `${c.leads} leads · ${c.ready} ready · ${c.due} due · ${c.replied} replied (${c.reply_rate}%)`,
+        `<span class="m-actions">${actions}</span>`)}</td>
+    </tr>`;
+  }).join('');
 }
 
 function openWaTemplates(id) {

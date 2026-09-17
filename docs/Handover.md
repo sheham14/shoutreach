@@ -462,8 +462,12 @@ watching for JS errors and failed API calls. Import `scheduler` and replace
 `scheduler.start` with a no-op first, or the app starts sending. Replace
 `audit.run_checks` with a canned result, and `window.open` with a recorder
 (`page.add_init_script`), so the test never reaches the internet or loads
-WhatsApp. **Never import `app` without `DB_PATH` pointing somewhere
-disposable** — importing runs `init_db()` against `./outreach.db`.
+WhatsApp. On a phone-sized context (390×844, `is_mobile`, iPhone user
+agent), replace `openWhatsAppChat` after load instead — a phone opens
+`whatsapp://` in the current page, not `window.open` — and wrap the
+assignment in `() => { ... }`, or Playwright calls the function it returns.
+**Never import `app` without `DB_PATH` pointing somewhere disposable** —
+importing runs `init_db()` against `./outreach.db`.
 
 - **Create any user you fake a session for.** A fixture that sets
   `sess["user_id"] = 1` without creating user 1 breaks: rows get owner 0
@@ -539,9 +543,30 @@ retired `contacts` table.
   `createLeadTable` (every leads table), `chooseDialog` (replaces `prompt()`),
   pills, `fillPlaceholders`. Row ⋯ menus are `position: fixed`, placed by
   `toggleRowMenu` against the window (opening upward when there's no room
-  below) and closed on any scroll: inside a table's `overflow-x: auto`
-  wrapper an absolute menu was clipped into a scrolling strip. Don't put one
-  under a `transform`ed ancestor, which would break fixed positioning.
+  below) and re-placed on scroll, closing once their button leaves the
+  screen: inside a table's `overflow-x: auto` wrapper an absolute menu was
+  clipped into a scrolling strip. Don't put one under a `transform`ed
+  ancestor, which would break fixed positioning.
+- **Phones (≤768px)** — all in the last `@media` block of `main.css` plus a
+  few helpers in `tables.js`; the computer layout is unchanged.
+  - *Rows, not tables:* a table with class `m-table` hides its headings and
+    every cell except `td.check`, `td.m-card` and `td.m-keep`. `m-card` is a
+    phone-only cell built with `mCard(name, ...lines)`; `createLeadTable`
+    adds it from a `mobile(r)` config and shows "Select all on this page"
+    above the table (inside it, Chrome widened the checkbox column).
+  - *A lead opens full screen:* panels with class `sheet` (`wa-panel`,
+    `wl-panel`, `cl-panel`, `el-panel`, `ct-detail`, and Calling's
+    `#cq-work`) are hidden on a phone until `openSheet(id)` adds
+    `sheet-open`; each render starts with `sheetBarHtml(...)` (← Back to
+    list). Opening pushes a history entry, so the phone's back gesture closes
+    it (`popstate` → `_dropSheet`, which runs the panel's own close). Only a
+    tap opens a sheet — `openWaLead(id, true)`, `openCallLead(id, true)`,
+    `openLeadPanel` — never a list picking its first lead as it loads. After
+    Sent / Save & next, the next lead shows in the same sheet. `setTab` (on a
+    real tab change) and `showSection` close any open sheet.
+  - *Calling's dialler:* the lead card and script share `#cq-work`, which is
+    `display: contents` on a computer (grid placement in the
+    `min-width: 769px` block) and one scrolling sheet on a phone.
   `static/js/lead_panel.js` — the lead side panel,
   the country picker, opening WhatsApp, the audit section. One JS file per
   page: `contacts.js` (businesses, "Add all to…"), `email_leads.js` (Email →

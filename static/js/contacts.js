@@ -63,6 +63,8 @@ createLeadTable({
     channel: _ctView === 'all' ? document.getElementById('ct-channel')?.value : '',
     source_job_id: document.getElementById('ct-source')?.value,
   }),
+  mobile: r => mCard(`<span class="biz-name">${esc(r.company || 'Unnamed business')}</span>`,
+    channelPills(r), esc([r.city || r.address, r.phone].filter(Boolean).join(' · '))),
   onRowClick: r => openContactDetail(r.id),
   bulk: () => `
     <button class="btn btn-ghost btn-sm" onclick="contactsToEmail(LT.ct.selectedIds())">+ Email campaign</button>

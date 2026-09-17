@@ -131,15 +131,19 @@ async function loadScrapeLists() {
   tbody.innerHTML = lists.map(l => {
     const manual = l.job_id === 'manual';
     const title = manual ? 'Added by hand or from a CSV' : (l.niche || l.city ? `${l.niche || ''}${l.city ? ` — ${l.city}` : ''}` : l.label);
+    const actions = `
+        <button class="btn btn-ghost btn-sm" onclick="openScrapeInContacts('${escj(String(l.job_id))}')">View</button>
+        <button class="btn btn-primary btn-sm" onclick="addListToChannel('${escj(String(l.job_id))}', '${escj(title)}', ${l.count})">Add all to…</button>`;
     return `<tr>
       <td><span class="biz-name">${esc(title)}</span>${l.country ? `<span class="sub">${esc(countryName(l.country))}</span>` : ''}</td>
       <td>${manual ? '<span class="text-muted">—</span>' : pill(_SCRAPE_FOR[l.destination] || 'Email')}</td>
       <td class="num">${l.count}</td>
       <td class="num">${esc((l.scraped_at || '').substring(0, 10))}</td>
-      <td class="nowrap" style="text-align:right">
-        <button class="btn btn-ghost btn-sm" onclick="openScrapeInContacts('${escj(String(l.job_id))}')">View</button>
-        <button class="btn btn-primary btn-sm" onclick="addListToChannel('${escj(String(l.job_id))}', '${escj(title)}', ${l.count})">Add all to…</button>
-      </td>
+      <td class="nowrap" style="text-align:right">${actions}</td>
+      <td class="m-card">${mCard(`<span class="biz-name">${esc(title)}</span>`,
+        [manual ? '' : `for ${_SCRAPE_FOR[l.destination] || 'Email'}`, `${l.count} leads`,
+         esc((l.scraped_at || '').substring(0, 10))].filter(Boolean).join(' · '),
+        `<span class="m-actions">${actions}</span>`)}</td>
     </tr>`;
   }).join('');
 }

@@ -13,6 +13,8 @@ const _tabHandlers = {};
 function onTab(group, handler) { _tabHandlers[group] = handler; }
 
 function setTab(group, name, { load = true } = {}) {
+  const before = document.querySelector(`[data-tab-group="${group}"] .tab.active`);
+  if (before && before.dataset.tab !== name) closeAllSheets();
   document.querySelectorAll(`[data-tab-group="${group}"] .tab`).forEach(b =>
     b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll(`[data-pane-group="${group}"]`).forEach(p =>
@@ -32,6 +34,70 @@ function setTabCount(group, name, n, hot = false) {
   if (!el) return;
   el.textContent = n ?? 0;
   el.classList.toggle('hot', !!hot && n > 0);
+}
+
+// ── Full-screen sheets on a phone ────────────────────────────────────────────
+//
+// On a computer a lead opens in a panel beside its list. On a phone there's no
+// beside, and a panel under a long list looks as if nothing happened -- so the
+// same panel covers the screen instead, with a back bar. The CSS does the
+// covering (.sheet / .sheet-open, phone widths only); this keeps track of what
+// is open, and ties it to the browser's history so the phone's own back
+// gesture closes the lead rather than leaving the app.
+
+const _sheetOnClose = {};
+
+function isNarrow() { return window.matchMedia('(max-width: 768px)').matches; }
+
+function sheetBarHtml(closeJs, label = 'Back to list') {
+  return `<div class="sheet-bar"><button class="btn btn-ghost btn-sm" onclick="${closeJs}">← ${esc(label)}</button></div>`;
+}
+
+function openSheet(id, onClose = null) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const wasOpen = el.classList.contains('sheet-open');
+  _sheetOnClose[id] = onClose;
+  el.classList.add('sheet-open');
+  document.body.classList.add('sheet-lock');
+  if (wasOpen) return;
+  el.scrollTop = 0;
+  if (isNarrow()) { try { history.pushState({ sheet: id }, ''); } catch (_) { /* sandboxed */ } }
+}
+
+// Closes without touching history -- for when history already moved.
+function _dropSheet(id) {
+  const el = document.getElementById(id);
+  if (!el || !el.classList.contains('sheet-open')) return false;
+  el.classList.remove('sheet-open');
+  document.body.classList.toggle('sheet-lock', !!document.querySelector('.sheet-open'));
+  const cb = _sheetOnClose[id];
+  delete _sheetOnClose[id];
+  if (cb) cb();
+  return true;
+}
+
+function closeSheet(id) {
+  if (!_dropSheet(id)) return;
+  if (history.state && history.state.sheet === id) { try { history.back(); } catch (_) { /* sandboxed */ } }
+}
+
+function closeAllSheets() {
+  document.querySelectorAll('.sheet-open').forEach(el => closeSheet(el.id));
+}
+
+function isSheetOpen(id) {
+  const el = document.getElementById(id);
+  return !!(el && el.classList.contains('sheet-open'));
+}
+
+window.addEventListener('popstate', () => {
+  document.querySelectorAll('.sheet-open').forEach(el => _dropSheet(el.id));
+});
+
+// A row as a phone shows it: the name, then a line or two of what matters.
+function mCard(main, ...lines) {
+  return main + lines.filter(Boolean).map(l => `<div class="m-line">${l}</div>`).join('');
 }
 
 // ── Pills ────────────────────────────────────────────────────────────────────
@@ -207,7 +273,10 @@ async function resolveCampaignSelect(id, createUrl, extra = {}) {
 
 const LT = {};
 
+let _openMenuBtn = null;
+
 function closeRowMenus() {
+  _openMenuBtn = null;
   document.querySelectorAll('.row-menu.open').forEach(m => m.classList.remove('open'));
 }
 
@@ -221,10 +290,11 @@ document.addEventListener('click', e => {
 
 // A menu is placed against the window rather than inside its table -- a table
 // that scrolls sideways clips anything that spills out of it, which squeezed
-// menus on short tables into a scrolling strip. The price is that an open menu
-// can't follow the page when it scrolls, so it closes instead.
-window.addEventListener('scroll', closeRowMenus, true);
-window.addEventListener('resize', closeRowMenus);
+// menus on short tables into a scrolling strip. So it can't move with the page
+// by itself: when anything scrolls, it's placed again against its button, and
+// closes once the button has gone off screen.
+window.addEventListener('scroll', () => _placeRowMenu(), true);
+window.addEventListener('resize', () => _placeRowMenu());
 
 function toggleRowMenu(btn) {
   const menu = btn.closest('.row-menu');
@@ -232,8 +302,18 @@ function toggleRowMenu(btn) {
   closeRowMenus();
   if (!open) return;
   menu.classList.add('open');
+  _openMenuBtn = btn;
+  _placeRowMenu();
+}
+
+function _placeRowMenu() {
+  const btn = _openMenuBtn;
+  if (!btn) return;
+  const menu = btn.closest('.row-menu');
+  if (!menu || !menu.classList.contains('open') || !document.body.contains(btn)) { closeRowMenus(); return; }
   const list = menu.querySelector('.row-menu-list');
   const r = btn.getBoundingClientRect();
+  if (r.bottom < 0 || r.top > window.innerHeight || (!r.width && !r.height)) { closeRowMenus(); return; }
   const h = list.offsetHeight, w = list.offsetWidth, gap = 4, edge = 8;
   // Below the button when it fits, otherwise above it.
   const fitsBelow = r.bottom + gap + h <= window.innerHeight - edge;
@@ -254,6 +334,8 @@ function toggleRowMenu(btn) {
  *   bulk()    -- HTML of the actions shown when rows are ticked
  *   menu(r)   -- [{label, run: "js", danger}] for the row's ⋯ menu
  *   onRowClick(r) -- optional
+ *   mobile(r) -- optional; the row as a phone shows it (see mCard). The other
+ *                columns are hidden at phone widths when this is given.
  *   empty     -- text when nothing matches
  *   onLoad(data)  -- optional
  */
@@ -352,7 +434,8 @@ function createLeadTable(cfg) {
           <td class="check" onclick="event.stopPropagation()"><input type="checkbox" ${t.selected.has(id) ? 'checked' : ''}
                onchange="LT['${cfg.id}'].toggle(${idLit}, this.checked)" /></td>
           ${cfg.columns.map(c => `<td class="${c.cls || ''}">${c.render ? c.render(r) : esc(r[c.key] ?? '')}</td>`).join('')}
-          ${cfg.menu ? `<td onclick="event.stopPropagation()">${menu.length ? `<div class="row-menu">
+          ${cfg.mobile ? `<td class="m-card">${cfg.mobile(r)}</td>` : ''}
+          ${cfg.menu ? `<td class="m-keep" onclick="event.stopPropagation()">${menu.length ? `<div class="row-menu">
               <button class="btn btn-ghost btn-sm" onclick="toggleRowMenu(this)" title="More">⋯</button>
               <div class="row-menu-list">${menu.map(m =>
                 `<button class="${m.danger ? 'danger' : ''}" onclick="this.closest('.row-menu').classList.remove('open');${esc(m.run)}">${esc(m.label)}</button>`).join('')}</div>
@@ -361,7 +444,9 @@ function createLeadTable(cfg) {
     }).join('') : `<tr><td colspan="${colspan}"><div class="empty-state"><p>${esc(cfg.empty || 'Nothing here')}</p></div></td></tr>`;
 
     body.innerHTML = `${bulk}
-      <div class="table-wrap"><table class="lead-table"><thead>${head}</thead><tbody>${rows}</tbody></table></div>
+      ${cfg.mobile ? `<label class="m-select-bar"><input type="checkbox" ${allOnPage ? 'checked' : ''}
+          onchange="LT['${cfg.id}'].togglePage(this.checked)" /> Select all on this page</label>` : ''}
+      <div class="table-wrap"><table class="lead-table${cfg.mobile ? ' m-table' : ''}"><thead>${head}</thead><tbody>${rows}</tbody></table></div>
       ${t.pages > 1 ? `<div class="lt-pager">
           <button class="btn btn-ghost btn-sm" ${t.page <= 1 ? 'disabled' : ''} onclick="LT['${cfg.id}'].step(-1)">← Prev</button>
           <span class="text-muted text-small mono">Page ${t.page} of ${t.pages}</span>

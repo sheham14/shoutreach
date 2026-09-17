@@ -1,4 +1,5 @@
 function showSection(name) {
+  closeAllSheets();
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
   document.getElementById('section-' + name)?.classList.add('active');

@@ -202,6 +202,11 @@ createLeadTable({
     { key: 'last_called_at', label: 'Last called', sort: true, cls: 'num',
       render: r => esc(shortDate(r.last_called_at)) },
   ],
+  mobile: r => mCard(`<span class="biz-name">${esc(r.company || 'Unnamed business')}</span>`,
+    `${r.do_not_contact ? pill('Do not contact', 'red') + ' ' : ''}${callStatusBadge(r.call_status)}${
+      (r.campaigns || []).length ? ` ${esc(r.campaigns.map(c => c.name).join(', '))}` : ''}`,
+    [r.phone && `<span class="mono">${esc(r.phone)}</span>`,
+     r.next_call_at && `next call ${esc(r.next_call_at.substring(0, 16))}`].filter(Boolean).join(' · ')),
   onRowClick: r => openLeadPanel(r.id, {
     channel: 'calling', panelId: 'cl-panel', splitId: 'cl-split',
     onClose: () => { LT.cl.currentId = null; LT.cl.render(); },
@@ -520,6 +525,7 @@ async function loadCallQueue() {
     _callLead = null;
     document.getElementById('cq-lead-card').style.display = 'none';
     _renderScriptFor(null);
+    closeSheet('cq-work');
   }
 }
 
@@ -561,7 +567,7 @@ function _renderCallTable() {
     const due = l.next_call_at ? esc(l.next_call_at.substring(0, 16)) : '—';
     const over = l.call_attempts >= _attemptLimit;
     return `<tr style="cursor:pointer${_callLead && _callLead.id === l.id ? ';background:rgba(96,165,250,.08)' : ''}"
-                onclick="openCallLead(${l.id})">
+                onclick="openCallLead(${l.id}, true)">
       <td>${esc(l.company || l.email || '—')}${contactSignalPill(l)}</td>
       <td class="mono" style="font-size:12px">${esc(l.phone || '—')}</td>
       <td class="mono" style="font-size:12px${over ? ';color:var(--amber)' : ''}"
@@ -571,14 +577,24 @@ function _renderCallTable() {
             ? `${callStatusBadge(l.call_status)} <button class="btn btn-ghost btn-sm"
                  onclick="event.stopPropagation();reopenCallLead(${l.id})"
                  title="Put this lead back in the queue">↩ Reopen</button>`
-            : `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openCallLead(${l.id})">Open</button>`}</td>
+            : `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openCallLead(${l.id}, true)">Open</button>`}</td>
+      <td class="m-card">${mCard(`<span class="biz-name">${esc(l.company || l.email || '—')}</span>${contactSignalPill(l)}`,
+        [l.phone && `<span class="mono">${esc(l.phone)}</span>`,
+         `${l.call_attempts} attempt${l.call_attempts === 1 ? '' : 's'}`,
+         l.next_call_at && `due ${due}`].filter(Boolean).join(' · '),
+        _callBucket === 'worked' ? `${callStatusBadge(l.call_status)} <button class="btn btn-ghost btn-sm"
+          onclick="event.stopPropagation();reopenCallLead(${l.id})">↩ Reopen</button>` : '')}</td>
     </tr>`;
   }).join('');
 }
 
-async function openCallLead(id) {
+// `show` opens the lead full screen on a phone: a tap on it, as opposed to the
+// queue dropping into its first lead when it loads.
+async function openCallLead(id, show = false) {
   const data = await api(`/api/calls/contact/${id}`);
   if (!data || !data.contact) { toast('Could not load that lead', 'err'); return; }
+  if (show) openSheet('cq-work');
+  document.getElementById('cq-work').scrollTop = 0;
 
   _callLead = data.contact;
   const c = data.contact;
@@ -621,7 +637,8 @@ async function openCallLead(id) {
     ics.href = `/api/calls/${c.id}/ics`;
   } else ics.style.display = 'none';
 
-  document.getElementById('cq-notes').focus();
+  // Not on a phone: it would pop the keyboard over the lead you just opened.
+  if (!isNarrow()) document.getElementById('cq-notes').focus();
 }
 
 let _chosenOutcome = null;

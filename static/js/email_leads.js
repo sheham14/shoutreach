@@ -62,6 +62,13 @@ createLeadTable({
     { key: 'phone', label: 'Phone', sort: true, cls: 'num', render: r => esc(r.phone || '') },
     { key: 'created_at', label: 'Added', sort: true, cls: 'num', render: r => esc(shortDate(r.created_at)) },
   ],
+  mobile: r => {
+    const e = (r.enrollments || [])[0];
+    return mCard(`<span class="mono" style="font-size:12.5px;color:#fff;word-break:break-all">${esc(r.email || '—')}</span>`,
+      esc(r.company || ''),
+      (e ? `${esc(e.campaign)} ${pill(e.status === 'queued' ? `step ${e.current_step}` : e.status, _ENROLL_TONE[e.status] || '')}`
+         : 'Not in a campaign') + (r.status !== 'active' ? ` ${pill(r.status, _EMAIL_STATUS_TONE[r.status] || '')}` : ''));
+  },
   onRowClick: r => r.business_id && openLeadPanel(r.business_id, {
     channel: 'email', panelId: 'el-panel', splitId: 'el-split',
     onClose: () => { LT.el.currentId = null; LT.el.render(); },
