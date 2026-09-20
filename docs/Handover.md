@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-09-16 (WhatsApp sends are confirmed by the operator; live) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-09-20 (bespoke per-lead WhatsApp copy; live) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -37,13 +37,17 @@ fix this file.
   other leads marked too — most likely extra clicks while the reused
   WhatsApp tab stayed in the background (the code can only mark the lead
   clicked).
-- **Built 2026-09-20, NOT deployed: bespoke per-lead WhatsApp copy** (§5).
-  Leads can arrive from a JSON or CSV import carrying their own opener and
-  three follow-ups; anything they don't carry falls back to the campaign's
-  templates, and so does every follow-up past the third. Two new defaulted
-  columns on `wa_leads` and one guarded backfill, so the migration is low
-  risk — but it still runs against the live database on restart, so back up
-  first (§6). All 21 test files pass locally.
+- **Live since 2026-09-20 08:04 UTC (`62f9118`): bespoke per-lead WhatsApp
+  copy** (§5). Leads can arrive from a JSON or CSV import carrying their own
+  opener and three follow-ups; anything they don't carry falls back to the
+  campaign's templates, and so does every follow-up past the third. The
+  restart added two defaulted columns to `wa_leads` and ran
+  `_migrate_wa_message_source`. **No backup was taken for this deploy.** That
+  one push also carried three commits that had been sitting unpushed since
+  09-16 — the phone layouts, the per-row WhatsApp button and row-menu fix,
+  and a docs pass — so the VM went `9354245..62f9118` in one restart, 26
+  files. All 21 test files passed before the push, and `/login` returns 200
+  after it, which is what rules out a failed `init_db`.
 - **Two people use this install, walled off from each other.** Almost every
   query is scoped to an owner, and a handful deliberately aren't. Read §3
   before adding a query, a route, or a background job.
@@ -58,6 +62,10 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
+| `62f9118` | 09-20 | A lead can bring its own opener and three follow-ups (JSON/CSV import); follow-ups editable per lead | Yes |
+| `f5c10ce` | 09-16 | Lead lists and lead panels work on a phone | Yes |
+| `ddfd25e` | 09-16 | WhatsApp button on each To do row; row menus no longer clipped | Yes |
+| `06f1c3f` | 09-16 | Docs brought up to date with the confirmed-send flow | Yes |
 | `9354245` | 09-16 | Confirm a send after opening WhatsApp; mark "not on WhatsApp" and move off in bulk; landlines last | Yes |
 | `a534086` | 09-16 | Handover: lean flow recorded as live | Yes |
 | `be439b5` | 09-16 | Operator's own files (reference pages, AGENTS.md, the full audit doc) | Yes |
@@ -377,7 +385,7 @@ job removed). The focus is volume.
 - **Reply rates** come from `get_wa_variant_stats`, counted per **lead** rather
   than per message, and split by paraphrased. Nothing declares a winner.
 
-**Bespoke per-lead copy — built 2026-09-20, not yet deployed.** A lead can
+**Bespoke per-lead copy — live 2026-09-20 (`62f9118`).** A lead can
 arrive with its own opener and up to `WA_MAX_LEAD_FOLLOWUPS` (3) follow-ups,
 written per lead rather than from the campaign's templates. This is the
 volume play: the copy is generated elsewhere (a chat that researches each
@@ -546,12 +554,15 @@ importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
-00. **Bespoke per-lead copy is built and tested but not pushed** (§5). Before
-    deploying: back up the live database (§6), then check by hand in the app
-    that *+ Add leads → Paste JSON* accepts a small batch, that the result
-    line reports per-slot coverage, that a lead shows **own copy** on the
-    Leads tab, and that its second follow-up can be edited and saved from To
-    do. After that, the **post-reply pipeline** is the agreed next piece of
+00. **Bespoke per-lead copy is live** (§5), and so are the three commits that
+    rode along with it. Still to check by hand, in the app: *+ Add leads →
+    Paste JSON* accepts a small batch and the result line reports per-slot
+    coverage; a lead with imported copy shows **own copy** instead of a
+    version letter on the Leads tab; its second follow-up can be edited and
+    saved from To do; and — from the commits that shipped alongside — the
+    phone layouts and the per-row WhatsApp button, which were written on
+    09-16 and have never run against the live database. The **post-reply
+    pipeline** is the agreed next piece of
     design, not yet started: a replied lead currently leaves every queue with
     nothing but a binary `replied` flag and free-text notes on its business,
     so there is no "conversations in progress" surface and no sales stage.
