@@ -204,6 +204,15 @@ def init_db():
                 signal_detail    TEXT    NOT NULL DEFAULT '',
                 signal_confirmed INTEGER NOT NULL DEFAULT 0,
                 draft_message    TEXT    NOT NULL DEFAULT '',
+                -- Bespoke follow-ups for this lead, as a JSON array of up to
+                -- WA_MAX_LEAD_FOLLOWUPS strings: index 0 is the first
+                -- follow-up, index 1 the second, and so on. Written by a
+                -- hyper-personalised import (followup_1..3) or by hand.
+                -- A missing or empty slot falls through to the campaign's
+                -- follow-up template, which is also what every follow-up past
+                -- the end of this array uses -- follow-ups are infinite, so
+                -- the template stays the floor. See wa_message_for.
+                draft_followups  TEXT    NOT NULL DEFAULT '',
                 -- Which A/B arm of the template this lead was drafted from
                 -- ('A', 'B', ...), or '' when that template has only one arm.
                 -- A label rather than an index: arms can be deleted, and a
@@ -214,6 +223,14 @@ def init_db():
                 -- the campaign's current template, so a template edit reaches
                 -- every unsent lead -- see wa_message_for.
                 message_edited   INTEGER NOT NULL DEFAULT 0,
+                -- Where this lead's own copy came from: '' template (none),
+                -- 'import' a draft from a CSV/JSON import, 'manual' the
+                -- operator typed it here, 'ai' the reword pass wrote it.
+                -- message_edited says THAT the lead has its own copy; this
+                -- says whether that copy can be reproduced. An import may
+                -- overwrite '' and 'import'; 'manual' and 'ai' exist nowhere
+                -- else, so a re-import preserves them and reports the count.
+                message_source   TEXT    NOT NULL DEFAULT '',
                 -- Whether the AI variety pass rewrote it. Kept apart from the
                 -- arm because a paraphrase is a different message: folding the
                 -- two together would credit an arm for copy it didn't write.
@@ -556,6 +573,12 @@ def init_db():
             "ALTER TABLE businesses ADD COLUMN audit_at TEXT DEFAULT NULL",
             "ALTER TABLE wa_leads   ADD COLUMN opened_at TEXT DEFAULT NULL",
             "ALTER TABLE wa_leads   ADD COLUMN no_whatsapp_at TEXT DEFAULT NULL",
+            # Per-lead bespoke copy: the follow-ups an import brought with it,
+            # and where this lead's opener came from. See the column comments
+            # on wa_leads. message_source is backfilled below from the flags
+            # that used to carry the same fact between them.
+            "ALTER TABLE wa_leads   ADD COLUMN draft_followups TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE wa_leads   ADD COLUMN message_source TEXT NOT NULL DEFAULT ''",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -579,6 +602,7 @@ def init_db():
         _make_calling_explicit(conn)
         _migrate_wa_campaigns(conn)
         _migrate_wa_no_review(conn)
+        _migrate_wa_message_source(conn)
 
         # Uniqueness is per owner, not global. The old global index is dropped
         # rather than left in place: while it exists, a second operator
@@ -4577,6 +4601,18 @@ WA_FOLLOWUP_DAYS_KEY = "wa_followup_days"
 WA_DEFAULT_FOLLOWUP_DAYS = 3
 WA_MAX_ARMS = 4
 
+# How many bespoke follow-ups one lead can carry (wa_leads.draft_followups,
+# and followup_1..N on an import row). Past the last one a lead falls back to
+# its campaign's follow-up template, which then repeats at the campaign gap:
+# follow-ups are infinite by design, so the personalised ones are a head start
+# on the cadence rather than the whole of it.
+WA_MAX_LEAD_FOLLOWUPS = 3
+
+# Long enough for any real WhatsApp opener, short enough that a generation
+# which ran away -- a model returning its whole reasoning, or a CSV row that
+# swallowed the next column -- is rejected on import instead of sent.
+WA_MAX_DRAFT_CHARS = 4000
+
 # A/B arms are labelled, not numbered, because the label is what gets written
 # onto every lead and every log row. Renumbering after deleting an arm would
 # silently re-attribute history to the wrong copy.
@@ -4708,9 +4744,17 @@ def get_wa_variant_stats(owner_id=None, wa_campaign_id=None) -> list:
     plain are reported apart, because an AI rewrite is a different message and
     folding it in would confound the arm it was rewritten from.
 
+    Leads carrying their own copy are reported apart for the same reason, and
+    it matters more: every lead is dealt an arm label whether or not it is
+    ever sent that arm's words, so counting an imported message's reply under
+    version A would credit copy that was never sent. Those leads come back as
+    own_copy rows, which is all that can honestly be said about them -- with
+    a bespoke message per lead there is no repeated copy to compare.
+
     Scoped to one campaign when given one: arm A of one campaign's copy and arm
     A of another's are different messages, so pooling them measures nothing.
     """
+    own_copy_sql = "CASE WHEN w.message_edited = 1 OR w.draft_followups != '' THEN 1 ELSE 0 END"
     with get_db() as conn:
         where, params = ["b.owner_id = ?", "w.sent_date IS NOT NULL"], \
             [_resolve_owner_id(conn, owner_id)]
@@ -4720,12 +4764,13 @@ def get_wa_variant_stats(owner_id=None, wa_campaign_id=None) -> list:
         rows = conn.execute(f"""
             SELECT COALESCE(NULLIF(w.template_variant,''),'-') AS arm,
                    w.paraphrased                               AS paraphrased,
+                   {own_copy_sql}                              AS own_copy,
                    COUNT(*)                                    AS sent,
                    SUM(w.replied)                              AS replied
               FROM wa_leads w JOIN businesses b ON b.id = w.business_id
              WHERE {' AND '.join(where)}
-             GROUP BY arm, w.paraphrased
-             ORDER BY arm
+             GROUP BY arm, w.paraphrased, own_copy
+             ORDER BY own_copy, arm
         """, params).fetchall()
     out = []
     for r in rows:
@@ -4734,6 +4779,7 @@ def get_wa_variant_stats(owner_id=None, wa_campaign_id=None) -> list:
         out.append({
             "arm": r["arm"],
             "paraphrased": bool(r["paraphrased"]),
+            "own_copy": bool(r["own_copy"]),
             "sent": sent,
             "replied": replied,
             "reply_rate": round(replied / sent * 100, 1) if sent else 0.0,
@@ -4825,6 +4871,93 @@ def _wa_factory_templates() -> dict:
 def _clean_wa_arms(value) -> list:
     arms = [value] if isinstance(value, str) else (value or [])
     return [a for a in arms if isinstance(a, str) and a.strip()][:WA_MAX_ARMS]
+
+
+def parse_lead_followups(raw) -> list:
+    """
+    One lead's bespoke follow-ups, from the JSON in wa_leads.draft_followups.
+
+    Always a list of exactly WA_MAX_LEAD_FOLLOWUPS strings, so callers can
+    index it without bounds checks; an absent follow-up is ''. Unreadable
+    JSON reads as "no bespoke follow-ups" rather than raising: a lead whose
+    copy can't be parsed should quietly fall back to its campaign's template,
+    not break the queue it appears in.
+    """
+    out = [""] * WA_MAX_LEAD_FOLLOWUPS
+    if isinstance(raw, str):
+        if not raw.strip():
+            return out
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return out
+    if not isinstance(raw, list):
+        return out
+    for i, value in enumerate(raw[:WA_MAX_LEAD_FOLLOWUPS]):
+        if isinstance(value, str):
+            out[i] = value.strip()
+    return out
+
+
+def serialize_lead_followups(followups) -> str:
+    """
+    Store the other way round: '' when there is nothing bespoke to keep, so
+    the common case costs no JSON and `draft_followups != ''` is a usable
+    test for "this lead brought its own follow-ups".
+    """
+    cleaned = parse_lead_followups(followups if isinstance(followups, (list, str)) else [])
+    return json.dumps(cleaned) if any(cleaned) else ""
+
+
+# The import keys a hyper-personalised row carries its copy in. Matched
+# exactly, like every other import column -- nothing here lowercases or
+# aliases a header, so the documented spelling is the only one that works.
+WA_DRAFT_KEY = "message"
+WA_FOLLOWUP_KEYS = tuple(f"followup_{i + 1}" for i in range(WA_MAX_LEAD_FOLLOWUPS))
+
+
+def row_draft_copy(row: dict) -> tuple:
+    """
+    The bespoke copy one import row carries: (opener, followups, rejected).
+
+    `rejected` counts messages thrown away for being implausibly long. They
+    are dropped rather than truncated, and rather than failing the row: the
+    lead is still worth importing, and half a message is worse than the
+    campaign's template, which is what an empty slot falls back to.
+    """
+    rejected = 0
+
+    def _one(value):
+        nonlocal rejected
+        if not isinstance(value, str):
+            return ""
+        text = value.strip()
+        if not text:
+            return ""
+        if len(text) > WA_MAX_DRAFT_CHARS:
+            rejected += 1
+            return ""
+        return text
+
+    opener = _one(row.get(WA_DRAFT_KEY))
+    followups = [_one(row.get(key)) for key in WA_FOLLOWUP_KEYS]
+    return opener, followups, rejected
+
+
+def new_draft_report() -> dict:
+    """
+    What an import will say about the copy it was given. Counted per slot,
+    because a model writing four messages for each of 200 leads drops some,
+    and a follow-up that silently fell back to the template is worth seeing
+    while the file is still to hand rather than three weeks later.
+    """
+    return {
+        "opener": 0,
+        "followups": [0] * WA_MAX_LEAD_FOLLOWUPS,
+        "too_long": 0,
+        "kept_edits": 0,
+        "no_phone": 0,
+    }
 
 
 def _clean_wa_variables(value) -> dict:
@@ -5291,6 +5424,33 @@ def _migrate_wa_no_review(conn):
                     moved, kept)
 
 
+_WA_MESSAGE_SOURCE_MARKER = "_migrated_wa_message_source"
+
+
+def _migrate_wa_message_source(conn):
+    """
+    One-shot: say where each lead's own copy came from.
+
+    message_edited and paraphrased between them already carried this fact --
+    edited-and-paraphrased meant the AI wrote it, edited alone meant the
+    operator did. message_source states it directly, so an import can tell
+    copy it may safely replace from copy that exists nowhere else.
+
+    Every lead that predates imported drafts was written here by hand or by
+    the reword pass, so nothing backfills to 'import'.
+    """
+    if conn.execute("SELECT 1 FROM settings WHERE key=?", (_WA_MESSAGE_SOURCE_MARKER,)).fetchone():
+        return
+    filled = conn.execute("""
+        UPDATE wa_leads
+           SET message_source = CASE WHEN paraphrased = 1 THEN 'ai' ELSE 'manual' END
+         WHERE message_edited = 1 AND message_source = ''
+    """).rowcount
+    conn.execute("INSERT INTO settings(key, value) VALUES(?, '1')", (_WA_MESSAGE_SOURCE_MARKER,))
+    if filled:
+        logger.info("WhatsApp: recorded where %d lead(s)' own copy came from", filled)
+
+
 # ── WhatsApp: leads ───────────────────────────────────────────────────────────
 
 def _own_wa_lead_ids(conn, wa_lead_ids, owner_id=None) -> list:
@@ -5364,12 +5524,23 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
     campaign; one taken off by hand comes back, into this campaign; one ruled
     out as not on WhatsApp stays ruled out.
 
-    Returns (accepted, business_ids): accepted counts the rows now on WhatsApp.
+    A row may also carry its own copy -- `message` and `followup_1..3` -- for
+    a lead written ahead of time rather than from the campaign's templates.
+    Imported copy replaces copy that came from an earlier import, and never
+    replaces what the operator wrote here by hand or had the AI reword: that
+    text exists nowhere else, while an imported draft can be regenerated from
+    the file. Nothing about a draft re-queues a lead that has already been
+    messaged -- only _put_on_wa moves a lead's status, and only when it has
+    never been sent.
+
+    Returns (accepted, business_ids, drafts): accepted counts the rows now on
+    WhatsApp; drafts is a new_draft_report() of the copy that came with them.
     """
     with get_db() as conn:
         accepted = 0
         touched = set()
         ordered_ids = []
+        drafts_report = new_draft_report()
         owner_id = _resolve_owner_id(conn, owner_id)
         campaign = _own_wa_campaign(conn, wa_campaign_id, owner_id)
 
@@ -5380,6 +5551,15 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
             website = (r.get("website") or "").strip()
             if not any((email, name, phone, website)):
                 continue
+
+            opener_draft, followup_drafts, rejected = row_draft_copy(r)
+            drafts_report["too_long"] += rejected
+            if opener_draft:
+                drafts_report["opener"] += 1
+            for i, text in enumerate(followup_drafts):
+                if text:
+                    drafts_report["followups"][i] += 1
+            has_draft = bool(opener_draft or any(followup_drafts))
 
             business_id = find_or_create_business(conn, r, owner_id=owner_id)
             touched.add(business_id)
@@ -5408,6 +5588,12 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
                 )
 
             if not phone:
+                # The business is filed, but there is no wa_lead for its copy
+                # to live on. Counted rather than dropped in silence: a row
+                # someone paid a model to write four messages for should not
+                # vanish because the phone column was empty.
+                if has_draft:
+                    drafts_report["no_phone"] += 1
                 continue
             country = (r.get("country") or default_country or "").strip().upper()
             existing = conn.execute(
@@ -5429,14 +5615,55 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
                     _put_on_wa(conn, existing, business_id, phone, country, campaign)
                 elif existing["wa_campaign_id"] is None and campaign:
                     _put_on_wa(conn, existing, business_id, phone, country, campaign)
+                wa_lead_id = existing["id"]
             else:
-                _put_on_wa(conn, None, business_id, phone, country, campaign)
+                wa_lead_id = _put_on_wa(conn, None, business_id, phone, country, campaign)
+            if has_draft and not _apply_imported_drafts(
+                conn, wa_lead_id, opener_draft, followup_drafts
+            ):
+                drafts_report["kept_edits"] += 1
             accepted += 1
 
         for business_id in touched:
             _pick_business_winner(conn, business_id)
 
-        return accepted, ordered_ids
+        return accepted, ordered_ids, drafts_report
+
+
+def _apply_imported_drafts(conn, wa_lead_id: int, opener: str, followups: list) -> bool:
+    """
+    Write one row's bespoke copy onto its lead. Returns False when the lead
+    was left alone because its copy is the operator's own.
+
+    The gate is message_source, which describes the lead's copy as a whole:
+    once anything on it has been typed or reworded here, a re-import stops
+    touching any of it rather than replacing an opener that a hand-edited
+    follow-up was written to follow on from.
+
+    An empty slot in the file leaves whatever that slot already held, so a
+    model that returned three follow-ups instead of four doesn't blank the
+    fourth from a previous import.
+    """
+    row = conn.execute(
+        "SELECT draft_message, draft_followups, message_source FROM wa_leads WHERE id=?",
+        (wa_lead_id,),
+    ).fetchone()
+    if not row:
+        return True
+    if (row["message_source"] or "") in ("manual", "ai"):
+        return False
+
+    merged = parse_lead_followups(row["draft_followups"])
+    for i, text in enumerate(followups[:WA_MAX_LEAD_FOLLOWUPS]):
+        if text:
+            merged[i] = text
+    message = opener or (row["draft_message"] or "")
+    conn.execute("""
+        UPDATE wa_leads SET draft_message=?, message_edited=?, message_source='import',
+               paraphrased=0, draft_followups=?
+         WHERE id=?
+    """, (message, 1 if message.strip() else 0, serialize_lead_followups(merged), wa_lead_id))
+    return True
 
 
 def add_businesses_to_wa(business_ids, country: str, owner_id=None, wa_campaign_id=None) -> dict:
@@ -5489,6 +5716,7 @@ def add_businesses_to_wa(business_ids, country: str, owner_id=None, wa_campaign_
 _WA_LEAD_COLUMNS = """
     w.id, w.business_id, w.wa_number, w.country, w.number_type, w.wa_status,
     w.signal_type, w.signal_detail, w.draft_message, w.message_edited,
+    w.draft_followups, w.message_source,
     w.template_variant, w.paraphrased, w.sent_date, w.replied, w.followup_count, w.paused,
     w.moved_to, w.removed_at, w.opened_at, w.no_whatsapp_at, w.notes, w.created_at, w.wa_campaign_id,
     c.name AS campaign_name, c.followup_days AS campaign_followup_days,
@@ -5505,11 +5733,28 @@ def wa_message_for(lead: dict, campaign: dict = None, kind: str = "opener") -> s
 
     The opener reads the campaign's CURRENT template for the lead's version,
     so editing a template reaches every unsent lead at once -- unless the
-    operator edited this lead's message by hand (or had AI reword it), in
-    which case that text is kept. Follow-ups always read the template.
+    operator edited this lead's message by hand, had AI reword it, or an
+    import brought bespoke copy, in which case that text is kept.
+
+    Follow-ups take the lead's own follow-up for the one that is next out
+    (followup_count 0 means the first has yet to go), and fall back to the
+    campaign's follow-up template for any slot that is empty -- including
+    every follow-up past the last bespoke one, since the cadence runs
+    indefinitely and only the first few are ever written by hand.
+
+    Either way the text goes through render_wa_message, so a placeholder left
+    in bespoke copy fills like it would in a template rather than reaching
+    somebody's phone as literal braces.
     """
-    if kind == "opener" and lead.get("message_edited") and (lead.get("draft_message") or "").strip():
-        return lead["draft_message"]
+    variables = campaign["variables"] if campaign else {}
+    if kind == "opener":
+        if lead.get("message_edited") and (lead.get("draft_message") or "").strip():
+            return render_wa_message(lead["draft_message"], lead, variables)
+    else:
+        drafts = parse_lead_followups(lead.get("draft_followups"))
+        index = int(lead.get("followup_count") or 0)
+        if 0 <= index < len(drafts) and drafts[index]:
+            return render_wa_message(drafts[index], lead, variables)
     if not campaign:
         return (lead.get("draft_message") or "") if kind == "opener" else ""
     arms = campaign["templates"]["followup" if kind == "followup" else "opener"]
@@ -5717,21 +5962,60 @@ def get_wa_summary(owner_id=None, wa_campaign_id=None, since=None) -> dict:
 def set_wa_message(wa_lead_id: int, message: str, paraphrased: bool = False):
     """
     The operator's own wording for this lead (or an AI rewording of it). Marked
-    as edited, so a later template change doesn't overwrite it.
+    as edited, so a later template change doesn't overwrite it -- and sourced,
+    so a later import doesn't either: this text exists only here, where an
+    imported draft can always be regenerated from the file it came from.
     """
     with get_db() as conn:
         conn.execute("""
-            UPDATE wa_leads SET draft_message=?, message_edited=1, paraphrased=?
+            UPDATE wa_leads SET draft_message=?, message_edited=1, paraphrased=?, message_source=?
              WHERE id=?
-        """, (message, 1 if paraphrased else 0, wa_lead_id))
+        """, (message, 1 if paraphrased else 0, "ai" if paraphrased else "manual", wa_lead_id))
 
 
 def reset_wa_message(wa_lead_id: int):
-    """Back to following the campaign's template."""
+    """
+    Back to following the campaign's template.
+
+    The opener only -- this lead's bespoke follow-ups are left alone, because
+    they are separate messages the operator resets one at a time from their
+    own boxes. Resetting the opener silently discarding three follow-ups
+    written days earlier would be a surprising amount of collateral.
+    """
     with get_db() as conn:
         conn.execute("""
-            UPDATE wa_leads SET draft_message='', message_edited=0, paraphrased=0 WHERE id=?
+            UPDATE wa_leads SET draft_message='', message_edited=0, paraphrased=0, message_source=''
+             WHERE id=?
         """, (wa_lead_id,))
+
+
+def set_wa_followup_draft(wa_lead_id: int, index: int, message: str) -> bool:
+    """
+    This lead's own wording for one follow-up. An empty message clears that
+    slot, which puts the follow-up back on the campaign's template.
+
+    Returns False for a slot that doesn't exist, so a caller with an id from
+    a URL doesn't silently write nothing.
+    """
+    if not 0 <= index < WA_MAX_LEAD_FOLLOWUPS:
+        return False
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT draft_followups FROM wa_leads WHERE id=?", (wa_lead_id,)
+        ).fetchone()
+        if not row:
+            return False
+        drafts = parse_lead_followups(row["draft_followups"])
+        drafts[index] = (message or "").strip()
+        # Marks the lead's copy as the operator's own, the same as editing the
+        # opener does. Coarse on purpose: a later import then leaves the whole
+        # lead alone rather than replacing an opener that this follow-up was
+        # written to follow on from. See _apply_imported_drafts.
+        conn.execute(
+            "UPDATE wa_leads SET draft_followups=?, message_source='manual' WHERE id=?",
+            (serialize_lead_followups(drafts), wa_lead_id),
+        )
+    return True
 
 
 def update_wa_message(wa_lead_id: int, message: str):

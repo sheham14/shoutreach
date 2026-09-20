@@ -1593,7 +1593,8 @@ def _import_scraped_whatsapp(rows, job, owner):
     no_phone = len(rows) - len(with_phone)
     conflicts = db.find_cross_channel_conflicts(with_phone, channel="whatsapp", owner_id=owner)
     overlaps = db.find_cross_owner_matches(rows, owner_id=owner)
-    inserted, business_ids = db.upsert_wa_leads(
+    # A scrape carries no written copy, so its draft report is always empty.
+    inserted, business_ids, _drafts = db.upsert_wa_leads(
         rows, default_country=job.get("country") or "", owner_id=owner,
         wa_campaign_id=_own_campaign_for_job(job, "wa_campaign"),
     )
@@ -2626,6 +2627,15 @@ def api_wa_import():
     multipart CSV with 'country' and 'wa_campaign_id' form fields. `country` is
     the fallback used for any row that doesn't carry its own -- the usual case,
     since one scrape is normally one city/country at a time.
+
+    A bare JSON array of rows is accepted too, which is the shape a chat
+    writing hyper-personalised copy returns; it carries no country or
+    campaign, so those have to come from the form or it is refused like any
+    other import without a campaign.
+
+    Rows may carry their own `message` and `followup_1..3`. The response's
+    `drafts` block reports how many of each arrived, per slot, because a
+    model asked for four messages across a few hundred leads drops some.
     """
     if request.content_type and "multipart" in request.content_type:
         f = request.files.get("file")
@@ -2639,10 +2649,22 @@ def api_wa_import():
         default_country = (request.form.get("country") or "").strip().upper()
         campaign_value = request.form.get("wa_campaign_id")
     else:
-        data = request.json or {}
+        data = request.json
+        if isinstance(data, list):
+            data = {"rows": data}
+        elif not isinstance(data, dict):
+            data = {}
         rows = data.get("rows", [])
         if not isinstance(rows, list):
             return jsonify({"ok": False, "error": "rows must be a list"}), 400
+        # A row has to be an object for its columns to be read at all; a list
+        # of bare strings is a paste that went in the wrong box.
+        if any(not isinstance(r, dict) for r in rows):
+            return jsonify({
+                "ok": False,
+                "error": "Every row must be an object with named columns, e.g. "
+                         '{"company": "...", "phone": "...", "message": "..."}',
+            }), 400
         default_country = (data.get("country") or "").strip().upper()
         campaign_value = data.get("wa_campaign_id")
 
@@ -2666,11 +2688,11 @@ def api_wa_import():
             rows = [r for r in rows if (r.get("phone"), r.get("company")) not in flagged_keys]
 
     overlaps = db.find_cross_owner_matches(rows, owner_id=me())
-    inserted, business_ids = db.upsert_wa_leads(rows, default_country=default_country,
-                                                owner_id=me(), wa_campaign_id=campaign_id)
+    inserted, business_ids, drafts = db.upsert_wa_leads(
+        rows, default_country=default_country, owner_id=me(), wa_campaign_id=campaign_id)
     return jsonify({
         "ok": True, "inserted": inserted, "business_ids": business_ids,
-        "overlaps": overlaps,
+        "overlaps": overlaps, "drafts": drafts,
         "conflicts": [
             {"business_id": c["business_id"], "business_name": c["business_name"],
              "channels": c["channel_labels"], "row": c["row"]}
@@ -2797,6 +2819,29 @@ def api_wa_reset_message(wid):
     """Back to the campaign's template."""
     db.reset_wa_message(wid)
     return jsonify({"ok": True, "message": db.get_wa_lead(wid, with_message=True)["message"]})
+
+
+@app.route("/api/wa/leads/<int:wid>/followup/<int:index>", methods=["PUT"])
+@login_required
+@owned("wa_lead", "wid")
+def api_wa_update_followup(wid, index):
+    """
+    This lead's own wording for one follow-up, `index` counting from 0. An
+    empty message clears the slot, which puts that follow-up back on the
+    campaign's template -- the reset for a follow-up, since there is one box
+    per follow-up rather than one for the lead.
+    """
+    message = ((request.json or {}).get("message") or "").strip()
+    if not db.set_wa_followup_draft(wid, index, message):
+        return jsonify({"ok": False, "error": "No such follow-up"}), 404
+    lead = db.get_wa_lead(wid, with_message=True)
+    campaign = db.get_wa_campaign(lead["wa_campaign_id"]) if lead.get("wa_campaign_id") else None
+    return jsonify({
+        "ok": True,
+        "followups": db.parse_lead_followups(lead.get("draft_followups")),
+        "followup_message": db.wa_message_for(lead, campaign, "followup"),
+        "message_source": lead.get("message_source") or "",
+    })
 
 
 @app.route("/api/wa/leads/<int:wid>/reword", methods=["POST"])

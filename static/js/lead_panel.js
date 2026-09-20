@@ -111,6 +111,19 @@ function whenLocal(ts) {
   return `on ${d.toLocaleDateString([], { day: 'numeric', month: 'short' })} at ${time}`;
 }
 
+// Mirrors db.WA_MAX_LEAD_FOLLOWUPS — how many follow-ups a lead can carry its
+// own wording for before the campaign template takes over for good. Here
+// rather than in whatsapp.js because the side panel renders the same messages
+// and this file loads first.
+const WA_MAX_LEAD_FOLLOWUPS = 3;
+
+// wa_leads.message_source, said in the operator's words.
+const WA_SOURCE_LABELS = {
+  ai: 'Reworded by AI',
+  import: 'From your import',
+  manual: 'Edited by hand',
+};
+
 // After opening a chat: nothing is recorded until the operator says what
 // happened. The same box on the To do tab and in a lead's side panel.
 function waConfirmHtml(id, kind, openedAt, number, panelId = null) {
@@ -502,12 +515,22 @@ async function _waPanelSection(d) {
             : `<button class="btn btn-ghost btn-sm" onclick="waMarkReplied(${w.id}, true)">They replied</button>
                <button class="btn btn-ghost btn-sm" onclick="waSetPaused([${w.id}], true)">Pause follow-ups</button>`}
         </div>`;
+    const fuIndex = w.followup_count || 0;
+    const ownFollowup = fuIndex < WA_MAX_LEAD_FOLLOWUPS;
     body = `${kind === 'followup' ? lastSent : ''}
-      <span class="field-label">${kind === 'opener' ? `Message${w.template_variant ? ` · version ${esc(w.template_variant)}` : ''}` : 'Follow-up due'}</span>
+      <span class="field-label">${kind === 'opener'
+        ? `Message${w.template_variant ? ` · version ${esc(w.template_variant)}` : ''}`
+        : `Follow-up due · ${fuIndex + 1}${ownFollowup ? ` of ${WA_MAX_LEAD_FOLLOWUPS}` : ''}`}</span>
       <textarea id="wl-msg" class="soft-input" style="min-height:110px"
-                ${kind === 'opener' ? `onchange="saveWaMessage(${w.id}, this.value, '${panelId}')"` : ''}>${esc(kind === 'opener' ? (w.message || '') : (w.followup_message || ''))}</textarea>
-      ${kind === 'opener' && w.message_edited ? `<div class="text-muted text-small">${w.paraphrased ? 'Reworded by AI' : 'Edited by hand'} ·
+                ${kind === 'opener'
+                  ? `onchange="saveWaMessage(${w.id}, this.value, '${panelId}')"`
+                  : (ownFollowup ? `onchange="saveWaFollowup(${w.id}, ${fuIndex}, this.value)"` : '')}
+                >${esc(kind === 'opener' ? (w.message || '') : (w.followup_message || ''))}</textarea>
+      ${kind === 'opener' && w.message_edited ? `<div class="text-muted text-small">${
+        WA_SOURCE_LABELS[w.message_source] || (w.paraphrased ? WA_SOURCE_LABELS.ai : WA_SOURCE_LABELS.manual)} ·
         <a style="color:var(--blue);cursor:pointer" onclick="resetWaMessage(${w.id}, '${panelId}')">Reset to template</a></div>` : ''}
+      ${kind === 'followup' && !ownFollowup ? `<div class="text-muted text-small">Past this lead's written
+        follow-ups — the campaign template from here on.</div>` : ''}
       <div id="wl-actions">${actions}</div>`;
   } else if (stage === 'waiting' || stage === 'paused') {
     body = `${lastSent}

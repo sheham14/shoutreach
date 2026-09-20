@@ -37,6 +37,13 @@ fix this file.
   other leads marked too — most likely extra clicks while the reused
   WhatsApp tab stayed in the background (the code can only mark the lead
   clicked).
+- **Built 2026-09-20, NOT deployed: bespoke per-lead WhatsApp copy** (§5).
+  Leads can arrive from a JSON or CSV import carrying their own opener and
+  three follow-ups; anything they don't carry falls back to the campaign's
+  templates, and so does every follow-up past the third. Two new defaulted
+  columns on `wa_leads` and one guarded backfill, so the migration is low
+  risk — but it still runs against the live database on restart, so back up
+  first (§6). All 21 test files pass locally.
 - **Two people use this install, walled off from each other.** Almost every
   query is scoped to an owner, and a handful deliberately aren't. Read §3
   before adding a query, a route, or a background job.
@@ -370,6 +377,52 @@ job removed). The focus is volume.
 - **Reply rates** come from `get_wa_variant_stats`, counted per **lead** rather
   than per message, and split by paraphrased. Nothing declares a winner.
 
+**Bespoke per-lead copy — built 2026-09-20, not yet deployed.** A lead can
+arrive with its own opener and up to `WA_MAX_LEAD_FOLLOWUPS` (3) follow-ups,
+written per lead rather than from the campaign's templates. This is the
+volume play: the copy is generated elsewhere (a chat that researches each
+business) and imported in one pass.
+
+- **Two columns on `wa_leads`.** `draft_followups` is a JSON array of up to 3
+  strings, '' when there are none (`parse_lead_followups` /
+  `serialize_lead_followups` are the only things that read and write it).
+  `message_source` is '' / `import` / `manual` / `ai` — it says whether the
+  lead's copy can be reproduced, which is what decides if an import may
+  replace it. `_migrate_wa_message_source` backfills it from
+  `message_edited`/`paraphrased`, guarded by `_migrated_wa_message_source`.
+- **`wa_message_for` picks the follow-up by `followup_count`** (how many have
+  gone, so it indexes the next). An empty slot, and *every follow-up past the
+  third*, falls back to the campaign's follow-up template — follow-ups are
+  still infinite (§7), so the template remains the floor forever. Bespoke copy
+  now goes through `render_wa_message` too, so a placeholder in it fills
+  instead of reaching a phone as literal braces.
+- **Import keys are `message` and `followup_1..3`**, matched exactly like every
+  other column — nothing lowercases or aliases a header. `POST /api/wa/import`
+  also accepts a bare JSON array, and refuses rows that aren't objects.
+  `upsert_wa_leads` now returns **`(accepted, business_ids, drafts)`**; the
+  third is `new_draft_report()` — per-slot coverage plus `kept_edits`,
+  `no_phone` and `too_long`. Over `WA_MAX_DRAFT_CHARS` (4000) a message is
+  dropped, not truncated, and the lead still imports.
+- **The overwrite rule** (`_apply_imported_drafts`): an import replaces copy
+  whose source is '' or `import`, and never `manual` or `ai`. Any hand edit —
+  opener *or* follow-up (`set_wa_followup_draft` sets `manual` too) — protects
+  the whole lead, deliberately: replacing an opener that a hand-written
+  follow-up was written to follow on from is worse than skipping the lead and
+  saying so. Nothing about a draft re-queues a sent lead; only `_put_on_wa`
+  moves status, and only when `sent_date IS NULL`.
+- **Follow-ups are editable now.** `PUT /api/wa/leads/<id>/followup/<index>`,
+  wired to the To do box and the side panel. The box was previously read-only
+  (no `onchange`), and there was nowhere per-lead to put follow-up text.
+  Past slot 3 the box shows shared template copy, so saving is refused.
+- **`get_wa_variant_stats` groups by `own_copy`** as well as arm and
+  paraphrased. Every lead carries an arm label whether or not it was ever sent
+  that arm's words, so a bespoke lead's reply would otherwise be credited to
+  version A. The template editor shows what share of a campaign never used its
+  versions. There is no per-lead measurement beyond that and deliberately so:
+  with one message per lead there is no repeated copy to compare (the operator
+  considered an `angle` tag and rejected it — n=1 per message either way).
+- `tests/test_wa_drafts.py` is the precise statement of all of this.
+
 **The lead audit** (`audit.py`), on any business with a website, only when the
 operator clicks *Run checks* on its panel:
 
@@ -449,7 +502,12 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-20 files, all passing as of `9354245`. `tests/test_whatsapp.py` covers live
+21 files, all passing as of the bespoke-copy work (§5).
+`tests/test_wa_drafts.py` covers imported openers and follow-ups, the order
+they're used in, the fallback to the template past the third, the rule that an
+import never replaces a hand edit, the guarantee that a re-import can't
+re-queue a lead already messaged, per-slot coverage counts, ownership, and the
+`message_source` backfill. `tests/test_whatsapp.py` covers live
 messages, edits and reset, version dealing and removal, countries, sent today,
 opening versus confirming a send, marking not on WhatsApp and bulk move-off,
 and landlines last; `tests/test_contacts_hub.py` covers Contacts, Unassigned,
@@ -488,6 +546,20 @@ importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
+00. **Bespoke per-lead copy is built and tested but not pushed** (§5). Before
+    deploying: back up the live database (§6), then check by hand in the app
+    that *+ Add leads → Paste JSON* accepts a small batch, that the result
+    line reports per-slot coverage, that a lead shows **own copy** on the
+    Leads tab, and that its second follow-up can be edited and saved from To
+    do. After that, the **post-reply pipeline** is the agreed next piece of
+    design, not yet started: a replied lead currently leaves every queue with
+    nothing but a binary `replied` flag and free-text notes on its business,
+    so there is no "conversations in progress" surface and no sales stage.
+    Calling already has the model (`call_outcome_types`, `is_terminal`,
+    `requires_date`, `call_log`, `.ics`); the open decision is whether to
+    generalise that table to serve both channels or fork it. Keep the channel
+    stage (`ready`/`due`/`waiting`/`replied`) separate from any sales stage —
+    the queues read the former directly.
 0. Both WhatsApp deploys are live and the app is up (`/login` 200,
    `/api/users/me` 401; run logs `Updating 4f7ea0f..be439b5` and
    `be439b5..9354245`). Still to check by hand, in the app: open a chat and

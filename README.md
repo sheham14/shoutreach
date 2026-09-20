@@ -530,10 +530,10 @@ as a copy of another. The **Campaigns** tab shows each one's leads, ready to
 send, follow-ups due and reply rate.
 
 **The flow.** Leads come in through **+ Add leads** into a campaign: pick from
-businesses you already have, paste or upload a CSV, or jump to the Lead Scraper
-already set to WhatsApp. Each one lands **ready to send**, with its message
-already written. The **To do** tab is the work, with the lead you're on beside
-the list and a count of what you've sent today:
+businesses you already have, paste JSON, paste or upload a CSV, or jump to the
+Lead Scraper already set to WhatsApp. Each one lands **ready to send**, with its
+message already written. The **To do** tab is the work, with the lead you're on
+beside the list and a count of what you've sent today:
 
 - **Ready to send** — edit the message if you like, then **Open in WhatsApp**
   opens the chat with it typed in (or use the **WhatsApp ↗** button on the
@@ -582,6 +582,55 @@ previews every version against a real lead.
 message you edited by hand or had reworded is kept, with **Reset to template**
 beside it. Removing a version moves its waiting leads to another. Messages
 already sent never change.
+
+### Bringing your own messages — hyper-personalised leads
+
+Templates fill in a lead's details. When you'd rather write each lead its own
+message — researched one at a time, in a chat, then brought here in one go —
+**+ Add leads → Paste JSON** takes leads that already carry their copy:
+
+```json
+[
+  {
+    "company": "Paradise Dental",
+    "phone": "050 123 4567",
+    "city": "Dubai",
+    "message": "Hi Paradise Dental! I noticed your booking page…",
+    "followup_1": "Morning — just floating this back up…",
+    "followup_2": "Last one from me…",
+    "followup_3": "Closing the loop…"
+  }
+]
+```
+
+`company` and `phone` are all that's required; `website`, `email`, `address`,
+`city`, `category`, `rating`, `review_count` and `country` work too, exactly as
+they do in a CSV. **Copy the format** in that tab puts the whole spec on your
+clipboard to paste into the chat writing your copy.
+
+- **Anything you leave out falls back to the campaign's template**, per message.
+  A batch where only some leads got a third follow-up is fine.
+- **After `followup_3` the campaign's follow-up template takes over**, and keeps
+  going at your campaign's gap — follow-ups never stop on their own, so the
+  template is still what carries a lead who never replies.
+- **Placeholders still work inside your own copy**, so `{{business_name}}` and
+  `{{city|your area}}` fill in as they would in a template.
+- **The import tells you what arrived**, message by message — *142 leads · 138
+  openers · 121 follow-up 1 · 119 follow-up 2 · 84 follow-up 3*. A model writing
+  four messages each for a few hundred leads drops some, and this is where you
+  see it rather than three weeks into the cadence.
+- **Re-importing the same leads replaces the copy an import gave them, and
+  never what you wrote here.** A message you typed or reworded in the app exists
+  nowhere else; a message from your file can be regenerated. Leads left alone
+  are counted in the result. Re-importing never puts a lead you've already
+  messaged back in the queue.
+- Leads with their own copy show **own copy** instead of a version letter, and
+  are reported apart from the version reply rates — they were never sent that
+  version's words, so counting them under it would measure nothing.
+
+The same `message` and `followup_1…3` columns work in a CSV, but a message
+running to several paragraphs is safer as JSON: one stray quote in a CSV shifts
+a column and the wrong lead gets the wrong message.
 
 **The audit.** Every lead's panel has an **Audit** section. **Run checks** (about
 a minute, one lead at a time) gives Google PageSpeed's mobile speed and SEO

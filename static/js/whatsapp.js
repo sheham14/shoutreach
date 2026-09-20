@@ -183,8 +183,56 @@ function _waEditedNote(l) {
   if (!l.message_edited) {
     return 'Written from the campaign template. Change anything — this lead keeps your version.';
   }
-  return `${l.paraphrased ? 'Reworded by AI' : 'Edited by hand'} — template changes won't touch it ·
+  // message_source is authoritative where it's set; older leads predate it
+  // and are described by the flags that used to carry the same fact.
+  const label = WA_SOURCE_LABELS[l.message_source]
+    || (l.paraphrased ? WA_SOURCE_LABELS.ai : WA_SOURCE_LABELS.manual);
+  return `${label} — template changes won't touch it ·
     <a style="color:var(--blue);cursor:pointer" onclick="resetWaMessage(${l.id})">Reset to template</a>`;
+}
+
+// A lead carries its own copy when its opener was written for it, or when an
+// import brought follow-ups with it.
+function waHasOwnCopy(r) {
+  return !!(r.message_edited || (r.draft_followups || '').length);
+}
+
+// The version letter says which template arm this lead would get. For a lead
+// writing its own messages that's only true of the follow-ups past the ones
+// it brought, so the letter is shown as a title rather than as the answer --
+// reading it as "this lead got version A's copy" is exactly the mistake the
+// reply figures make.
+function waVersionCell(r) {
+  if (!waHasOwnCopy(r)) return esc(r.template_variant || '—');
+  const label = WA_SOURCE_LABELS[r.message_source] || 'Own copy';
+  const letter = r.template_variant ? ` · falls back to version ${r.template_variant}` : '';
+  return pill('own copy', 'blue', `${label}${letter}`);
+}
+
+// draft_followups arrives as the raw JSON string the column stores.
+function waFollowupDrafts(l) {
+  try {
+    const parsed = JSON.parse(l.draft_followups || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+// Which follow-up is next out, and whether this lead has its own wording for
+// it. followup_count is how many have gone, so it indexes the next one.
+// Past the last bespoke slot every follow-up is the template, repeating --
+// the cadence has no end, so only the first few are ever written per lead.
+function _waFollowupNote(l) {
+  const i = l.followup_count || 0;
+  const which = `Follow-up ${i + 1}`;
+  if (i >= WA_MAX_LEAD_FOLLOWUPS) {
+    return `${which} — past your written follow-ups, so it's the campaign template from here on.`;
+  }
+  if (waFollowupDrafts(l)[i]) {
+    return `${which} of ${WA_MAX_LEAD_FOLLOWUPS} — your own wording. Clear the box to put it back on the template.`;
+  }
+  return `${which} of ${WA_MAX_LEAD_FOLLOWUPS} — from the campaign template. Edit it and this lead keeps your version.`;
 }
 
 // `show` opens the lead full screen on a phone: a tap on it, as opposed to
@@ -229,8 +277,10 @@ async function openWaLead(id, show = false) {
 
     <span class="field-label">${ready ? 'Message' : 'Follow-up'}</span>
     <textarea id="wa-msg" class="soft-input" style="min-height:140px"
-              ${ready ? `onchange="saveWaMessage(${l.id}, this.value)"` : ''}>${esc(message)}</textarea>
-    <div class="text-muted text-small" id="wa-msg-note">${ready ? _waEditedNote(l) : ''}</div>
+              onchange="${ready ? `saveWaMessage(${l.id}, this.value)`
+                                : `saveWaFollowup(${l.id}, ${l.followup_count || 0}, this.value)`}"
+              >${esc(message)}</textarea>
+    <div class="text-muted text-small" id="wa-msg-note">${ready ? _waEditedNote(l) : _waFollowupNote(l)}</div>
 
     <div id="wa-actions">${_waActionsHtml(l)}</div>
     <div class="text-muted text-small" style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">
@@ -387,6 +437,37 @@ async function _saveWaMessage(id, message, panelId) {
   Object.assign(l, { message, message_edited: 1, paraphrased: 0 });
   const note = document.getElementById('wa-msg-note');
   if (note && _waCurrent === id) note.innerHTML = _waEditedNote(l);
+}
+
+// The follow-up that's next out for this lead. Saved into its own slot rather
+// than into draft_message, which is the opener's -- a lead on follow-up two
+// still has an opener, and it isn't this.
+//
+// Past the bespoke slots the box is showing the campaign's template, which is
+// shared copy: saving it here would quietly turn a template edit into a
+// per-lead one, so it isn't offered.
+function saveWaFollowup(id, index, message) {
+  if (index >= WA_MAX_LEAD_FOLLOWUPS) {
+    toast('Past your written follow-ups — edit the campaign template instead', 'err');
+    return Promise.resolve();
+  }
+  _waSaving = _waSaving.then(() => _saveWaFollowup(id, index, message)).catch(() => {});
+  return _waSaving;
+}
+
+async function _saveWaFollowup(id, index, message) {
+  const res = await api(`/api/wa/leads/${id}/followup/${index}`, 'PUT', { message });
+  if (!res || res.error) { toast((res && res.error) || 'Could not save the follow-up', 'err'); return; }
+  const l = _waQueue.find(x => x.id === id);
+  if (!l) return;
+  Object.assign(l, {
+    draft_followups: JSON.stringify(res.followups || []),
+    followup_draft: res.followup_message,
+    message_source: res.message_source,
+  });
+  const note = document.getElementById('wa-msg-note');
+  if (note && _waCurrent === id) note.innerHTML = _waFollowupNote(l);
+  toast(message.trim() ? 'Saved for this lead' : 'Back to the campaign template');
 }
 
 async function resetWaMessage(id, panelId = null) {
@@ -587,7 +668,7 @@ createLeadTable({
     { key: 'stage', label: 'Stage', sort: true,
       render: r => waStagePill(r.stage) + (r.opened_at && ['ready', 'due'].includes(r.stage)
         ? ` ${pill('opened', 'amber', 'Opened in WhatsApp — say whether it sent')}` : '') },
-    { key: 'template_variant', label: 'Version', sort: true, cls: 'num', render: r => esc(r.template_variant || '—') },
+    { key: 'template_variant', label: 'Version', sort: true, cls: 'num', render: waVersionCell },
     { key: 'sent_date', label: 'Last sent', sort: true, cls: 'num', render: r => esc(shortDate(r.sent_date)) },
     { key: 'followup_count', label: 'Follow-ups', sort: true, cls: 'num', render: r => r.followup_count || 0 },
     { key: 'created_at', label: 'Added', sort: true, cls: 'num', render: r => esc(shortDate(r.created_at)) },
@@ -784,10 +865,36 @@ function _readWaTemplateEditor() {
   _readWaVariablesOnly();
 }
 
+// Only leads that were actually sent this arm's words. A lead with its own
+// copy still carries an arm label — it says which template it would fall back
+// to — so counting it here would report a reply to a message this arm never
+// sent.
 function _waStatsLine(label) {
-  const rows = (_waEdit.stats || []).filter(s => s.arm === label);
+  const rows = (_waEdit.stats || []).filter(s => s.arm === label && !s.own_copy);
   if (!rows.length) return '';
   return rows.map(r => `${r.sent} sent ${r.paraphrased ? 'AI-reworded' : 'as written'} · ${r.replied} replied (${r.reply_rate}%)`).join('  |  ');
+}
+
+// Said once, above the versions: how much of this campaign never used them.
+// Without it the per-version figures look like the whole picture, and a
+// campaign running on imported copy would be read as a template that nobody
+// answers.
+function _waOwnCopyNote() {
+  const stats = _waEdit.stats || [];
+  const own = stats.filter(s => s.own_copy);
+  if (!own.length) return '';
+  const sum = (rows, key) => rows.reduce((n, r) => n + (r[key] || 0), 0);
+  const ownSent = sum(own, 'sent');
+  const total = sum(stats, 'sent');
+  if (!ownSent || !total) return '';
+  const replied = sum(own, 'replied');
+  const rate = Math.round(replied / ownSent * 1000) / 10;
+  const share = Math.round(ownSent / total * 100);
+  return `<div class="text-muted text-small" style="margin-bottom:10px">
+      ${ownSent} of ${total} sent (${share}%) used copy written for the lead, not these versions —
+      ${replied} replied (${rate}%).
+      ${share >= 80 ? 'The version figures below cover what little is left, so treat them as a footnote.' : ''}
+    </div>`;
 }
 
 function _drawWaTemplateEditor() {
@@ -857,6 +964,7 @@ function _drawWaTemplateEditor() {
         ${total ? `An amber count means some of this campaign's ${total} leads don't have that detail.` : ''}
         Previews use ${_waEditSample ? `a real lead from this campaign (${esc(_waEditSample.company)})` : 'a made-up clinic'}.</div>
 
+      ${_waOwnCopyNote()}
       ${kinds}
       ${untested ? `<div class="text-muted text-small" style="margin-top:12px">Sent before you started testing versions: ${esc(untested)}</div>` : ''}
 
@@ -1005,7 +1113,7 @@ function _waAddCampaignChanged() {
 
 function setWaAddTab(tab) {
   _waAddTab = tab;
-  ['existing', 'import'].forEach(t => {
+  ['existing', 'json', 'import'].forEach(t => {
     const btn = document.getElementById(`wa-add-tab-${t}`);
     if (btn) {
       btn.classList.toggle('btn-primary', t === tab);
@@ -1017,6 +1125,56 @@ function setWaAddTab(tab) {
   const submit = document.getElementById('wa-add-submit');
   if (submit) submit.textContent = tab === 'existing' ? 'Add to WhatsApp' : 'Import';
   if (tab === 'existing') waAddSearch();
+}
+
+// The shape to hand a chat that's writing the copy. Kept here rather than in
+// the placeholder so it can be copied in one click -- a spec that has to be
+// retyped is a spec that drifts, and a drifted key imports as nothing.
+const WA_JSON_SPEC = `Return a JSON array. One object per business, using exactly these keys:
+
+[
+  {
+    "company":     "the business name",
+    "phone":       "their phone number, as listed",
+    "city":        "city",
+    "website":     "their site, if they have one",
+    "message":     "the opening WhatsApp message",
+    "followup_1":  "first follow-up, sent a few days later",
+    "followup_2":  "second follow-up",
+    "followup_3":  "third follow-up"
+  }
+]
+
+Rules:
+- Keys exactly as spelled above, lowercase. Anything else is ignored.
+- company and phone are required. Every other key is optional -- leave one
+  out and that message falls back to the campaign's template.
+- Write all four messages together so the follow-ups build on the opener
+  rather than repeating it.
+- Plain text only. No markdown, no emoji-only lines, no placeholders in
+  curly braces unless you mean them to be filled in.
+- Return only the JSON array. No commentary before or after.`;
+
+function copyWaJsonSpec() {
+  navigator.clipboard.writeText(WA_JSON_SPEC)
+    .then(() => toast('Format copied — paste it into your chat'))
+    .catch(() => toast('Could not copy it', 'err'));
+}
+
+// Reports what arrived, per slot. A model asked for four messages across a
+// few hundred leads quietly drops some, and a follow-up that fell back to the
+// template is worth seeing now rather than three weeks into the cadence.
+function describeWaDrafts(d) {
+  if (!d) return '';
+  const bits = [];
+  if (d.opener) bits.push(`${d.opener} opener${d.opener === 1 ? '' : 's'}`);
+  (d.followups || []).forEach((n, i) => { if (n) bits.push(`${n} follow-up ${i + 1}`); });
+  if (!bits.length) return '';
+  let out = ` · ${bits.join(' · ')}`;
+  if (d.kept_edits) out += ` · ${d.kept_edits} kept your own edits`;
+  if (d.no_phone) out += ` · ${d.no_phone} had no phone, so their copy wasn't kept`;
+  if (d.too_long) out += ` · ${d.too_long} message${d.too_long === 1 ? '' : 's'} too long, skipped`;
+  return out;
 }
 
 function waAddSearch() {
@@ -1076,6 +1234,7 @@ async function submitWaAdd() {
   const campaignId = await resolveCampaignSelect('wa-add-campaign', '/api/wa/campaigns', { country });
   if (!campaignId) { if (campaignId === '') toast('Pick the campaign these leads go into', 'err'); return; }
   if (_waAddTab === 'import') return importWaLeads(campaignId, country);
+  if (_waAddTab === 'json') return importWaJson(campaignId, country);
 
   const body = { business_ids: [..._waAddSelected], country, wa_campaign_id: campaignId };
   const first = await api('/api/wa/add-existing', 'POST', body);
@@ -1142,6 +1301,39 @@ async function importWaLeads(campaignId, country) {
   toast('Select a file or paste some businesses', 'err');
 }
 
+// Leads that arrive with their own copy. Parsed here rather than posted raw
+// so a malformed paste is a message about the paste, not a 400 from the
+// server -- and so a bare array and {"rows": [...]} both reach the API in the
+// one shape it needs alongside the country and campaign.
+async function importWaJson(campaignId, country) {
+  const raw = (document.getElementById('wa-import-json').value || '').trim();
+  if (!raw) { toast('Paste the JSON first', 'err'); return; }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    toast(`That isn't valid JSON — ${e.message}`, 'err');
+    return;
+  }
+  const rows = Array.isArray(parsed) ? parsed : parsed && parsed.rows;
+  if (!Array.isArray(rows) || !rows.length) {
+    toast('Expected an array of rows, or {"rows": [...]}', 'err');
+    return;
+  }
+  if (rows.some(r => !r || typeof r !== 'object' || Array.isArray(r))) {
+    toast('Every row must be an object with named keys like "company"', 'err');
+    return;
+  }
+  const usable = rows.filter(r => (r.company || r.name || '').toString().trim()
+                                || (r.phone || '').toString().trim());
+  if (!usable.length) { toast('No row had a company or a phone number', 'err'); return; }
+
+  const first = await api('/api/wa/import', 'POST',
+    { rows: usable, country, wa_campaign_id: campaignId });
+  await _finishWaImport(first, country, campaignId);
+}
+
 async function _finishWaImport(first, country, campaignId) {
   if (!first || first.error) { toast((first && first.error) || 'Import failed', 'err'); return; }
   const final = await confirmChannelConflicts(first, () =>
@@ -1150,8 +1342,26 @@ async function _finishWaImport(first, country, campaignId) {
     })
   );
   const inserted = (first.inserted || 0) + (final !== first ? (final.inserted || 0) : 0);
-  toast(`Imported ${inserted} lead${inserted === 1 ? '' : 's'} ✓ — ready to send`);
+  toast(`Imported ${inserted} lead${inserted === 1 ? '' : 's'} ✓ — ready to send`
+        + describeWaDrafts(_mergeWaDrafts(first, final)));
   closeModal('modal-import-wa');
   _afterWaAdd();
   notifyCrossOwnerOverlap(first);
+}
+
+// Held-back conflicts come back as a second import, so the two reports are
+// added together before anything is shown -- otherwise the counts describe
+// only the first half of what was actually brought in.
+function _mergeWaDrafts(first, final) {
+  const a = (first && first.drafts) || null;
+  const b = final !== first ? ((final && final.drafts) || null) : null;
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    opener: a.opener + b.opener,
+    followups: (a.followups || []).map((n, i) => n + ((b.followups || [])[i] || 0)),
+    too_long: a.too_long + b.too_long,
+    kept_edits: a.kept_edits + b.kept_edits,
+    no_phone: a.no_phone + b.no_phone,
+  };
 }

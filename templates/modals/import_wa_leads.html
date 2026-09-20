@@ -21,6 +21,7 @@
 
     <div class="flex gap-2" style="margin:4px 0 16px;flex-wrap:wrap">
       <button class="btn btn-primary btn-sm" id="wa-add-tab-existing" onclick="setWaAddTab('existing')">From my leads</button>
+      <button class="btn btn-ghost btn-sm"   id="wa-add-tab-json"     onclick="setWaAddTab('json')">Paste JSON</button>
       <button class="btn btn-ghost btn-sm"   id="wa-add-tab-import"   onclick="setWaAddTab('import')">Paste or CSV</button>
       <button class="btn btn-ghost btn-sm"   onclick="scrapeForWhatsApp()">Scrape Google Maps →</button>
     </div>
@@ -57,12 +58,53 @@
       </div>
     </div>
 
-    <!-- 2. Paste or CSV -->
+    <!-- 2. Paste JSON — leads that already carry their own written copy.
+         JSON rather than CSV because a hyper-personalised message runs to
+         several paragraphs, and quoting those into a CSV by hand is where a
+         column shifts and the wrong lead gets the wrong message. -->
+    <div id="wa-add-pane-json" style="display:none">
+      <p class="text-muted text-small" style="margin-bottom:10px">
+        For leads written ahead of time — each row brings its own
+        <span class="mono">message</span> and up to three follow-ups. Anything left out
+        falls back to this campaign's template, so a partly-written batch is fine.
+      </p>
+      <div class="flex gap-2 items-center" style="margin-bottom:8px;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" onclick="copyWaJsonSpec()">Copy the format</button>
+        <span class="text-muted text-small">Paste that into your chat as the spec, then paste what comes back here.</span>
+      </div>
+      <div class="form-group">
+        <label>Rows as JSON</label>
+        <textarea id="wa-import-json" class="mono" style="min-height:190px"
+                  placeholder='[
+  {
+    "company": "Paradise Dental",
+    "phone": "050 123 4567",
+    "city": "Dubai",
+    "message": "Hi Paradise Dental! I noticed your booking page…",
+    "followup_1": "Morning — just floating this back up…",
+    "followup_2": "Last one from me…",
+    "followup_3": "Closing the loop…"
+  }
+]'></textarea>
+        <div class="form-hint">
+          A bare array, or <span class="mono">{"rows": [...]}</span>. Only
+          <span class="mono">company</span> and <span class="mono">phone</span> are needed;
+          <span class="mono">website</span>, <span class="mono">email</span>,
+          <span class="mono">address</span>, <span class="mono">city</span>,
+          <span class="mono">category</span> and <span class="mono">country</span> all work too.
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Paste or CSV -->
     <div id="wa-add-pane-import" style="display:none">
       <p class="text-muted text-small" style="margin-bottom:14px">
         CSV columns: <span class="mono">company, phone, website, address, category, rating, email</span>
         (company and phone matter most — an email column also puts the address on Email).
         A <span class="mono">country</span> column overrides the country above, row by row.
+        <span class="mono">message</span> and <span class="mono">followup_1…3</span> work here as well,
+        but a message running to several paragraphs is safer pasted as JSON — one stray quote
+        in a CSV shifts a column and sends the wrong lead the wrong message.
       </p>
       <div class="form-group">
         <label>Upload CSV File</label>
