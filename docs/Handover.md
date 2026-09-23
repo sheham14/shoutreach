@@ -545,6 +545,34 @@ operator clicks *Run checks* on its panel:
 
 ---
 
+## 6a. "Today" means the database's day, everywhere
+
+Fixed 2026-09-23. **Every send count is UTC, because every send timestamp is.**
+`sends.sent_at` is written by SQLite's `datetime('now')`, which is UTC.
+`get_campaign_today_count` compared it against `datetime.date.today()` — the
+*server's local* date — so the instant the two diverged the count returned 0
+and **the per-campaign daily cap silently stopped being enforced**. Not a
+throttle that ran slow: no cap at all, for the last hours of every local day,
+on any host not set to UTC. The shared cap had the same split in reverse,
+keying `daily_counts` by local date against a UTC `sends` table.
+
+Both now do the comparison in SQL (`DATE(sent_at) = DATE('now')`,
+`INSERT … VALUES(DATE('now'), 1)`), matching how the call and WhatsApp
+counts always have.
+
+- **Production was almost certainly never affected** — the GCP VM is Debian,
+  which defaults to UTC, so local and UTC agreed. That is worth *confirming*
+  (`timedatectl` on the VM) rather than assuming, and it is also why nobody
+  noticed: the suite passed on the server and in CI.
+- It surfaced only because the operator's own machine is UTC-2:30, so the
+  suite started failing there each evening after about 21:30 local.
+- `tests/test_send_window.py` §7a is the regression test, and it is
+  deterministic: it shifts `db.datetime.date.today` forward a day and asserts
+  nothing moves. Reverting the fix fails it on any machine, in any timezone.
+- **If you add another "today" count, compare in SQL.** Mixing Python's clock
+  with the database's is the whole bug, and it fails silently in the
+  permissive direction.
+
 ## 7. Hard constraints — don't break these
 
 - **WhatsApp is never sent automatically.** No unofficial WhatsApp library, no
@@ -569,13 +597,7 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-22 files. 21 pass; `tests/test_send_window.py` has been failing since
-2026-09-22 and **not because of any change here** — it fails identically on a
-clean checkout. Its two failures are a UTC-versus-local date boundary: the
-operator's machine is UTC-2:30, so between about 21:30 and midnight local the
-daily-cap count and the test disagree about which day "today" is. Worth
-treating as a real bug in the email daily cap rather than a flaky test, since
-the cap is a sending-safety control. Not investigated yet.
+22 files, all passing as of the daily-cap fix (§6a).
 
 `tests/test_pipeline.py` covers stages (§5a): the built-ins and inventing your
 own, one stage read from all three channels, the cadence stopping on set and

@@ -184,6 +184,41 @@ def main():
         check("a capped-out campaign reports the cap, not the window",
               st["sending"] is False and "Daily limit" in st["reason"], st["reason"])
 
+        # The cap counts the database's day, not the machine's.
+        #
+        # sends.sent_at is written by SQLite's datetime('now'), which is UTC.
+        # These counts used to compare it against date.today(), the server's
+        # LOCAL date, so the moment the two diverged -- any host not set to
+        # UTC, for the last hours of each local day -- the per-campaign cap
+        # read 0 and stopped being enforced. It only surfaced because the
+        # operator's own machine is UTC-2:30; on a UTC server the suite went
+        # on passing. Moving the machine's clock must now change nothing.
+        print("\n7a. THE CAP DOESN'T CARE WHAT THE MACHINE THINKS THE DATE IS")
+        before_campaign = db.get_campaign_today_count(cid)
+        before_global = db.get_today_count()
+        check("the campaign's sends are counted", before_campaign == 2, str(before_campaign))
+
+        class _ShiftedDate(datetime.date):
+            @classmethod
+            def today(cls):
+                return _REAL_DATE.today() + datetime.timedelta(days=1)
+
+        _REAL_DATE = datetime.date
+        db.datetime.date = _ShiftedDate
+        try:
+            check("a campaign's count is unchanged by the local date",
+                  db.get_campaign_today_count(cid) == before_campaign,
+                  str(db.get_campaign_today_count(cid)))
+            check("the shared daily count is too",
+                  db.get_today_count() == before_global, str(db.get_today_count()))
+            db.log_send(cid, ids[0], 2, "s", "m-shifted")
+            check("a send logged under a shifted clock still lands on today",
+                  db.get_campaign_today_count(cid) == before_campaign + 1
+                  and db.get_today_count() == before_global + 1,
+                  f"{db.get_campaign_today_count(cid)} / {db.get_today_count()}")
+        finally:
+            db.datetime.date = _REAL_DATE
+
         print("\n8. THE OLD HARDCODED WEEKEND IS GONE")
         src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                 "sender.py"), encoding="utf-8").read()

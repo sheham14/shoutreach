@@ -3455,23 +3455,31 @@ def get_next_account_for_campaign(campaign_id: int):
 
 
 def log_send(campaign_id, email_lead_id, step_num, subject, msg_id, account_id=None):
-    today = datetime.date.today().isoformat()
+    """
+    Record one send: a row in `sends`, and a tick on the shared daily cap.
+
+    Both are keyed to the database's day, not Python's. sends.sent_at is
+    UTC (datetime('now')), so the cap it feeds has to be too -- keying the
+    tally by the server's local date instead meant the two tables disagreed
+    about which day a send belonged to on any host not set to UTC.
+    """
     with get_db() as conn:
         conn.execute("""
             INSERT INTO sends(campaign_id,email_lead_id,step_num,subject,msg_id,account_id)
             VALUES(?,?,?,?,?,?)
         """, (campaign_id, email_lead_id, step_num, subject, msg_id, account_id))
         conn.execute("""
-            INSERT INTO daily_counts(date,count) VALUES(?,1)
+            INSERT INTO daily_counts(date,count) VALUES(DATE('now'),1)
             ON CONFLICT(date) DO UPDATE SET count=count+1
-        """, (today,))
+        """)
 
 
 def get_today_count():
-    today = datetime.date.today().isoformat()
+    """Today's sends across every campaign -- the shared daily cap. UTC, the
+    same day log_send writes and sends.sent_at records."""
     with get_db() as conn:
         row = conn.execute(
-            "SELECT count FROM daily_counts WHERE date=?", (today,)
+            "SELECT count FROM daily_counts WHERE date=DATE('now')"
         ).fetchone()
         return row["count"] if row else 0
 
@@ -3619,12 +3627,19 @@ def get_campaign_today_count(campaign_id):
     report "daily limit reached" using the same number the scheduler enforces
     -- two implementations of the same count would eventually disagree about
     why nothing is going out.
+
+    "Today" is the database's, not Python's. sends.sent_at is written by
+    SQLite's datetime('now'), which is UTC; comparing it against
+    date.today(), which is the server's local date, made this return 0 for
+    every send once the two dates diverged -- so on any host not set to UTC
+    the per-campaign daily cap silently stopped being enforced for the last
+    hours of each local day. Both sides are UTC now, matching how the call
+    and WhatsApp counts have always done it.
     """
-    today = datetime.date.today().isoformat()
     with get_db() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) FROM sends WHERE campaign_id=? AND DATE(sent_at)=?",
-            (campaign_id, today),
+            "SELECT COUNT(*) FROM sends WHERE campaign_id=? AND DATE(sent_at)=DATE('now')",
+            (campaign_id,),
         ).fetchone()
         return row[0] if row else 0
 
