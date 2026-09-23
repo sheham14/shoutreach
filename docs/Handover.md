@@ -606,6 +606,19 @@ items:
 the `/api/contacts/*` URLs (the worker posts to them), `.xlsx` import, a
 WhatsApp number pre-check, auditing leads in bulk.
 
+**Wanted later, not now — "the other operator is already talking to this
+business."** Asked for on 2026-09-22, explicitly deferred. Today
+`find_cross_owner_matches` is advisory and fires only at import: it names the
+business, the channel and the date, never contact details (§3). Showing that
+someone is *in conversation* — once the pipeline stage of §9's phase 2
+exists — would mean surfacing one operator's live progress on another's
+screen, which is a deliberate hole in the wall rather than an extension of
+the existing notice. Worth doing, but decide first how much it may say: a
+bare "someone else is in conversation with this business" leaks far less than
+a stage and a date, and the two operators lead with different services, so
+the answer isn't obvious. Don't let it arrive by accident as a side effect of
+putting the pipeline on `businesses`.
+
 **Noticed, not fixed:** the admin Database viewer's table list still names the
 retired `contacts` table.
 
