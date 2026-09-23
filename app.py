@@ -1973,6 +1973,85 @@ def api_call_queue():
     })
 
 
+# ── API: pipeline stages ──────────────────────────────────────────────────────
+#
+# How far along a business is, shared by every channel. One stage per
+# business, so a meeting booked over WhatsApp reads as booked from Email too.
+
+@app.route("/api/pipeline-stages", methods=["GET"])
+@login_required
+def api_list_pipeline_stages():
+    return jsonify(list(db.get_pipeline_stages(include_archived=True, owner_id=me()).values()))
+
+
+@app.route("/api/pipeline-stages", methods=["POST"])
+@login_required
+def api_create_pipeline_stage():
+    d = request.json or {}
+    label = (d.get("label") or "").strip()
+    if not label:
+        return jsonify({"ok": False, "error": "A name is required"}), 400
+    key = db.create_pipeline_stage(
+        label,
+        is_terminal=d.get("is_terminal"),
+        wants_date=d.get("wants_date"),
+        tone=d.get("tone", "neutral"),
+        owner_id=me(),
+    )
+    return jsonify({"ok": True, "key": key})
+
+
+@app.route("/api/pipeline-stages/<key>", methods=["PATCH"])
+@login_required
+def api_update_pipeline_stage(key):
+    # Built-ins are shared vocabulary, so relabelling one is an admin call;
+    # a stage you invented is yours. Same rule as call outcomes.
+    existing = db.get_pipeline_stage(key)
+    if existing and existing["is_builtin"] and not session.get("is_admin"):
+        return jsonify({"ok": False, "error": "Built-in stages are shared — ask an admin"}), 403
+    if not db.update_pipeline_stage(key, owner_id=me(), **(request.json or {})):
+        return jsonify({"ok": False, "error": "Nothing to update, or unknown stage"}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/pipeline-stages/<key>", methods=["DELETE"])
+@login_required
+def api_delete_pipeline_stage(key):
+    if not db.delete_pipeline_stage(key, owner_id=me()):
+        return jsonify({"ok": False,
+                        "error": "Built-in stages can't be removed, and you can only "
+                                 "remove stages you added"}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/businesses/<int:bid>/pipeline", methods=["PUT"])
+@login_required
+@owned("business", "bid")
+def api_set_business_pipeline(bid):
+    """
+    Move one business along. Setting a stage stops its WhatsApp cadence;
+    clearing one deliberately does not restart it (see set_business_pipeline).
+    """
+    d = request.json or {}
+    result = db.set_business_pipeline(
+        bid, d.get("stage") or "", channel=d.get("channel") or "",
+        next_action_at=d.get("next_action_at"), owner_id=me(),
+    )
+    if not result.get("ok"):
+        return jsonify(result), 404 if result.get("error") == "Not found" else 400
+    return jsonify(result)
+
+
+@app.route("/api/pipeline", methods=["GET"])
+@login_required
+def api_pipeline_board():
+    """Conversations in progress — soonest thing owed first, overdue on top."""
+    return jsonify(db.get_pipeline_board(
+        owner_id=me(),
+        include_terminal=request.args.get("include_terminal") == "1",
+    ))
+
+
 @app.route("/api/call-outcomes", methods=["GET"])
 @login_required
 def api_list_call_outcomes():
@@ -2748,6 +2827,25 @@ def api_wa_leads_page():
     ))
 
 
+@app.route("/api/wa/sent", methods=["GET"])
+@login_required
+def api_wa_sent_log():
+    """
+    What actually went out — the list behind the "sent today" count. `since`
+    is the browser's own local midnight in UTC; without it, everything.
+    """
+    try:
+        limit = min(int(request.args.get("limit", 500)), 1000)
+    except (TypeError, ValueError):
+        limit = 500
+    return jsonify(db.get_wa_sent_log(
+        owner_id=me(),
+        wa_campaign_id=request.args.get("wa_campaign_id") or None,
+        since=request.args.get("since") or None,
+        limit=limit,
+    ))
+
+
 @app.route("/api/wa/summary", methods=["GET"])
 @login_required
 def api_wa_summary():
@@ -2974,6 +3072,7 @@ def api_wa_leads_bulk():
       no_whatsapp / on_whatsapp -- mark as not on WhatsApp, or take the mark off
       move            -- off WhatsApp for good: `destination` 'call', 'email' or
                          'none', optionally into `campaign_id` on that channel
+      pipeline        -- set `stage` on each lead's business (''  clears it)
     Ids come from the body, so each is checked against the caller's own leads
     inside the db call rather than trusted.
     """
@@ -3004,6 +3103,13 @@ def api_wa_leads_bulk():
                 return jsonify({"ok": False, "error": "Not found"}), 404
         counts = db.move_wa_leads(ids, destination, owner_id=me(), campaign_id=campaign_id)
         return jsonify({"ok": True, "updated": counts["moved"], **counts})
+    elif action == "pipeline":
+        # The stage lives on the business, so the lead ids are resolved to
+        # their businesses first -- and only the caller's own, since ids from
+        # a request body are never trusted.
+        stage = (d.get("stage") or "").strip()
+        business_ids = db.business_ids_for_wa_leads(ids, owner_id=me())
+        n = db.set_pipeline_bulk(business_ids, stage, channel="whatsapp", owner_id=me())
     else:
         return jsonify({"ok": False, "error": "Unknown action"}), 400
     return jsonify({"ok": True, "updated": n})

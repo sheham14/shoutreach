@@ -71,8 +71,12 @@ function toggleInfo(btn) {
 // flow, and will be WhatsApp's third user once that import exists.
 async function confirmChannelConflicts(res, resend) {
   if (!res || !res.conflicts || !res.conflicts.length) return res;
+  // The stage comes along so you can tell "already on whatsapp, nothing has
+  // happened yet" from "already on whatsapp, meeting booked" — which is the
+  // difference between adding them here too and leaving well alone.
   const lines = res.conflicts.slice(0, 8).map(c =>
     `  ${c.business_name || 'Unnamed business'} — already on ${c.channels.join(', ')}`
+    + (c.stage ? ` · ${c.stage}` : '')
   ).join('\n');
   const more = res.conflicts.length > 8 ? `\n  …and ${res.conflicts.length - 8} more` : '';
   const ok = confirm(

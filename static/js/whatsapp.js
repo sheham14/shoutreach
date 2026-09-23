@@ -47,8 +47,88 @@ async function loadWaCampaigns() {
   return _waCampaigns;
 }
 
+// ── What actually went out ───────────────────────────────────────────────────
+//
+// wa_log has recorded every send since the module existed; nothing ever
+// showed it, so "which ones did I message?" could only be answered by
+// counting pills. The count in the corner is now the way in to the list.
+
+let _waSentWindow = 'today';
+
+async function openWaSentLog() {
+  _waSentWindow = 'today';
+  const opened = chooseDialog({
+    title: 'Messages you’ve sent',
+    body: '<div id="wa-sent-body"><div class="empty-state"><p>Loading…</p></div></div>',
+    confirm: 'Close', width: 720,
+    collect: () => true,   // read-only: Close and ✕ do the same thing
+  });
+  await waSentWindow('today');
+  await opened;
+}
+
+// Redraws inside the open dialog rather than opening another one — switching
+// period should not stack a second modal behind the first.
+async function waSentWindow(key) {
+  _waSentWindow = key;
+  const el = document.getElementById('wa-sent-body');
+  if (el) el.innerHTML = await _waSentLogHtml();
+}
+
+async function _waSentLogHtml() {
+  const since = { today: startOfLocalDay(), week: _daysAgoUtc(7), all: '' }[_waSentWindow];
+  const camp = _waFilter() ? `&wa_campaign_id=${_waFilter()}` : '';
+  const rows = await api(`/api/wa/sent?since=${encodeURIComponent(since)}${camp}`) || [];
+  const chip = (key, label) =>
+    `<button class="chip ${_waSentWindow === key ? 'active' : ''}"
+             onclick="waSentWindow('${key}')">${label}</button>`;
+
+  return `
+    <div class="chips" style="margin-bottom:12px">
+      ${chip('today', 'Today')}${chip('week', 'Last 7 days')}${chip('all', 'Everything')}
+    </div>
+    ${!rows.length ? '<div class="empty-state"><p>Nothing sent in this period.</p></div>' : `
+    <div class="table-wrap" style="max-height:52vh;overflow-y:auto">
+      <table class="lead-table"><thead><tr>
+        <th>Business</th><th>What</th><th>When</th><th>Since</th>
+      </tr></thead><tbody>
+        ${rows.map(r => `<tr>
+          <td><span class="biz-name">${esc(r.company || 'Unnamed business')}</span>
+              <span class="sub mono">${esc(prettyWaNumber(r.wa_number) || '')}</span></td>
+          <td>${r.kind === 'followup' ? 'Follow-up' : 'Opening message'}
+              ${r.campaign_name ? `<span class="sub">${esc(r.campaign_name)}</span>` : ''}</td>
+          <td class="nowrap">${esc(whenLocal(r.sent_at))}</td>
+          <td>${r.pipeline_stage ? pipelinePill(r)
+                : (r.replied ? pill('Replied', 'green') : '<span class="text-muted">no reply yet</span>')}</td>
+        </tr>`).join('')}
+      </tbody></table>
+    </div>
+    <div class="text-muted text-small" style="margin-top:8px">${rows.length} message${rows.length === 1 ? '' : 's'}${
+      rows.length >= 500 ? ' (newest 500)' : ''}</div>`}`;
+}
+
+function _daysAgoUtc(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString().replace('T', ' ').substring(0, 19);
+}
+
+// The deal half of the Leads filter. "Replied" is already in the markup as
+// the handoff point, so only the stages past it are added — and they come
+// from the server because you can invent your own.
+async function fillWaDealFilter() {
+  const group = document.getElementById('wl-stage-deal');
+  if (!group) return;
+  const stages = (await loadPipelineStages()).filter(s => !s.archived && s.key !== 'replied');
+  const keep = group.querySelector('option[value="replied"]');
+  group.innerHTML = keep ? keep.outerHTML : '<option value="replied">Replied</option>';
+  group.insertAdjacentHTML('beforeend',
+    stages.map(s => `<option value="deal:${esc(s.key)}">${esc(s.label)}</option>`).join(''));
+}
+
 async function loadWhatsApp() {
-  await Promise.all([loadWaCampaigns(), loadCountries()]);
+  await Promise.all([loadWaCampaigns(), loadCountries(), fillWaDealFilter()]);
   const next = _waOpenNext;
   _waOpenNext = null;
   if (next && next.filter !== undefined) document.getElementById('wa-campaign-filter').value = String(next.filter);
@@ -203,7 +283,11 @@ function waHasOwnCopy(r) {
 // reading it as "this lead got version A's copy" is exactly the mistake the
 // reply figures make.
 function waVersionCell(r) {
-  if (!waHasOwnCopy(r)) return esc(r.template_variant || '—');
+  // Nothing to say when a campaign runs one version and the lead didn't bring
+  // its own copy: a column reading "—" down every row is just a question the
+  // reader has to answer for themselves.
+  if (!waHasOwnCopy(r) && !r.template_variant) return '<span class="text-muted">—</span>';
+  if (!waHasOwnCopy(r)) return esc(r.template_variant);
   const label = WA_SOURCE_LABELS[r.message_source] || 'Own copy';
   const letter = r.template_variant ? ` · falls back to version ${r.template_variant}` : '';
   return pill('own copy', 'blue', `${label}${letter}`);
@@ -245,7 +329,8 @@ async function openWaLead(id, show = false) {
   _renderWaQueue();
   const l = _waQueue.find(x => x.id === id);
   if (!l) return;
-  const [detail] = await Promise.all([api(`/api/businesses/${l.business_id}`), loadAuditLinks()]);
+  const [detail] = await Promise.all([api(`/api/businesses/${l.business_id}`), loadAuditLinks(),
+                                      loadPipelineStages()]);
   if (_waCurrent !== id) return;  // another lead was clicked while this loaded
   const ready = _waBucket === 'ready';
   const message = ready ? (l.message || '') : (l.followup_draft || '');
@@ -629,6 +714,33 @@ async function removeWaLeads(ids) {
   else { if (LT.wl) LT.wl.clear(); _reloadWaView(); }
 }
 
+// The same stage over a selection. No date here — a date belongs to one
+// conversation, and quietly giving fifty leads the same deadline would be
+// worse than making you set them one at a time.
+async function setWaLeadsStage(ids) {
+  if (!ids || !ids.length) { toast('Select some leads first', 'err'); return; }
+  const live = (await loadPipelineStages()).filter(s => !s.archived);
+  const values = await chooseDialog({
+    title: `Set a stage for ${ids.length} lead${ids.length === 1 ? '' : 's'}`,
+    body: `<label class="field-label">Stage</label>
+      <select id="wbs-stage" class="filter-select" style="width:100%;max-width:100%">
+        <option value="">Nothing yet (clear it)</option>
+        ${live.map(s => `<option value="${esc(s.key)}">${esc(s.label)}</option>`).join('')}
+      </select>
+      <div class="form-hint" style="margin-top:8px">Stages belong to the business, so this
+        shows on Calling and Email too. Setting one stops their WhatsApp follow-ups; clearing
+        one doesn't start them again.</div>`,
+    confirm: 'Save',
+    collect: () => ({ stage: document.getElementById('wbs-stage').value }),
+  });
+  if (!values) return;
+  const res = await api('/api/wa/leads/bulk', 'POST',
+                        { action: 'pipeline', wa_lead_ids: ids, stage: values.stage });
+  if (!res || res.error) { toast((res && res.error) || 'Could not set that', 'err'); return; }
+  toast(`Updated ${res.updated}`);
+  LT.wl.load();
+}
+
 async function moveWaLeadsToCampaign(ids) {
   if (!ids.length) return;
   await loadWaCampaigns();
@@ -668,6 +780,10 @@ createLeadTable({
     { key: 'stage', label: 'Stage', sort: true,
       render: r => waStagePill(r.stage) + (r.opened_at && ['ready', 'due'].includes(r.stage)
         ? ` ${pill('opened', 'amber', 'Opened in WhatsApp — say whether it sent')}` : '') },
+    { key: 'pipeline_stage', label: 'Deal', sort: true,
+      render: r => r.pipeline_stage
+        ? pipelinePill(r) + (pipelineOverdue(r) ? ' <span style="color:var(--red)" title="Past its date">!</span>' : '')
+        : '<span class="text-muted">—</span>' },
     { key: 'template_variant', label: 'Version', sort: true, cls: 'num', render: waVersionCell },
     { key: 'sent_date', label: 'Last sent', sort: true, cls: 'num', render: r => esc(shortDate(r.sent_date)) },
     { key: 'followup_count', label: 'Follow-ups', sort: true, cls: 'num', render: r => r.followup_count || 0 },
@@ -684,6 +800,7 @@ createLeadTable({
     <button class="btn btn-primary btn-sm" onclick="moveWaLeadsOff(LT.wl.selectedIds())">Move off WhatsApp…</button>
     <button class="btn btn-ghost btn-sm" onclick="unmarkNotOnWhatsApp(LT.wl.selectedIds())">They're on WhatsApp after all</button>
     <button class="btn btn-danger btn-sm" onclick="removeWaLeads(LT.wl.selectedIds())">Take off WhatsApp</button>` : `
+    <button class="btn btn-ghost btn-sm" onclick="setWaLeadsStage(LT.wl.selectedIds())">Set a stage…</button>
     <button class="btn btn-ghost btn-sm" onclick="moveWaLeadsToCampaign(LT.wl.selectedIds())">Move to campaign</button>
     <button class="btn btn-ghost btn-sm" onclick="waSetPaused(LT.wl.selectedIds(), true)">Pause follow-ups</button>
     <button class="btn btn-ghost btn-sm" onclick="waSetPaused(LT.wl.selectedIds(), false)">Resume</button>
@@ -699,6 +816,8 @@ createLeadTable({
       on && { label: 'Move to another campaign…', run: `moveWaLeadsToCampaign([${r.id}])` },
       on && !marked && r.sent_date && !r.replied && { label: r.paused ? 'Resume follow-ups' : 'Pause follow-ups', run: `waSetPaused([${r.id}], ${!r.paused})` },
       on && ['waiting', 'due', 'paused'].includes(r.stage) && { label: 'They replied', run: `waMarkReplied(${r.id}, true)` },
+      on && { label: r.pipeline_stage ? 'Change the stage…' : 'Set a stage…',
+              run: `setPipelineStage(${r.business_id}, 'whatsapp', () => LT.wl.load())` },
       r.stage === 'replied' && { label: "Undo 'replied'", run: `waMarkReplied(${r.id}, false)` },
       on && r.sent_date && { label: "Didn't actually send?", run: `correctWaSentDate(${r.id})` },
       on && !marked && { label: 'Not on WhatsApp', run: `markNotOnWhatsApp([${r.id}])` },
@@ -731,11 +850,13 @@ async function renderWaCampaigns() {
     const actions = `
         <button class="btn btn-ghost btn-sm" onclick="openWaTemplates(${c.id})">Templates</button>
         <button class="btn btn-ghost btn-sm" onclick="openWhatsAppCampaign(${c.id})">Leads</button>
+        <button class="btn btn-ghost btn-sm" onclick="openWaCampaignSettings(${c.id})">Settings</button>
         <div class="row-menu">
           <button class="btn btn-ghost btn-sm" onclick="toggleRowMenu(this)">⋯</button>
           <div class="row-menu-list">
             <button onclick="openWaImportModal(${c.id})">Add leads…</button>
-            <button onclick="openWaTemplates(${c.id})">Rename or edit…</button>
+            <button onclick="openWaCampaignSettings(${c.id})">Settings…</button>
+            <button onclick="openWaTemplates(${c.id})">Edit the messages…</button>
             <button onclick="setWaCampaignStatus(${c.id}, '${c.status === 'archived' ? 'active' : 'archived'}')">${c.status === 'archived' ? 'Unarchive' : 'Archive'}</button>
             <button class="danger" onclick="deleteWaCampaign(${c.id})">Delete campaign</button>
           </div>
@@ -762,6 +883,46 @@ async function renderWaCampaigns() {
 function openWaTemplates(id) {
   setTab('whatsapp', 'templates', { load: false });
   renderWaTemplateEditor(id);
+}
+
+// How the campaign behaves, kept apart from what it says. The follow-up gap
+// used to be reachable only through the Templates editor, which is where
+// nobody looked for it -- "how often do I follow up" is a setting, not copy.
+async function openWaCampaignSettings(id) {
+  await Promise.all([loadWaCampaigns(), loadCountries()]);
+  const c = _waCampaigns.find(x => String(x.id) === String(id));
+  if (!c) { toast('Campaign not found', 'err'); return; }
+  const values = await chooseDialog({
+    title: 'Campaign settings',
+    body: `<label class="field-label">Name</label>
+      <input id="wcs-name" class="soft-input" value="${esc(c.name)}" />
+      <label class="field-label">Country the numbers are in</label>
+      ${countryPickerHtml('wcs-country', c.country)}
+      <label class="field-label">Follow up every</label>
+      <div class="flex items-center gap-2">
+        <input id="wcs-gap" type="number" min="1" max="365" class="soft-input"
+               style="max-width:90px" value="${esc(c.followup_days)}" />
+        <span class="text-muted text-small">days, until they reply or you pause</span>
+      </div>
+      <div class="form-hint" style="margin-top:8px">Follow-ups never stop on their own.
+        The messages themselves are under <b>Templates</b>.</div>`,
+    confirm: 'Save',
+    collect: () => {
+      const name = document.getElementById('wcs-name').value.trim();
+      if (!name) { toast('Give it a name', 'err'); return null; }
+      const country = countryValue('wcs-country');
+      if (!country) { toast('Pick a country from the list', 'err'); return null; }
+      const gap = parseInt(document.getElementById('wcs-gap').value, 10);
+      if (!gap || gap < 1) { toast('Follow up every how many days?', 'err'); return null; }
+      return { name, country, followup_days: gap };
+    },
+  });
+  if (!values) return;
+  const res = await api(`/api/wa/campaigns/${id}`, 'PATCH', values);
+  if (!res || res.error) { toast((res && res.error) || 'Could not save that', 'err'); return; }
+  toast('Saved');
+  await loadWaCampaigns();
+  renderWaCampaigns();
 }
 
 async function openNewWaCampaign() {

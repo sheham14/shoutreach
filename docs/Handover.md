@@ -48,6 +48,10 @@ fix this file.
   and a docs pass — so the VM went `9354245..62f9118` in one restart, 26
   files. All 21 test files passed before the push, and `/login` returns 200
   after it, which is what rules out a failed `init_db`.
+- **Built 2026-09-22, NOT deployed: pipeline stages** (§5a). One stage per
+  business, shared by every channel, with your own stages allowed; plus the
+  "who have I sent to" filter and a list of what actually went out. Four
+  defaulted columns on `businesses` and one new table, no backfill.
 - **Two people use this install, walled off from each other.** Almost every
   query is scoped to an owner, and a handful deliberately aren't. Read §3
   before adding a query, a route, or a background job.
@@ -431,6 +435,56 @@ business) and imported in one pass.
   considered an `angle` tag and rejected it — n=1 per message either way).
 - `tests/test_wa_drafts.py` is the precise statement of all of this.
 
+## 5a. Pipeline stages — built 2026-09-22, not yet deployed
+
+Where a business is up to as a deal. Prompted by the cofounder starting to
+use the app and not finding: which leads he'd sent to, what went out today,
+or anywhere to record that someone booked.
+
+**One stage per business, not per channel** (`businesses.pipeline_stage`,
+`pipeline_channel`, `pipeline_at`, `next_action_at` — four defaulted columns,
+no backfill). Booked over WhatsApp reads as booked from Email and Calling,
+because it's a fact about the prospect, not the channel that reached them.
+`pipeline_channel` records where it was set so a channel can say "booked ·
+via whatsapp" instead of leaving you to guess.
+
+- **The vocabulary is editable**, shaped exactly like `call_outcome_types`:
+  `pipeline_stages` holds shared built-ins (owner 0) plus stages an operator
+  invents, which the other never sees. Built-ins: replied, proposal due,
+  proposal sent, meeting booked, won, not interested. `wants_date` makes a
+  stage ask for one (`next_action_at`); `is_terminal` drops it off the board.
+- **Three rules that are load-bearing** (`set_business_pipeline`):
+  setting a stage marks that business's WhatsApp lead replied, so the cadence
+  stops; **clearing a stage does not un-reply**, because a mis-click must
+  never resume messaging a live conversation; and a terminal stage does
+  **not** set `do_not_contact`, which spans every operator — "not interested
+  in this offer" is not "never contact us".
+- **The channel stage and the deal stage are one chain, not two.** Once
+  `replied = 1`, `_wa_stage_sql` returns 'replied' forever, so the channel
+  stage says nothing after a reply and the deal stage says nothing before
+  one. The Leads filter is therefore a single list: ready → messaged →
+  follow-up due → replied → the deal stages, with paused / not on WhatsApp /
+  taken off as exits. Don't re-split these into two columns.
+- **`stage='messaged'`** in `get_wa_leads_page` means `waiting` + `due` — the
+  question "who have I sent to" that those two split by a queue detail. A
+  value of `deal:<key>` filters on the pipeline stage instead.
+- **`get_wa_sent_log`** finally displays `wa_log`, which has recorded every
+  send since the module existed and was only ever counted. The "N sent today"
+  chip opens it.
+- **The import confirmation now names the stage** — "already on whatsapp ·
+  Meeting booked" — which is the concrete reason the stage is on the business.
+- Also here, from the same feedback: the follow-up gap moved out of Templates
+  into campaign Settings, the Version column reads "—" rather than a bare
+  letter when there's nothing to say, and lead search covers email and notes.
+- `tests/test_pipeline.py` is the precise statement of all of this.
+
+**Not done, deliberately:** Calling and Email still keep their own per-channel
+state (`call_leads.call_status`, enrollments) — the pipeline sits alongside
+rather than replacing them. An email reply detected over IMAP does **not** set
+`pipeline_stage`, so a business that answered your email reads as untouched in
+the pipeline; wiring that in means touching the scheduler's scan loop and was
+left for its own change. There is no stage-change history, only `pipeline_at`.
+
 **The lead audit** (`audit.py`), on any business with a website, only when the
 operator clicks *Run checks* on its panel:
 
@@ -510,7 +564,19 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-21 files, all passing as of the bespoke-copy work (§5).
+22 files. 21 pass; `tests/test_send_window.py` has been failing since
+2026-09-22 and **not because of any change here** — it fails identically on a
+clean checkout. Its two failures are a UTC-versus-local date boundary: the
+operator's machine is UTC-2:30, so between about 21:30 and midnight local the
+daily-cap count and the test disagree about which day "today" is. Worth
+treating as a real bug in the email daily cap rather than a flaky test, since
+the cap is a sending-safety control. Not investigated yet.
+
+`tests/test_pipeline.py` covers stages (§5a): the built-ins and inventing your
+own, one stage read from all three channels, the cadence stopping on set and
+NOT restarting on clear, a terminal stage leaving `do_not_contact` alone, the
+board's ordering, the messaged filter, the send log, widened search, the
+stage in the import confirmation, and the per-operator walls.
 `tests/test_wa_drafts.py` covers imported openers and follow-ups, the order
 they're used in, the fallback to the template past the third, the rule that an
 import never replaces a hand edit, the guarantee that a re-import can't

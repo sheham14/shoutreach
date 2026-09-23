@@ -33,7 +33,8 @@
       </div>
       <a id="wa-no-wa-link" class="text-small" hidden style="margin-left:auto;color:var(--red);cursor:pointer"
          onclick="openWaNotOnWhatsApp()" title="Leads you marked as not on WhatsApp, waiting to be moved off"></a>
-      <span class="sent-today" title="Messages and follow-ups you've marked as sent since midnight">
+      <span class="sent-today" style="cursor:pointer" onclick="openWaSentLog()"
+            title="Everything you've marked as sent — click to see the list">
         <b id="wa-sent-today">0</b> sent today
       </span>
     </div>
@@ -58,16 +59,27 @@
     <div class="work-split" id="wl-split" style="grid-template-columns:1fr">
     <div class="card">
       <div class="lt-toolbar">
-        <input id="wl-search" class="search-input" placeholder="Search name, number, city…" oninput="LT.wl.search()" />
+        <input id="wl-search" class="search-input" placeholder="Search name, number, email, city, notes…" oninput="LT.wl.search()" />
+        <!-- One chain, top to bottom. The channel stages stop meaning
+             anything once a lead replies, and the deal stages mean nothing
+             before it, so they read as one list rather than two filters.
+             The deal half is filled in from /api/pipeline-stages, since you
+             can invent your own. -->
         <select id="wl-stage" class="filter-select" onchange="LT.wl.filter()">
           <option value="">On WhatsApp (any stage)</option>
-          <option value="ready">Ready to send</option>
-          <option value="due">Follow-up due</option>
-          <option value="waiting">Waiting for reply</option>
-          <option value="replied">Replied</option>
-          <option value="paused">Paused</option>
-          <option value="no_whatsapp">Not on WhatsApp</option>
-          <option value="off">Taken off WhatsApp</option>
+          <optgroup label="Getting hold of them" id="wl-stage-channel">
+            <option value="ready">Not messaged yet</option>
+            <option value="messaged">Messaged, waiting</option>
+            <option value="due">Follow-up due</option>
+          </optgroup>
+          <optgroup label="Once they answer" id="wl-stage-deal">
+            <option value="replied">Replied</option>
+          </optgroup>
+          <optgroup label="Other">
+            <option value="paused">Paused</option>
+            <option value="no_whatsapp">Not on WhatsApp</option>
+            <option value="off">Taken off WhatsApp</option>
+          </optgroup>
         </select>
         <span class="lt-count" id="wl-count"></span>
       </div>

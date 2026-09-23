@@ -471,6 +471,32 @@ def init_db():
                 archived      INTEGER NOT NULL DEFAULT 0
             );
 
+            -- How far along a business is, as a deal. Deliberately NOT per
+            -- channel: "meeting booked" is a fact about the prospect, not
+            -- about whichever channel reached them, so importing them onto a
+            -- second channel can show what's already happening with them.
+            --
+            -- Shaped like call_outcome_types, and for the same reason: the
+            -- built-ins are shared (owner 0), a stage someone invents belongs
+            -- to them, and `key` stays globally unique because businesses
+            -- point at it and history has to stay readable whoever looks.
+            CREATE TABLE IF NOT EXISTS pipeline_stages (
+                key         TEXT PRIMARY KEY,
+                owner_id    INTEGER NOT NULL DEFAULT 0,
+                label       TEXT    NOT NULL,
+                -- Ends the conversation: won or lost. Kept out of "in
+                -- progress" without being deleted, since the stage is what
+                -- says how it ended.
+                is_terminal INTEGER NOT NULL DEFAULT 0,
+                -- Asks for a date when set -- "proposal due", "meeting
+                -- booked". Stored on businesses.next_action_at.
+                wants_date  INTEGER NOT NULL DEFAULT 0,
+                tone        TEXT    NOT NULL DEFAULT 'neutral',
+                sort_order  INTEGER NOT NULL DEFAULT 100,
+                is_builtin  INTEGER NOT NULL DEFAULT 0,
+                archived    INTEGER NOT NULL DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS call_campaigns (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 owner_id   INTEGER NOT NULL DEFAULT 0,
@@ -579,6 +605,16 @@ def init_db():
             # that used to carry the same fact between them.
             "ALTER TABLE wa_leads   ADD COLUMN draft_followups TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE wa_leads   ADD COLUMN message_source TEXT NOT NULL DEFAULT ''",
+            # How far along this business is as a deal, shared by every
+            # channel. '' means nothing has happened yet, so existing rows
+            # need no backfill. See the pipeline_stages table.
+            "ALTER TABLE businesses ADD COLUMN pipeline_stage TEXT NOT NULL DEFAULT ''",
+            # Which channel it was set from, so Email can say "booked -- via
+            # WhatsApp" rather than leaving you to guess.
+            "ALTER TABLE businesses ADD COLUMN pipeline_channel TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN pipeline_at TEXT DEFAULT NULL",
+            # When the next thing is owed: a proposal, a booked meeting.
+            "ALTER TABLE businesses ADD COLUMN next_action_at TEXT DEFAULT NULL",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -676,6 +712,11 @@ def init_db():
             _seed_call_outcomes(conn)
         except Exception as exc:
             logger.warning("Call outcome seeding skipped: %s", exc)
+
+        try:
+            _seed_pipeline_stages(conn)
+        except Exception as exc:
+            logger.warning("Pipeline stage seeding skipped: %s", exc)
 
         # Every step owns at least one variant, and its copy lives there.
         #
@@ -2465,10 +2506,12 @@ def find_cross_channel_conflicts(rows: list, channel: str, owner_id=None) -> lis
     business doesn't exist yet, or already exists only on `channel` itself
     (a normal re-import), is not a conflict.
 
-    Returns a list of {row, business_id, business_name, channels} -- `row` is
-    the original dict, `channels` the OTHER channels already present, in the
-    stable order email/call/whatsapp regardless of lookup order, and labelled
-    for direct display.
+    Returns a list of {row, business_id, business_name, channels, stage} --
+    `row` is the original dict, `channels` the OTHER channels already present,
+    in the stable order email/call/whatsapp regardless of lookup order, and
+    labelled for direct display. `stage` is how far along the business already
+    is, so the confirmation can say "already on whatsapp - meeting booked"
+    rather than leaving you to go and look before deciding.
     """
     if not rows:
         return []
@@ -2491,18 +2534,22 @@ def find_cross_channel_conflicts(rows: list, channel: str, owner_id=None) -> lis
         if not resolved:
             return []
         presence = get_channel_presence(conn, [b["id"] for _, b in resolved])
+        labels = {r["key"]: r["label"] for r in
+                  conn.execute("SELECT key, label FROM pipeline_stages").fetchall()}
 
     conflicts = []
     for r, biz in resolved:
         other = [c for c in ("email", "call", "whatsapp")
                  if c != channel and presence[biz["id"]][c]]
         if other:
+            stage_key = (biz["pipeline_stage"] if "pipeline_stage" in biz.keys() else "") or ""
             conflicts.append({
                 "row": r,
                 "business_id": biz["id"],
                 "business_name": biz["name"],
                 "channels": other,
                 "channel_labels": [_CHANNEL_LABELS[c] for c in other],
+                "stage": labels.get(stage_key, stage_key),
             })
     return conflicts
 
@@ -3727,6 +3774,251 @@ def terminal_outcome_keys(owner_id=None):
 def _slugify_outcome(label: str) -> str:
     base = re.sub(r"[^a-z0-9]+", "_", (label or "").lower()).strip("_")
     return base[:40] or "outcome"
+
+
+# ── Pipeline stages: how far along a business is, across every channel ───────
+#
+# One stage per business, not per channel. A meeting booked over WhatsApp is
+# booked when you look at that business from Email too, which is the whole
+# point: it stops you pitching someone your cofounder -- or you, last week --
+# already got somewhere with.
+#
+# key: (label, is_terminal, wants_date, tone, sort_order)
+_BUILTIN_PIPELINE_STAGES = {
+    "replied":        ("Replied",        False, False, "info",    10),
+    "proposal_due":   ("Proposal due",   False, True,  "amber",   20),
+    "proposal_sent":  ("Proposal sent",  False, False, "good",    30),
+    "booked":         ("Meeting booked", False, True,  "good",    40),
+    "won":            ("Won",            True,  False, "good",    50),
+    "not_interested": ("Not interested", True,  False, "bad",     60),
+}
+
+PIPELINE_CHANNELS = ("whatsapp", "call", "email")
+
+
+def _seed_pipeline_stages(conn):
+    """Insert the builtins once. Never updates them -- someone who renamed
+    'Proposal due' to suit how they sell should keep that."""
+    for key, (label, term, dated, tone, order) in _BUILTIN_PIPELINE_STAGES.items():
+        conn.execute("""
+            INSERT OR IGNORE INTO pipeline_stages
+                (key, label, is_terminal, wants_date, tone, sort_order, is_builtin)
+            VALUES(?,?,?,?,?,?,1)
+        """, (key, label, int(term), int(dated), tone, order))
+
+
+def get_pipeline_stages(include_archived=False, owner_id=None) -> dict:
+    """
+    Every stage this operator can pick: the shared built-ins plus their own.
+
+    Another operator's invented stages are not offered and not listed -- what
+    someone names their steps says how they sell, which is theirs.
+    """
+    clauses = ["(is_builtin = 1 OR owner_id = ?)"]
+    if not include_archived:
+        clauses.append("archived = 0")
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM pipeline_stages WHERE {' AND '.join(clauses)} "
+            "ORDER BY sort_order, label", (_resolve_owner_id(conn, owner_id),),
+        ).fetchall()
+    return {r["key"]: dict(r) for r in rows}
+
+
+def get_pipeline_stage(key: str):
+    """One stage, archived ones included -- businesses still name them."""
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM pipeline_stages WHERE key=?", (key,)).fetchone()
+        return dict(row) if row else None
+
+
+def create_pipeline_stage(label, is_terminal=False, wants_date=False,
+                          tone="neutral", owner_id=None) -> str:
+    """
+    Add a stage of your own. Returns its key, which is derived from the label
+    once and then kept -- businesses point at it, so renaming the label later
+    changes what you read everywhere without stranding the rows.
+    """
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        base = _slugify_outcome(label)
+        key, n = base, 2
+        while conn.execute("SELECT 1 FROM pipeline_stages WHERE key=?", (key,)).fetchone():
+            key, n = f"{base}_{n}", n + 1
+        nxt = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) + 10 FROM pipeline_stages"
+        ).fetchone()[0]
+        conn.execute("""
+            INSERT INTO pipeline_stages
+                (key, owner_id, label, is_terminal, wants_date, tone, sort_order, is_builtin)
+            VALUES(?,?,?,?,?,?,?,0)
+        """, (key, owner, (label or "").strip()[:60] or key, int(bool(is_terminal)),
+              int(bool(wants_date)), tone, nxt))
+    return key
+
+
+def update_pipeline_stage(key: str, owner_id=None, **fields) -> bool:
+    """
+    Edit a stage. A built-in can be relabelled but not archived by one
+    operator, since the other one is still using it.
+    """
+    allowed = {"label", "is_terminal", "wants_date", "tone", "sort_order", "archived"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        row = conn.execute("SELECT * FROM pipeline_stages WHERE key=?", (key,)).fetchone()
+        if not row:
+            return False
+        if row["is_builtin"] and "archived" in updates:
+            del updates["archived"]
+        if not row["is_builtin"] and row["owner_id"] != owner:
+            return False
+        if "label" in updates:
+            updates["label"] = (str(updates["label"]).strip()[:60]) or row["label"]
+        for flag in ("is_terminal", "wants_date", "archived"):
+            if flag in updates:
+                updates[flag] = int(bool(updates[flag]))
+        if not updates:
+            return False
+        sets = ", ".join(f"{k}=?" for k in updates)
+        conn.execute(f"UPDATE pipeline_stages SET {sets} WHERE key=?",
+                     (*updates.values(), key))
+    return True
+
+
+def delete_pipeline_stage(key: str, owner_id=None) -> bool:
+    """
+    Remove a stage you invented. Built-ins can't go. Businesses sitting on it
+    are cleared rather than left pointing at a stage that no longer exists.
+    """
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        row = conn.execute("SELECT * FROM pipeline_stages WHERE key=?", (key,)).fetchone()
+        if not row or row["is_builtin"] or row["owner_id"] != owner:
+            return False
+        conn.execute("UPDATE businesses SET pipeline_stage='', pipeline_channel='', "
+                     "pipeline_at=NULL WHERE pipeline_stage=? AND owner_id=?", (key, owner))
+        conn.execute("DELETE FROM pipeline_stages WHERE key=?", (key,))
+    return True
+
+
+def set_business_pipeline(business_id: int, stage: str, channel: str = "",
+                          next_action_at=None, owner_id=None) -> dict:
+    """
+    Move a business along. `stage` is a key from pipeline_stages, or '' to
+    clear it.
+
+    Setting any stage stops that business's WhatsApp cadence -- you can't
+    book someone who never answered, and leaving the follow-ups running after
+    a reply is the one mistake this whole module exists to avoid. Clearing a
+    stage deliberately does NOT restart them: a mis-click would otherwise
+    quietly resume messaging someone you are mid-conversation with, so
+    un-replying stays a separate, deliberate action.
+
+    A terminal stage ('Not interested') does not set do_not_contact. That flag
+    suppresses a business on every channel for every operator, and "not
+    interested in this offer" is not "never contact us again".
+    """
+    stage = (stage or "").strip()
+    channel = (channel or "").strip().lower()
+    if channel and channel not in PIPELINE_CHANNELS:
+        channel = ""
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        biz = conn.execute("SELECT id, owner_id FROM businesses WHERE id=?",
+                           (business_id,)).fetchone()
+        if not biz or biz["owner_id"] != owner:
+            return {"ok": False, "error": "Not found"}
+        if stage:
+            known = conn.execute(
+                "SELECT * FROM pipeline_stages WHERE key=? AND (is_builtin=1 OR owner_id=?)",
+                (stage, owner),
+            ).fetchone()
+            if not known:
+                return {"ok": False, "error": "Unknown stage"}
+            conn.execute("""
+                UPDATE businesses SET pipeline_stage=?, pipeline_channel=?,
+                       pipeline_at=datetime('now'), next_action_at=?
+                 WHERE id=?
+            """, (stage, channel, _clean_date(next_action_at), business_id))
+            # Stop the cadence. Scoped to this business's own WhatsApp lead;
+            # nothing else on any channel is touched.
+            conn.execute("""
+                UPDATE wa_leads SET replied=1, wa_status='replied'
+                 WHERE business_id=? AND replied=0 AND sent_date IS NOT NULL
+            """, (business_id,))
+        else:
+            conn.execute("""
+                UPDATE businesses SET pipeline_stage='', pipeline_channel='',
+                       pipeline_at=NULL, next_action_at=NULL
+                 WHERE id=?
+            """, (business_id,))
+        row = conn.execute(
+            "SELECT pipeline_stage, pipeline_channel, pipeline_at, next_action_at "
+            "FROM businesses WHERE id=?", (business_id,)).fetchone()
+    return {"ok": True, **dict(row)}
+
+
+def _clean_date(value):
+    """A date from a form: 'YYYY-MM-DD' or a datetime, else nothing."""
+    text = str(value or "").strip().replace("T", " ")
+    if not text:
+        return None
+    return text[:19] if re.match(r"^\d{4}-\d{2}-\d{2}", text) else None
+
+
+def business_ids_for_wa_leads(wa_lead_ids, owner_id=None) -> list:
+    """The businesses behind these WhatsApp leads -- this operator's only."""
+    with get_db() as conn:
+        ids = _own_wa_lead_ids(conn, wa_lead_ids, owner_id)
+        if not ids:
+            return []
+        rows = conn.execute(
+            f"SELECT DISTINCT business_id FROM wa_leads WHERE id IN ({','.join('?' * len(ids))})",
+            ids,
+        ).fetchall()
+    return [r["business_id"] for r in rows]
+
+
+def set_pipeline_bulk(business_ids, stage: str, channel: str = "", owner_id=None) -> int:
+    """The same, for a selection. Rows that aren't this operator's are skipped."""
+    done = 0
+    for bid in business_ids or []:
+        try:
+            bid = int(bid)
+        except (TypeError, ValueError):
+            continue
+        if set_business_pipeline(bid, stage, channel, owner_id=owner_id).get("ok"):
+            done += 1
+    return done
+
+
+def get_pipeline_board(owner_id=None, include_terminal=False, limit=200) -> list:
+    """
+    Conversations in progress: every business with a stage set, soonest thing
+    owed first, anything overdue at the top. Terminal stages are left out --
+    won and lost are not work.
+    """
+    with get_db() as conn:
+        where = ["b.owner_id = ?", "b.pipeline_stage != ''"]
+        params = [_resolve_owner_id(conn, owner_id)]
+        if not include_terminal:
+            where.append("COALESCE(s.is_terminal, 0) = 0")
+        rows = conn.execute(f"""
+            SELECT b.id AS business_id, b.name AS company, b.phone, b.city,
+                   b.pipeline_stage, b.pipeline_channel, b.pipeline_at, b.next_action_at,
+                   COALESCE(s.label, b.pipeline_stage) AS stage_label,
+                   COALESCE(s.tone, '')                AS stage_tone,
+                   COALESCE(s.is_terminal, 0)          AS stage_terminal
+              FROM businesses b
+              LEFT JOIN pipeline_stages s ON s.key = b.pipeline_stage
+             WHERE {' AND '.join(where)}
+             ORDER BY b.next_action_at IS NULL, b.next_action_at ASC, b.pipeline_at DESC
+             LIMIT ?
+        """, (*params, limit)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def create_call_outcome(label, is_terminal=False, stops_email=False,
@@ -5721,7 +6013,8 @@ _WA_LEAD_COLUMNS = """
     w.moved_to, w.removed_at, w.opened_at, w.no_whatsapp_at, w.notes, w.created_at, w.wa_campaign_id,
     c.name AS campaign_name, c.followup_days AS campaign_followup_days,
     b.name AS company, b.website, b.address, b.city, b.phone, b.category,
-    b.rating, b.review_count, b.do_not_contact, b.source_job_id
+    b.rating, b.review_count, b.do_not_contact, b.source_job_id,
+    b.pipeline_stage, b.pipeline_channel, b.pipeline_at, b.next_action_at
 """
 _WA_LEAD_JOIN = ("FROM wa_leads w JOIN businesses b ON b.id = w.business_id "
                  "LEFT JOIN wa_campaigns c ON c.id = w.wa_campaign_id")
@@ -5862,8 +6155,13 @@ def get_wa_leads_page(page=1, per_page=50, q="", stage="", wa_campaign_id=None,
     Every WhatsApp lead as one table -- the Leads tab.
 
     stage: '' everything still on WhatsApp, 'off' everything taken off it,
-    or one stage from WA_STAGES. wa_campaign_id: a campaign id, or 'none'
-    for leads with no campaign.
+    'messaged' for everything already sent to and still waiting, or one stage
+    from WA_STAGES. A value starting 'deal:' filters on the business's
+    pipeline stage instead ('deal:booked'), which is how the Leads tab shows
+    one chain -- the channel stage stops meaning anything once a lead has
+    replied, and the deal stage means nothing before it.
+
+    wa_campaign_id: a campaign id, or 'none' for leads with no campaign.
     """
     page = max(1, int(page or 1))
     per_page = max(1, min(int(per_page or 50), 500))
@@ -5876,13 +6174,32 @@ def get_wa_leads_page(page=1, per_page=50, q="", stage="", wa_campaign_id=None,
         inner_params.append(int(wa_campaign_id))
     q = (q or "").strip()
     if q:
-        inner_where.append("(b.name LIKE ? OR b.phone LIKE ? OR w.wa_number LIKE ? "
-                           "OR b.website LIKE ? OR b.city LIKE ?)")
-        inner_params.extend([f"%{q}%"] * 5)
+        # Notes and the email address are in here because someone searching
+        # for a lead reaches for whatever they remember about it, and an
+        # address that silently matches nothing reads as a broken search.
+        inner_where.append(
+            "(b.name LIKE ? OR b.phone LIKE ? OR w.wa_number LIKE ? "
+            " OR b.website LIKE ? OR b.city LIKE ? OR b.notes LIKE ? "
+            " OR EXISTS (SELECT 1 FROM email_leads el WHERE el.business_id = b.id "
+            "            AND el.email LIKE ?))")
+        inner_params.extend([f"%{q}%"] * 7)
 
+    stage = (stage or "").strip()
     outer_where, outer_params = [], []
-    if stage == "off":
+    if stage.startswith("deal:"):
+        outer_where.append("stage NOT IN ('moved','removed')")
+        outer_where.append("pipeline_stage = ?")
+        outer_params.append(stage[len("deal:"):])
+    elif stage == "deal":
+        outer_where.append("stage NOT IN ('moved','removed')")
+        outer_where.append("pipeline_stage != ''")
+    elif stage == "off":
         outer_where.append("stage IN ('moved','removed')")
+    elif stage == "messaged":
+        # "Who have I sent to and not heard back from" -- one question that
+        # the channel stages split in two by whether the follow-up gap has
+        # elapsed, which is a fact about the queue, not about the lead.
+        outer_where.append("stage IN ('waiting','due')")
     elif stage in WA_STAGES:
         outer_where.append("stage = ?")
         outer_params.append(stage)
@@ -5906,6 +6223,41 @@ def get_wa_leads_page(page=1, per_page=50, q="", stage="", wa_campaign_id=None,
         ).fetchall()
     return {"rows": [dict(r) for r in rows], "total": total, "page": page,
             "per_page": per_page, "pages": max(1, (total + per_page - 1) // per_page)}
+
+
+def get_wa_sent_log(owner_id=None, wa_campaign_id=None, since=None, limit=500) -> list:
+    """
+    What actually went out, newest first -- the list behind the "sent today"
+    count. wa_log has held every send all along; nothing displayed it, so
+    "which leads did I message?" had no answer but counting pills on the
+    Leads tab.
+
+    `since` is a UTC 'YYYY-MM-DD HH:MM:SS' -- the browser knows where the
+    operator's day starts, the server doesn't. Omitted, it's everything.
+    """
+    with get_db() as conn:
+        where = ["b.owner_id = ?"]
+        params = [_resolve_owner_id(conn, owner_id)]
+        if wa_campaign_id:
+            where.append("w.wa_campaign_id = ?")
+            params.append(int(wa_campaign_id))
+        if since:
+            where.append("l.sent_at >= ?")
+            params.append(str(since).replace("T", " ")[:19])
+        rows = conn.execute(f"""
+            SELECT l.id, l.wa_lead_id, l.kind, l.message, l.sent_at,
+                   w.business_id, w.wa_number, w.replied, w.followup_count,
+                   b.name AS company, b.pipeline_stage,
+                   c.name AS campaign_name
+              FROM wa_log l
+              JOIN wa_leads w   ON w.id = l.wa_lead_id
+              JOIN businesses b ON b.id = w.business_id
+              LEFT JOIN wa_campaigns c ON c.id = w.wa_campaign_id
+             WHERE {' AND '.join(where)}
+             ORDER BY l.sent_at DESC, l.id DESC
+             LIMIT ?
+        """, (*params, limit)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_wa_summary(owner_id=None, wa_campaign_id=None, since=None) -> dict:
@@ -6308,6 +6660,8 @@ def _business_rows_sql() -> tuple:
         SELECT b.id, b.name AS company, b.phone, b.website, b.domain, b.address, b.city,
                b.country, b.category, b.rating, b.review_count, b.web_status,
                b.source_job_id, b.do_not_contact, b.notes, b.created_at,
+               b.pipeline_stage, b.pipeline_channel, b.pipeline_at, b.next_action_at,
+               (SELECT s.label FROM pipeline_stages s WHERE s.key = b.pipeline_stage) AS pipeline_label,
                (SELECT COUNT(*) FROM email_leads e
                  WHERE e.business_id = b.id AND e.status != 'deleted')          AS email_count,
                (SELECT e.email FROM email_leads e

@@ -111,6 +111,100 @@ function whenLocal(ts) {
   return `on ${d.toLocaleDateString([], { day: 'numeric', month: 'short' })} at ${time}`;
 }
 
+// ── Pipeline stage ───────────────────────────────────────────────────────────
+//
+// How far along a business is, shared by every channel: booked over WhatsApp
+// reads as booked from Email too. Lives here rather than in whatsapp.js
+// because the side panel shows it on all three, and this file loads first.
+
+let _pipelineStages = null;
+
+async function loadPipelineStages(force = false) {
+  if (_pipelineStages && !force) return _pipelineStages;
+  _pipelineStages = await api('/api/pipeline-stages') || [];
+  return _pipelineStages;
+}
+
+function pipelineStage(key) {
+  return (_pipelineStages || []).find(s => s.key === key) || null;
+}
+
+const _PIPE_TONE = { good: 'green', bad: 'red', info: 'blue', amber: 'amber' };
+
+// The pill a business carries wherever it's listed. Falls back to the raw key
+// so a stage the other operator invented, or one archived since, still reads
+// as something rather than vanishing.
+function pipelinePill(row) {
+  const key = row.pipeline_stage || '';
+  if (!key) return '';
+  const s = pipelineStage(key);
+  const label = s ? s.label : (row.pipeline_label || key);
+  const via = row.pipeline_channel ? ` · via ${row.pipeline_channel}` : '';
+  const when = row.pipeline_at ? ` · ${shortDate(row.pipeline_at)}` : '';
+  const due = row.next_action_at ? ` · due ${shortDate(row.next_action_at)}` : '';
+  return pill(label, _PIPE_TONE[s && s.tone] || '', `${label}${via}${when}${due}`);
+}
+
+// Overdue is worth shouting about — it's the whole reason next_action_at
+// exists. Compared by date only: a thing due today isn't late yet.
+function pipelineOverdue(row) {
+  if (!row.next_action_at) return false;
+  return String(row.next_action_at).substring(0, 10) < new Date().toISOString().substring(0, 10);
+}
+
+/**
+ * Set (or clear) a business's stage. `channel` is where it was set from, so
+ * the other channels can say "booked — via whatsapp" instead of leaving you
+ * to guess. `after` runs on success.
+ */
+async function setPipelineStage(businessId, channel, after) {
+  const stages = await loadPipelineStages();
+  const live = stages.filter(s => !s.archived);
+  const current = await api(`/api/businesses/${businessId}`);
+  const now = (current && current.pipeline_stage) || '';
+  const values = await chooseDialog({
+    title: 'Where is this one up to?',
+    body: `<label class="field-label">Stage</label>
+      <select id="pl-stage" class="filter-select" style="width:100%;max-width:100%"
+              onchange="_pipeDateToggle()">
+        <option value="">Nothing yet</option>
+        ${live.map(s => `<option value="${esc(s.key)}" data-date="${s.wants_date ? 1 : 0}"
+           ${s.key === now ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}
+      </select>
+      <div id="pl-date-wrap" style="display:${pipelineStage(now) && pipelineStage(now).wants_date ? 'block' : 'none'}">
+        <label class="field-label">When is it due?</label>
+        <input id="pl-date" type="date" class="soft-input"
+               value="${esc((current && current.next_action_at || '').substring(0, 10))}" />
+      </div>
+      <div class="form-hint" style="margin-top:8px">This is the business, not just this
+        channel — it shows the same wherever you open them. Setting a stage stops their
+        WhatsApp follow-ups.</div>`,
+    confirm: 'Save',
+    collect: () => {
+      const stage = document.getElementById('pl-stage').value;
+      const dateEl = document.getElementById('pl-date');
+      return { stage, next_action_at: stage && dateEl ? dateEl.value : null };
+    },
+  });
+  if (!values) return false;
+  const res = await api(`/api/businesses/${businessId}/pipeline`, 'PUT',
+                        { ...values, channel });
+  if (!res || res.error) { toast((res && res.error) || 'Could not save that', 'err'); return false; }
+  toast(values.stage ? 'Stage saved' : 'Stage cleared');
+  if (after) after(res);
+  return true;
+}
+
+// Only stages that want one ask for a date — "proposal due" does, "replied"
+// doesn't, and showing an empty date box on every stage invites junk.
+function _pipeDateToggle() {
+  const sel = document.getElementById('pl-stage');
+  const wrap = document.getElementById('pl-date-wrap');
+  if (!sel || !wrap) return;
+  const opt = sel.options[sel.selectedIndex];
+  wrap.style.display = opt && opt.dataset.date === '1' ? 'block' : 'none';
+}
+
 // Mirrors db.WA_MAX_LEAD_FOLLOWUPS — how many follow-ups a lead can carry its
 // own wording for before the campaign template takes over for good. Here
 // rather than in whatsapp.js because the side panel renders the same messages
@@ -391,6 +485,25 @@ function callOutcomeLabel(key) {
 
 // Notes, audit and history, each folded so the panel stays short. Used
 // under the send controls on WhatsApp's To do tab, and in every lead panel.
+// Right under the business name on every channel's panel, because "where is
+// this one up to" is the first thing you want to know before you write to
+// them again — and the answer is the same whichever channel you came from.
+function pipelineRowHtml(d, opts) {
+  const channel = opts.channel || '';
+  const set = `setPipelineStage(${d.id}, '${channel}', () => refreshLeadPanel('${opts.panelId}'))`;
+  if (!d.pipeline_stage) {
+    return `<div style="margin-top:8px">
+      <a class="text-small" style="color:var(--blue);cursor:pointer" onclick="${set}">+ Set a stage</a>
+    </div>`;
+  }
+  const overdue = pipelineOverdue(d)
+    ? ` <span style="color:var(--red)">overdue</span>` : '';
+  return `<div class="flex items-center gap-2" style="margin-top:8px;flex-wrap:wrap">
+      ${pipelinePill(d)}${overdue}
+      <a class="text-small" style="color:var(--blue);cursor:pointer" onclick="${set}">Change</a>
+    </div>`;
+}
+
 function sharedSectionsHtml(d, { open = 'notes' } = {}) {
   return `
     <details class="panel-fold" ${open === 'notes' || open === 'all' ? 'open' : ''}>
@@ -412,7 +525,8 @@ const LeadPanel = { current: {} };
 async function openLeadPanel(businessId, opts) {
   const panel = document.getElementById(opts.panelId);
   if (!panel) return;
-  const [d] = await Promise.all([api(`/api/businesses/${businessId}`), loadAuditLinks()]);
+  const [d] = await Promise.all([api(`/api/businesses/${businessId}`), loadAuditLinks(),
+                                 loadPipelineStages()]);
   if (!d || d.error) { toast((d && d.error) || 'Could not open that lead', 'err'); return; }
   const sameLead = LeadPanel.current[opts.panelId] && LeadPanel.current[opts.panelId].businessId === businessId;
   LeadPanel.current[opts.panelId] = { businessId, opts };
@@ -445,6 +559,7 @@ async function openLeadPanel(businessId, opts) {
     </div>
     <div class="text-small" style="display:flex;gap:10px;flex-wrap:wrap">${links.join('')}</div>
     ${facts ? `<div class="text-muted text-small" style="margin-top:2px">${facts}</div>` : ''}
+    ${pipelineRowHtml(d, opts)}
     ${channelHtml}
     <span class="field-label">Where it is</span>
     ${whereItIsHtml(d)}
