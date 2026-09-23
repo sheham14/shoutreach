@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-09-20 (bespoke per-lead WhatsApp copy; live) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-09-23 (pipeline stages; live) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -48,10 +48,14 @@ fix this file.
   and a docs pass — so the VM went `9354245..62f9118` in one restart, 26
   files. All 21 test files passed before the push, and `/login` returns 200
   after it, which is what rules out a failed `init_db`.
-- **Built 2026-09-22, NOT deployed: pipeline stages** (§5a). One stage per
-  business, shared by every channel, with your own stages allowed; plus the
-  "who have I sent to" filter and a list of what actually went out. Four
-  defaulted columns on `businesses` and one new table, no backfill.
+- **Live since 2026-09-23 00:52 UTC (`60d0896`): pipeline stages** (§5a).
+  One stage per business, shared by every channel, with your own stages
+  allowed; plus the "who have I sent to" filter, a list of what actually went
+  out, the stage named in the import confirmation, and the follow-up gap
+  moved into campaign Settings. The restart added four defaulted columns to
+  `businesses` and the `pipeline_stages` table, and seeded six built-in
+  stages. No backfill, no data changed. **No backup was taken.** `/login`
+  returns 200 after it, which is what rules out a failed `init_db`.
 - **Two people use this install, walled off from each other.** Almost every
   query is scoped to an owner, and a handful deliberately aren't. Read §3
   before adding a query, a route, or a background job.
@@ -66,6 +70,7 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
+| `60d0896` | 09-23 | Pipeline stages on the business; "messaged" filter; the sent log; campaign Settings | Yes |
 | `62f9118` | 09-20 | A lead can bring its own opener and three follow-ups (JSON/CSV import); follow-ups editable per lead | Yes |
 | `f5c10ce` | 09-16 | Lead lists and lead panels work on a phone | Yes |
 | `ddfd25e` | 09-16 | WhatsApp button on each To do row; row menus no longer clipped | Yes |
@@ -435,7 +440,7 @@ business) and imported in one pass.
   considered an `angle` tag and rejected it — n=1 per message either way).
 - `tests/test_wa_drafts.py` is the precise statement of all of this.
 
-## 5a. Pipeline stages — built 2026-09-22, not yet deployed
+## 5a. Pipeline stages — live 2026-09-23 (`60d0896`)
 
 Where a business is up to as a deal. Prompted by the cofounder starting to
 use the app and not finding: which leads he'd sent to, what went out today,
