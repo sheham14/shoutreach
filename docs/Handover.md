@@ -545,6 +545,38 @@ operator clicks *Run checks* on its panel:
 
 ---
 
+## 5b. The campaign is the heading — and the Leads badge lied
+
+Fixed 2026-09-23, from the cofounder's first week. His To do showed 47 leads
+and his Leads tab showed 0.
+
+**The data was never wrong** — `get_wa_summary` and `get_wa_leads_page` agree
+in every case, including moved, removed and not-on-WhatsApp leads. Three UI
+faults produced it:
+
+- **The Leads badge was set from the filtered page, and only when no stage
+  filter was set** (`onLoad: if (!wl-stage.value) setTabCount(...)`). One
+  click on "N marked not on WhatsApp →" sets that filter and jumps to Leads,
+  and the tab is remembered in `localStorage`, so on the next load
+  `loadWhatsApp` skipped the badge fetch (`if (tab !== 'leads')`) and
+  `onLoad` skipped it too — leaving the badge at its markup default of 0.
+  It now comes from `refreshWaTotals()`, an unfiltered summary, and is the
+  channel's total whatever any filter is doing.
+- **An empty filtered table said nothing about the filter.** `#wl-filter-note`
+  now names what is narrowing the list with a "Show all leads" link.
+- **Leads in no campaign could not be listed.** Deleting a campaign leaves
+  them behind (`ON DELETE SET NULL`), `get_wa_leads_page` has always
+  supported `wa_campaign_id='none'`, and the picker never offered it — so
+  they were invisible on every campaign-scoped tab, and invisible leads
+  cannot be selected and moved into a campaign. The picker now offers
+  "No campaign (n)" when there are any, counted from `summary.no_campaign`.
+
+**The campaign name is the page heading now**, with a "← All campaigns"
+crumb and the lead count and follow-up gap beneath it, instead of a small
+select in the corner. Every tab is scoped to that campaign; reading a list of
+leads without knowing whose list it is was the single biggest source of
+confusion in the first week of real use.
+
 ## 6a. "Today" means the database's day, everywhere
 
 Fixed 2026-09-23. **Every send count is UTC, because every send timestamp is.**

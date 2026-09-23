@@ -1,8 +1,15 @@
 <div class="section" id="section-whatsapp">
   <div class="page-header">
+    <!-- Which campaign you're in is the heading, not a dropdown in the
+         corner: every tab below it is scoped to that campaign, and reading
+         a list of leads without knowing whose list it is was the single
+         biggest source of confusion in the first week of real use. -->
     <div>
-      <div class="page-title">WhatsApp</div>
-      <div class="page-sub">Nothing sends by itself — you always tap Send yourself, inside WhatsApp</div>
+      <div class="page-crumb text-muted text-small" id="wa-crumb" hidden>
+        <a style="color:var(--blue);cursor:pointer" onclick="waShowAllCampaigns()">← All campaigns</a>
+      </div>
+      <div class="page-title" id="wa-title">WhatsApp</div>
+      <div class="page-sub" id="wa-sub">Nothing sends by itself — you always tap Send yourself, inside WhatsApp</div>
     </div>
     <div class="flex gap-2 items-center">
       <select id="wa-campaign-filter" class="filter-select" onchange="waCampaignFilterChanged()"
@@ -83,6 +90,10 @@
         </select>
         <span class="lt-count" id="wl-count"></span>
       </div>
+      <!-- An empty table under an active filter has to say so, or it reads as
+           an empty channel. -->
+      <div class="text-muted text-small" id="wl-filter-note" hidden
+           style="margin:0 0 10px"></div>
       <div id="wl-body"></div>
     </div>
     <div class="card work-panel sheet" id="wl-panel" style="display:none"></div>

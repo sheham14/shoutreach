@@ -41,11 +41,22 @@ async function loadWaCampaigns() {
   setTabCount('whatsapp', 'campaigns', _waCampaigns.length);
   const sel = document.getElementById('wa-campaign-filter');
   const keep = sel.value;
-  sel.innerHTML = '<option value="">All campaigns</option>' +
-    _waCampaigns.map(c => `<option value="${c.id}">${esc(c.name)}${c.status === 'archived' ? ' (archived)' : ''}</option>`).join('');
-  sel.value = _waCampaigns.some(c => String(c.id) === keep) ? keep : '';
+  // "No campaign" is offered because leads can end up there — deleting a
+  // campaign leaves its leads behind (ON DELETE SET NULL). Without a way to
+  // list them they were invisible on every tab that scopes by campaign, and
+  // invisible leads can't be selected and moved into one.
+  const orphans = _waNoCampaignCount;
+  sel.innerHTML = '<option value="">All campaigns</option>'
+    + _waCampaigns.map(c => `<option value="${c.id}">${esc(c.name)}${c.status === 'archived' ? ' (archived)' : ''}</option>`).join('')
+    + (orphans ? `<option value="none">No campaign (${orphans})</option>` : '');
+  sel.value = (keep === 'none' && orphans) || _waCampaigns.some(c => String(c.id) === keep)
+    ? keep : '';
   return _waCampaigns;
 }
+
+// How many of this operator's leads are in no campaign. Read from the summary
+// rather than counted here, so it can't drift from what the page shows.
+let _waNoCampaignCount = 0;
 
 // ── What actually went out ───────────────────────────────────────────────────
 //
@@ -128,20 +139,104 @@ async function fillWaDealFilter() {
 }
 
 async function loadWhatsApp() {
+  // The unfiltered summary first: it carries both the Leads badge total and
+  // how many leads are in no campaign, and the campaign picker needs the
+  // second before it can offer "No campaign".
+  await refreshWaTotals();
   await Promise.all([loadWaCampaigns(), loadCountries(), fillWaDealFilter()]);
   const next = _waOpenNext;
   _waOpenNext = null;
   if (next && next.filter !== undefined) document.getElementById('wa-campaign-filter').value = String(next.filter);
+  renderWaHeader();
   const tab = next ? next.tab : currentTab('whatsapp', 'todo');
   setTab('whatsapp', tab);
   if (tab !== 'todo') refreshWaCounts();
-  if (tab !== 'leads') {
-    const page = await api('/api/wa/leads/page?per_page=1');
-    if (page && page.total !== undefined) setTabCount('whatsapp', 'leads', page.total);
+}
+
+// The Leads badge counts every lead on the channel, never what a filter
+// happens to be showing. It used to be set from the filtered page and only
+// when no stage filter was set, so one click on "marked not on WhatsApp"
+// left it reading 0 with 47 leads sitting behind the filter.
+async function refreshWaTotals() {
+  const s = await api('/api/wa/summary') || {};
+  _waNoCampaignCount = s.no_campaign || 0;
+  if (s.total !== undefined) setTabCount('whatsapp', 'leads', s.total);
+  return s;
+}
+
+// Says, above the table, that a filter is narrowing it — and offers the way
+// out. Without this an empty Leads tab looks like an empty channel, which is
+// exactly how someone concludes their 47 leads have vanished.
+function renderWaFilterNote() {
+  const note = document.getElementById('wl-filter-note');
+  if (!note) return;
+  const stageSel = document.getElementById('wl-stage');
+  const stage = stageSel ? stageSel.value : '';
+  const camp = _waFilter();
+  const bits = [];
+  if (stage) {
+    const opt = stageSel.options[stageSel.selectedIndex];
+    bits.push(`showing only <b>${esc(opt ? opt.textContent.trim() : stage)}</b>`);
   }
+  if (camp === 'none') bits.push('showing only <b>leads with no campaign</b>');
+  else if (camp) {
+    const c = _waCampaigns.find(x => String(x.id) === String(camp));
+    if (c) bits.push(`in <b>${esc(c.name)}</b>`);
+  }
+  if (!bits.length) { note.hidden = true; note.innerHTML = ''; return; }
+  note.hidden = false;
+  note.innerHTML = `Filtered — ${bits.join(', ')}. `
+    + `<a style="color:var(--blue);cursor:pointer" onclick="clearWaLeadFilters()">Show all leads</a>`;
+}
+
+function clearWaLeadFilters() {
+  const stage = document.getElementById('wl-stage');
+  const search = document.getElementById('wl-search');
+  const camp = document.getElementById('wa-campaign-filter');
+  if (stage) stage.value = '';
+  if (search) search.value = '';
+  if (camp) camp.value = '';
+  renderWaHeader();
+  LT.wl.load({ resetPage: true });
+}
+
+// The heading says which campaign you're in. Every tab below is scoped to it,
+// so reading "Leads" without knowing whose leads is how you end up thinking
+// you have none.
+function renderWaHeader() {
+  const id = _waFilter();
+  const c = _waCampaigns.find(x => String(x.id) === String(id));
+  const crumb = document.getElementById('wa-crumb');
+  const title = document.getElementById('wa-title');
+  const sub = document.getElementById('wa-sub');
+  if (!title) return;
+  if (id === 'none') {
+    crumb.hidden = false;
+    title.textContent = 'Leads with no campaign';
+    sub.textContent = 'They have no messages until you move them into one — select them below and use Move to campaign.';
+    return;
+  }
+  if (!c) {
+    crumb.hidden = true;
+    title.textContent = 'WhatsApp';
+    sub.textContent = 'Nothing sends by itself — you always tap Send yourself, inside WhatsApp';
+    return;
+  }
+  crumb.hidden = false;
+  title.textContent = c.name;
+  sub.textContent = `${c.leads} lead${c.leads === 1 ? '' : 's'} · follows up every `
+    + `${c.followup_days} day${c.followup_days === 1 ? '' : 's'}`
+    + (c.status === 'archived' ? ' · archived' : '');
+}
+
+function waShowAllCampaigns() {
+  const sel = document.getElementById('wa-campaign-filter');
+  if (sel) sel.value = '';
+  waCampaignFilterChanged();
 }
 
 function waCampaignFilterChanged() {
+  renderWaHeader();
   const tab = currentTab('whatsapp', 'todo');
   if (tab === 'todo') { _waCurrent = null; loadWaTodo(); }
   else if (tab === 'leads') { closeLeadPanel('wl-panel'); LT.wl.load({ resetPage: true, keepSelection: false }); }
@@ -623,6 +718,9 @@ function _reloadWaView() {
     }
     return;
   }
+  // The channel total and the no-campaign count can both have changed —
+  // leads added, moved off, or a campaign deleted out from under them.
+  refreshWaTotals().then(() => { renderWaHeader(); renderWaFilterNote(); });
   const tab = currentTab('whatsapp', 'todo');
   if (tab === 'todo') loadWaTodo();
   if (tab === 'leads') { LT.wl.load(); refreshLeadPanel('wl-panel'); refreshWaCounts(); }
@@ -824,7 +922,11 @@ createLeadTable({
       on && { label: 'Take off WhatsApp', run: `removeWaLeads([${r.id}])`, danger: true },
     ];
   },
-  onLoad: data => { if (!document.getElementById('wl-stage').value) setTabCount('whatsapp', 'leads', data.total); },
+  // The badge is the channel's total (refreshWaTotals), not this page's, so
+  // it isn't touched here. What IS said here is when a filter is hiding
+  // everything — an empty table under an active filter reads as "you have no
+  // leads" unless it says otherwise.
+  onLoad: () => renderWaFilterNote(),
 });
 
 function openWaLeadFromTable(r) {
