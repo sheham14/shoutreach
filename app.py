@@ -2054,11 +2054,17 @@ def api_pipeline_board():
     booked is terminal in the "stops it being generic pipeline work" sense,
     but a meeting that hasn't happened yet is still very much something to
     look at.
+
+    `channel` narrows to businesses whose stage was set from that channel
+    (the WhatsApp Booked tab asks for ?channel=whatsapp, so a cold-call
+    booking doesn't show up in a view meant to answer "which of my WhatsApp
+    conversations turned into a meeting").
     """
     return jsonify(db.get_pipeline_board(
         owner_id=me(),
         include_terminal=request.args.get("include_terminal") == "1",
         stage=request.args.get("stage") or None,
+        channel=request.args.get("channel") or None,
     ))
 
 

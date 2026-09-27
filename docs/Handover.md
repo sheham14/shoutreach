@@ -531,25 +531,39 @@ than expected.
   worse than leaving it to an explicit set from the lead panel. Before this,
   a call-booked meeting was invisible from every other channel, which
   defeated the entire point of putting the stage on the business.
-- **`GET /api/pipeline?stage=booked`** — `get_pipeline_board` gained a
-  `stage` filter, which also lifts the usual "terminal stages excluded" rule
-  for that one stage (a booked meeting that hasn't happened yet is still very
-  much work, even though the stage is otherwise non-terminal by default).
-  Reused rather than a new query, and it's the same endpoint the Dashboard's
-  "conversations in progress" board (still unbuilt) will eventually use too.
+- **`GET /api/pipeline?stage=booked&channel=whatsapp`** — `get_pipeline_board`
+  gained both a `stage` filter, which also lifts the usual "terminal stages
+  excluded" rule for that one stage (a booked meeting that hasn't happened
+  yet is still very much work, even though the stage is otherwise
+  non-terminal by default), and a `channel` filter on `pipeline_channel`.
+  **The channel filter is the one piece that changed shape mid-build.** The
+  first version showed every booked business regardless of channel; the
+  operator caught that a meeting booked over a cold call must still read as
+  "booked" everywhere that business is opened (Contacts, its own lead panel
+  on every channel — that part is right and unchanged), but a *tab specific
+  to WhatsApp* answering "which conversations turned into a meeting" should
+  not also be listing cold-call bookings. The WhatsApp Booked tab now always
+  requests `channel=whatsapp`; the unfiltered board (no `channel` given)
+  still exists for whatever eventually reads it Dashboard-side. Calling would
+  ask for `channel=call` the same way if it ever grows an equivalent tab.
 - **`GET /api/businesses/<id>/ics`** — the same builder Calling already has
   for `next_call_at`, adapted for `businesses.next_action_at`. No `Z` suffix
   on `DTSTART`/`DTEND`, matching the floating-time convention above: the
   digits are the operator's own wall clock, not a UTC instant.
-- **The Booked tab lives in WhatsApp** (where it was asked for) but is
-  deliberately not scoped to the campaign filter above the tabs — a meeting
-  from any channel or campaign is worth seeing, tagged "via call" / "via
-  whatsapp · campaign name" per row rather than hidden by a filter that
-  happens to be set. Rows group Overdue / Today / Tomorrow / Later and open
-  the same shared lead panel every other tab uses, mapped to the right
-  channel section (`pipeline_channel` says `'call'`, `openLeadPanel` expects
-  `'calling'` — a pre-existing naming mismatch between the two features,
-  bridged in the frontend rather than reconciled).
+- **The Booked tab lives in WhatsApp** (where it was asked for), scoped to
+  WhatsApp bookings only (see above), and is not scoped to the campaign
+  filter above the tabs — a WhatsApp booking from any campaign belongs in one
+  list, tagged with the campaign name per row. Rows group
+  Overdue / Today / Tomorrow / Later and open the same shared lead panel
+  every other tab uses.
+- **Fixed the same day:** `openLeadPanel`'s channel names never matched
+  `PIPELINE_CHANNELS` for calling (`'calling'` vs `'call'`). Setting a stage
+  from Calling's own lead panel — the generic "+ Set a stage" link every
+  channel's panel shares, not the call-outcome route above — was silently
+  storing `pipeline_channel=''` instead of `'call'`, which only started
+  mattering once a channel filter existed to be silently excluded from.
+  `lead_panel.js`'s `_PANEL_TO_PIPE_CHANNEL` translates it before the write
+  now.
 - **Reminders were considered and explicitly scrapped** (2026-09-27,
   operator's own suggestion, not the cofounder's ask). No notification
   channel exists anywhere in this app — no push, no per-user email address on
@@ -719,8 +733,10 @@ and NOT restarting on clear, a terminal stage leaving `do_not_contact` alone,
 the board's ordering, the messaged filter, the send log, widened search, the
 stage in the import confirmation, the per-operator walls, `wants_time` and its
 migration, `datetime-local` second-padding, a phone booking setting the
-shared stage (and a non-`booked` or custom call outcome NOT doing so), the
-`.ics` route, and its ownership wall.
+shared stage (and a non-`booked` or custom call outcome NOT doing so), that a
+cold-call booking is excluded from the `channel=whatsapp` view while a
+WhatsApp one appears there and both appear unfiltered, the `.ics` route, and
+its ownership wall.
 `tests/test_wa_drafts.py` covers imported openers and follow-ups, the order
 they're used in, the fallback to the template past the third, the rule that an
 import never replaces a hand edit, the guarantee that a re-import can't
@@ -772,9 +788,12 @@ importing runs `init_db()` against `./outreach.db`.
      the time shown matches what was typed, with no shift (this is the one
      thing most worth watching for — a shift would mean the "no timezone
      conversion, anywhere" design in §5c has a hole somewhere); **Add to
-     calendar** downloads a working `.ics`; and, in Calling, logging a
-     "Meeting booked" outcome makes that same business show up on the
-     Booked tab too.
+     calendar** downloads a working `.ics`; and — the opposite of an earlier
+     draft of this feature — logging a "Meeting booked" outcome in Calling
+     must show that business as booked in Contacts and on its own Calling
+     panel, but must **not** put it on the WhatsApp Booked tab. If a
+     cold-call booking ever shows up there, the `channel=whatsapp` filter in
+     `get_pipeline_board` has regressed.
 00. **The pipeline is live** (§5a) and the cofounder is using it. Still open,
     on purpose: an email reply detected over IMAP does not set
     `pipeline_stage` (§5c's "Not done, deliberately"), and there is still no

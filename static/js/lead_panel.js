@@ -511,8 +511,15 @@ function callOutcomeLabel(key) {
 // Right under the business name on every channel's panel, because "where is
 // this one up to" is the first thing you want to know before you write to
 // them again — and the answer is the same whichever channel you came from.
+// openLeadPanel's channel names don't all match db.PIPELINE_CHANNELS
+// ('calling' vs 'call') -- a naming mismatch between the two features that
+// predates this row. Setting a stage from the Calling panel with the
+// untranslated name would silently store '' instead of 'call', which
+// matters now that a channel-scoped Booked-style view can filter on it.
+const _PANEL_TO_PIPE_CHANNEL = { calling: 'call', email: 'email', whatsapp: 'whatsapp' };
+
 function pipelineRowHtml(d, opts) {
-  const channel = opts.channel || '';
+  const channel = _PANEL_TO_PIPE_CHANNEL[opts.channel] || '';
   const set = `setPipelineStage(${d.id}, '${channel}', () => refreshLeadPanel('${opts.panelId}'))`;
   if (!d.pipeline_stage) {
     return `<div style="margin-top:8px">

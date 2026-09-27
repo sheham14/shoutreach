@@ -941,11 +941,14 @@ function openWaLeadFromTable(r) {
 
 // ── Booked ───────────────────────────────────────────────────────────────────
 //
-// Every business at the 'booked' stage, from any channel -- a meeting booked
-// over a phone call is exactly as much "booked" as one booked over WhatsApp,
-// see log_call's pipeline wiring. Deliberately not scoped to the campaign
-// filter above the tabs: a meeting is worth seeing regardless of which
-// campaign or channel it came from, so each row says that instead.
+// Which WhatsApp conversations turned into a meeting -- channel=whatsapp on
+// every request, on purpose. A meeting booked over a cold call is exactly as
+// "booked" as one booked over WhatsApp (see log_call's pipeline wiring), and
+// still shows that way wherever the business is opened -- its own lead panel
+// on every channel, Contacts -- but this tab answers a narrower, channel-
+// specific question, and mixing a cold-call booking into it would answer a
+// question nobody asked here. Not scoped to the campaign filter above the
+// tabs, though: a meeting from any WhatsApp campaign belongs in one list.
 //
 // next_action_at is the operator's own wall-clock time, typed in and read
 // back on their own device -- see db._clean_date. No timezone conversion
@@ -977,7 +980,12 @@ function _waBookedGroup(d) {
 }
 
 async function renderWaBooked() {
-  const rows = await api('/api/pipeline?stage=booked&include_terminal=1') || [];
+  // channel=whatsapp on purpose: a meeting booked over a cold call is still
+  // "booked" wherever that business is opened (its own lead panel on every
+  // channel, Contacts), but this tab answers one specific question -- which
+  // WhatsApp conversations turned into a meeting -- so a cold-call booking
+  // has no business showing up here. See db.get_pipeline_board.
+  const rows = await api('/api/pipeline?stage=booked&channel=whatsapp&include_terminal=1') || [];
   setTabCount('whatsapp', 'booked', rows.length, true);
   const body = document.getElementById('wa-booked-body');
   if (!body) return;
@@ -1005,11 +1013,6 @@ async function renderWaBooked() {
     .join('');
 }
 
-// Maps a pipeline_channel value to what openLeadPanel expects — they differ
-// for calling only ('call' vs 'calling'), an old naming mismatch between the
-// two features that isn't worth reconciling just for this.
-const _PIPE_TO_PANEL_CHANNEL = { call: 'calling', email: 'email', whatsapp: 'whatsapp' };
-
 function waBookedRowHtml(r) {
   const hasTime = r._d && String(r.next_action_at || '').length > 10;
   const timeStr = r._d
@@ -1017,24 +1020,25 @@ function waBookedRowHtml(r) {
         ? { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }
         : { weekday: 'short', day: 'numeric', month: 'short' })
     : 'No time set';
-  const via = [r.pipeline_channel, r.wa_campaign_name].filter(Boolean).join(' · ');
-  const channel = _PIPE_TO_PANEL_CHANNEL[r.pipeline_channel] || 'whatsapp';
-  return `<tr style="cursor:pointer" onclick="openWaBookedLead(${r.business_id}, '${channel}')">
+  // No "via" tag here — every row on this tab is a WhatsApp booking by
+  // construction (the request asked for channel=whatsapp), so the only thing
+  // worth naming is which campaign it came from.
+  return `<tr style="cursor:pointer" onclick="openWaBookedLead(${r.business_id})">
       <td>
         <span class="biz-name">${esc(r.company || 'Unnamed business')}</span>
         <span class="sub mono">${esc(r.phone || '')}</span>
       </td>
       <td class="nowrap"><b>${esc(timeStr)}</b></td>
-      <td class="text-muted text-small">${via ? `via ${esc(via)}` : ''}</td>
+      <td class="text-muted text-small">${r.wa_campaign_name ? esc(r.wa_campaign_name) : ''}</td>
       <td class="nowrap" onclick="event.stopPropagation()">
         <a class="btn btn-ghost btn-sm" href="/api/businesses/${r.business_id}/ics">Add to calendar ↓</a>
       </td>
     </tr>`;
 }
 
-function openWaBookedLead(businessId, channel) {
+function openWaBookedLead(businessId) {
   openLeadPanel(businessId, {
-    channel, panelId: 'wa-booked-panel', splitId: 'wa-booked-split',
+    channel: 'whatsapp', panelId: 'wa-booked-panel', splitId: 'wa-booked-split',
     onClose: () => renderWaBooked(),
   });
 }

@@ -25,9 +25,12 @@
     <button class="tab" data-tab="leads" onclick="setTab('whatsapp','leads')">Leads <span class="count">0</span></button>
     <!-- Booked is its own tab, not a Leads filter, because a meeting is a
          different kind of thing from a stage marker: it has a real time you
-         have to be free for, wherever it was booked from. Deliberately not
-         scoped to the campaign filter above -- a meeting from any channel or
-         campaign is worth seeing here, tagged with where it came from. -->
+         have to be free for. Scoped to bookings made THROUGH WHATSAPP only --
+         a meeting booked over a cold call is still "booked" wherever that
+         business is opened, just not listed in a tab that answers "which
+         WhatsApp conversations turned into a meeting". Not scoped to the
+         campaign filter above, though: a WhatsApp booking from any campaign
+         belongs here. -->
     <button class="tab" data-tab="booked" onclick="setTab('whatsapp','booked')">Booked <span class="count">0</span></button>
     <button class="tab" data-tab="campaigns" onclick="setTab('whatsapp','campaigns')">Campaigns <span class="count">0</span></button>
     <button class="tab" data-tab="templates" onclick="setTab('whatsapp','templates')">Templates</button>
@@ -107,8 +110,10 @@
   </div>
 
   <!-- ── Booked ─────────────────────────────────────────────────────────────
-       Every business at the 'booked' stage, from any channel or campaign,
-       grouped by when the meeting is rather than searched for by filter. -->
+       Every business booked THROUGH WHATSAPP -- channel=whatsapp always, so
+       a meeting booked over a cold call doesn't show up here even though it's
+       still "booked" everywhere else that business is opened. Grouped by
+       when the meeting is rather than searched for by filter. -->
   <div class="tab-pane" data-pane-group="whatsapp" data-pane="booked">
     <div class="work-split" id="wa-booked-split" style="grid-template-columns:1fr">
       <div class="card">

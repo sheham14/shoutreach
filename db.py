@@ -4073,7 +4073,8 @@ def set_pipeline_bulk(business_ids, stage: str, channel: str = "", owner_id=None
     return done
 
 
-def get_pipeline_board(owner_id=None, include_terminal=False, stage=None, limit=200) -> list:
+def get_pipeline_board(owner_id=None, include_terminal=False, stage=None,
+                       channel=None, limit=200) -> list:
     """
     Conversations in progress: every business with a stage set, soonest thing
     owed first, anything overdue at the top. Terminal stages are left out --
@@ -4081,6 +4082,15 @@ def get_pipeline_board(owner_id=None, include_terminal=False, stage=None, limit=
     Booked tab asks for 'booked' specifically, terminal or not, since a
     booked meeting is exactly the kind of terminal stage that's still work
     until the date has passed).
+
+    `channel` narrows to businesses whose stage was set FROM that channel
+    (pipeline_channel) -- the WhatsApp Booked tab asks for 'whatsapp' only,
+    on purpose: a meeting booked over a cold call is still booked everywhere
+    that business is opened (Contacts, its own lead panel on every channel),
+    but "which leads have I booked through WhatsApp campaigns" is a
+    channel-specific question, and mixing in cold-call bookings answered a
+    question nobody asked. Calling would use 'call' the same way if it ever
+    grows an equivalent tab.
     """
     with get_db() as conn:
         where = ["b.owner_id = ?", "b.pipeline_stage != ''"]
@@ -4090,6 +4100,9 @@ def get_pipeline_board(owner_id=None, include_terminal=False, stage=None, limit=
             params.append(stage)
         elif not include_terminal:
             where.append("COALESCE(s.is_terminal, 0) = 0")
+        if channel:
+            where.append("b.pipeline_channel = ?")
+            params.append(channel)
         rows = conn.execute(f"""
             SELECT b.id AS business_id, b.name AS company, b.phone, b.city, b.website,
                    b.pipeline_stage, b.pipeline_channel, b.pipeline_at, b.next_action_at,

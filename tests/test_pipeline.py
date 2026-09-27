@@ -260,6 +260,11 @@ def test_http_and_ownership(db, app_mod, client, token, camp):
     s, rows = api(client, token, "get", "/api/pipeline")
     check("the board is served", s == 200 and isinstance(rows, list))
 
+    s, rows = api(client, token, "get",
+                  "/api/pipeline?stage=booked&channel=whatsapp&include_terminal=1")
+    check("the channel filter reaches the API",
+          s == 200 and all(r.get("pipeline_channel") == "whatsapp" for r in rows), str(rows)[:200])
+
     bob = db.create_user("bob", "testpassword123", is_admin=False)
     bob_camp = db.create_wa_campaign("Bob", owner_id=bob, country="AE")
     db.upsert_wa_leads([{"company": "Bob Clinic", "phone": "050 200 0060"}],
@@ -344,10 +349,30 @@ def test_calling_books_the_shared_pipeline(db):
           biz["next_action_at"] == "2026-10-05 15:00:00", biz["next_action_at"])
 
     booked_board = [r["business_id"] for r in db.get_pipeline_board(stage="booked")]
-    check("it appears on the Booked board", bid in booked_board)
+    check("it appears on the unfiltered Booked board", bid in booked_board)
     contacts = db.get_businesses_page(q="Phoned Clinic")["rows"]
     check("and from Contacts, same as a WhatsApp booking would",
           contacts and contacts[0]["pipeline_stage"] == "booked")
+
+    print("\n   But NOT on the WhatsApp tab's channel-scoped view of Booked")
+    wa_booked = [r["business_id"] for r in
+                db.get_pipeline_board(stage="booked", channel="whatsapp")]
+    check("a cold-call booking is invisible to 'which WhatsApp leads did I book'",
+          bid not in wa_booked, str(wa_booked))
+
+    db.upsert_wa_leads([{"company": "Wa Booked Clinic", "phone": "050 200 0093"}],
+                       default_country="AE")
+    wa_lead = next(l for l in db.get_wa_leads() if l["company"] == "Wa Booked Clinic")
+    db.set_business_pipeline(wa_lead["business_id"], "booked", channel="whatsapp",
+                             next_action_at="2026-10-07T11:00")
+    wa_booked = [r["business_id"] for r in
+                db.get_pipeline_board(stage="booked", channel="whatsapp")]
+    check("a WhatsApp booking IS on that same view", wa_lead["business_id"] in wa_booked,
+          str(wa_booked))
+    check("and the call booking is still excluded from it", bid not in wa_booked)
+    unfiltered = [r["business_id"] for r in db.get_pipeline_board(stage="booked")]
+    check("while the unfiltered board carries both",
+          bid in unfiltered and wa_lead["business_id"] in unfiltered, str(unfiltered))
 
     print("\n   Only the shared 'booked' key wires through -- nothing else guesses")
     db.upsert_businesses([{"company": "Voicemail Co", "phone": "050 200 0091"}])
