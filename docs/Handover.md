@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-09-23 (pipeline stages; live) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-09-27 (the Booked tab; built, not yet deployed) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -56,6 +56,12 @@ fix this file.
   `businesses` and the `pipeline_stages` table, and seeded six built-in
   stages. No backfill, no data changed. **No backup was taken.** `/login`
   returns 200 after it, which is what rules out a failed `init_db`.
+- **Built 2026-09-27, NOT deployed: the Booked tab** (§5c). A meeting booked
+  from any channel gets its own time-of-day, its own tab in WhatsApp, and an
+  `.ics` download; booking over the phone now sets the shared pipeline stage
+  too, which it didn't before. One new column (`pipeline_stages.wants_time`)
+  and one guarded migration — no change to `businesses`. Reminders were
+  considered and explicitly not built (§5c). All 22 test files pass locally.
 - **Two people use this install, walled off from each other.** Almost every
   query is scoped to an owner, and a handful deliberately aren't. Read §3
   before adding a query, a route, or a background job.
@@ -70,6 +76,9 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
+| pending | 09-27 | The Booked tab: real appointment times, `.ics`, calling wired into the shared stage | No |
+| `744ad70` | 09-23 | Campaign name as the page heading; fixed the Leads badge undercounting under a filter | Yes |
+| `65ecf8b` | 09-23 | Fixed the email daily cap silently going uncapped across a UTC/local date boundary | Yes |
 | `60d0896` | 09-23 | Pipeline stages on the business; "messaged" filter; the sent log; campaign Settings | Yes |
 | `62f9118` | 09-20 | A lead can bring its own opener and three follow-ups (JSON/CSV import); follow-ups editable per lead | Yes |
 | `f5c10ce` | 09-16 | Lead lists and lead panels work on a phone | Yes |
@@ -483,12 +492,85 @@ via whatsapp" instead of leaving you to guess.
   letter when there's nothing to say, and lead search covers email and notes.
 - `tests/test_pipeline.py` is the precise statement of all of this.
 
-**Not done, deliberately:** Calling and Email still keep their own per-channel
-state (`call_leads.call_status`, enrollments) — the pipeline sits alongside
-rather than replacing them. An email reply detected over IMAP does **not** set
-`pipeline_stage`, so a business that answered your email reads as untouched in
-the pipeline; wiring that in means touching the scheduler's scan loop and was
-left for its own change. There is no stage-change history, only `pipeline_at`.
+## 5c. The Booked tab, and a real appointment time — built 2026-09-27
+
+The cofounder asked for booked leads to have their own tab rather than being
+found through the Leads filter, and specifically flagged that a booking needs
+a real time, not just a date, and that he works from a different timezone
+than expected.
+
+- **`pipeline_stages.wants_time`** — a new flag, separate from `wants_date`.
+  Only the `booked` builtin defaults to it: every other stage is "by this
+  day" at most, which a bare date already says, and a meeting is the one
+  thing that's a specific hour. Custom stages can opt in too
+  (`create_pipeline_stage`/`update_pipeline_stage` take `wants_time`); wanting
+  a time with no date is meaningless and is silently dropped rather than
+  stored as a contradiction. A one-shot migration (`_migrate_pipeline_wants_time`,
+  its own settings marker) turns it on for `booked` on databases that seeded
+  the table before this column existed, without touching a later manual
+  override — same "never re-seed a customized builtin" rule as everything
+  else in this file.
+- **No timezone conversion, anywhere, on purpose.** A meeting time is stored
+  exactly as the operator typed it — the same convention `call_leads.next_call_at`
+  already used before any of this existed (`<input type="datetime-local">`,
+  sent and stored verbatim, no UTC math). This is deliberate, not an
+  oversight: a lead is only ever seen by the one operator who owns it, so
+  "what I typed" and "what I read back" are always the same person on
+  (usually) the same device. Converting through UTC would solve a problem
+  that doesn't exist here and would actually risk introducing one.
+  `_clean_date` now pads a `datetime-local` value's missing seconds so every
+  datetime in the column is one shape (`YYYY-MM-DD HH:MM:SS`); a bare date
+  stays 10 characters, untouched.
+- **A meeting booked over the phone now sets the shared stage too**
+  (`log_call`, after its own transaction commits — this codebase never nests
+  one open connection inside another's, so the pipeline call happens
+  sequentially, not from inside `log_call`'s `with get_db()` block). Only for
+  the exact key `'booked'`, matched between `_BUILTIN_CALL_OUTCOMES` and
+  `_BUILTIN_PIPELINE_STAGES` on purpose — a custom call outcome an operator
+  invents has no guaranteed pipeline counterpart, and guessing one would be
+  worse than leaving it to an explicit set from the lead panel. Before this,
+  a call-booked meeting was invisible from every other channel, which
+  defeated the entire point of putting the stage on the business.
+- **`GET /api/pipeline?stage=booked`** — `get_pipeline_board` gained a
+  `stage` filter, which also lifts the usual "terminal stages excluded" rule
+  for that one stage (a booked meeting that hasn't happened yet is still very
+  much work, even though the stage is otherwise non-terminal by default).
+  Reused rather than a new query, and it's the same endpoint the Dashboard's
+  "conversations in progress" board (still unbuilt) will eventually use too.
+- **`GET /api/businesses/<id>/ics`** — the same builder Calling already has
+  for `next_call_at`, adapted for `businesses.next_action_at`. No `Z` suffix
+  on `DTSTART`/`DTEND`, matching the floating-time convention above: the
+  digits are the operator's own wall clock, not a UTC instant.
+- **The Booked tab lives in WhatsApp** (where it was asked for) but is
+  deliberately not scoped to the campaign filter above the tabs — a meeting
+  from any channel or campaign is worth seeing, tagged "via call" / "via
+  whatsapp · campaign name" per row rather than hidden by a filter that
+  happens to be set. Rows group Overdue / Today / Tomorrow / Later and open
+  the same shared lead panel every other tab uses, mapped to the right
+  channel section (`pipeline_channel` says `'call'`, `openLeadPanel` expects
+  `'calling'` — a pre-existing naming mismatch between the two features,
+  bridged in the frontend rather than reconciled).
+- **Reminders were considered and explicitly scrapped** (2026-09-27,
+  operator's own suggestion, not the cofounder's ask). No notification
+  channel exists anywhere in this app — no push, no per-user email address on
+  file even. An in-app "coming up" banner was the cheap option but only fires
+  while the app is open; email reminders would need a new column on `users`
+  plus a scheduler job; browser push would be a genuinely new subsystem. None
+  of it was built. If revisited, start from `get_pipeline_board(stage='booked')`
+  — the "what's coming up" query already exists.
+- `tests/test_pipeline.py` §§9–13 cover `wants_time`, the padding, the
+  Calling wiring (including that a non-`booked` outcome and a custom outcome
+  both leave the pipeline alone), the `.ics` route and its ownership wall.
+
+**Not done, deliberately:** Email still keeps its own per-channel state
+(enrollments) with no pipeline wiring — an email reply detected over IMAP
+does **not** set `pipeline_stage`, so a business that answered your email
+reads as untouched in the pipeline; wiring that in means touching the
+scheduler's scan loop and was left for its own change. There is no
+stage-change history, only `pipeline_at`. There is still no generic
+"conversations in progress" surface on the Dashboard — only Booked has a
+dedicated view; every other stage is reachable solely through the Leads
+filter's `deal:<key>` values.
 
 **The lead audit** (`audit.py`), on any business with a website, only when the
 operator clicks *Run checks* on its panel:
@@ -629,13 +711,16 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-22 files, all passing as of the daily-cap fix (§6a).
+22 files, all passing as of the Booked-tab work (§5c).
 
-`tests/test_pipeline.py` covers stages (§5a): the built-ins and inventing your
-own, one stage read from all three channels, the cadence stopping on set and
-NOT restarting on clear, a terminal stage leaving `do_not_contact` alone, the
-board's ordering, the messaged filter, the send log, widened search, the
-stage in the import confirmation, and the per-operator walls.
+`tests/test_pipeline.py` covers stages (§5a/§5c): the built-ins and inventing
+your own, one stage read from all three channels, the cadence stopping on set
+and NOT restarting on clear, a terminal stage leaving `do_not_contact` alone,
+the board's ordering, the messaged filter, the send log, widened search, the
+stage in the import confirmation, the per-operator walls, `wants_time` and its
+migration, `datetime-local` second-padding, a phone booking setting the
+shared stage (and a non-`booked` or custom call outcome NOT doing so), the
+`.ics` route, and its ownership wall.
 `tests/test_wa_drafts.py` covers imported openers and follow-ups, the order
 they're used in, the fallback to the template past the third, the rule that an
 import never replaces a hand edit, the guarantee that a re-import can't
@@ -679,23 +764,24 @@ importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
-00. **Bespoke per-lead copy is live** (§5), and so are the three commits that
-    rode along with it. Still to check by hand, in the app: *+ Add leads →
-    Paste JSON* accepts a small batch and the result line reports per-slot
-    coverage; a lead with imported copy shows **own copy** instead of a
-    version letter on the Leads tab; its second follow-up can be edited and
-    saved from To do; and — from the commits that shipped alongside — the
-    phone layouts and the per-row WhatsApp button, which were written on
-    09-16 and have never run against the live database. The **post-reply
-    pipeline** is the agreed next piece of
-    design, not yet started: a replied lead currently leaves every queue with
-    nothing but a binary `replied` flag and free-text notes on its business,
-    so there is no "conversations in progress" surface and no sales stage.
-    Calling already has the model (`call_outcome_types`, `is_terminal`,
-    `requires_date`, `call_log`, `.ics`); the open decision is whether to
-    generalise that table to serve both channels or fork it. Keep the channel
-    stage (`ready`/`due`/`waiting`/`replied`) separate from any sales stage —
-    the queues read the former directly.
+000. **The Booked tab is built, not pushed** (§5c). Before deploying: back
+     up the live database (§6) — the migration is one new column and one
+     guarded fix, low risk, but nothing about this feature has ever run
+     against production data. Check by hand: WhatsApp → Booked lists a
+     meeting set from the lead panel, grouped Overdue/Today/Tomorrow/Later;
+     the time shown matches what was typed, with no shift (this is the one
+     thing most worth watching for — a shift would mean the "no timezone
+     conversion, anywhere" design in §5c has a hole somewhere); **Add to
+     calendar** downloads a working `.ics`; and, in Calling, logging a
+     "Meeting booked" outcome makes that same business show up on the
+     Booked tab too.
+00. **The pipeline is live** (§5a) and the cofounder is using it. Still open,
+    on purpose: an email reply detected over IMAP does not set
+    `pipeline_stage` (§5c's "Not done, deliberately"), and there is still no
+    generic "conversations in progress" surface on the Dashboard — every
+    stage except Booked is reachable only through the Leads filter's
+    `deal:<key>` values. Both are candidates for the next round of feedback
+    rather than started work.
 0. Both WhatsApp deploys are live and the app is up (`/login` 200,
    `/api/users/me` 401; run logs `Updating 4f7ea0f..be439b5` and
    `be439b5..9354245`). Still to check by hand, in the app: open a chat and

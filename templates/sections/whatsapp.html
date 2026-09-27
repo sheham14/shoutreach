@@ -23,6 +23,12 @@
   <div class="tabs" data-tab-group="whatsapp">
     <button class="tab active" data-tab="todo" onclick="setTab('whatsapp','todo')">To do <span class="count">0</span></button>
     <button class="tab" data-tab="leads" onclick="setTab('whatsapp','leads')">Leads <span class="count">0</span></button>
+    <!-- Booked is its own tab, not a Leads filter, because a meeting is a
+         different kind of thing from a stage marker: it has a real time you
+         have to be free for, wherever it was booked from. Deliberately not
+         scoped to the campaign filter above -- a meeting from any channel or
+         campaign is worth seeing here, tagged with where it came from. -->
+    <button class="tab" data-tab="booked" onclick="setTab('whatsapp','booked')">Booked <span class="count">0</span></button>
     <button class="tab" data-tab="campaigns" onclick="setTab('whatsapp','campaigns')">Campaigns <span class="count">0</span></button>
     <button class="tab" data-tab="templates" onclick="setTab('whatsapp','templates')">Templates</button>
   </div>
@@ -97,6 +103,18 @@
       <div id="wl-body"></div>
     </div>
     <div class="card work-panel sheet" id="wl-panel" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- ── Booked ─────────────────────────────────────────────────────────────
+       Every business at the 'booked' stage, from any channel or campaign,
+       grouped by when the meeting is rather than searched for by filter. -->
+  <div class="tab-pane" data-pane-group="whatsapp" data-pane="booked">
+    <div class="work-split" id="wa-booked-split" style="grid-template-columns:1fr">
+      <div class="card">
+        <div id="wa-booked-body"></div>
+      </div>
+      <div class="card work-panel sheet" id="wa-booked-panel" style="display:none"></div>
     </div>
   </div>
 

@@ -32,6 +32,7 @@ function startOfLocalDay() {
 onTab('whatsapp', name => {
   if (name === 'todo') loadWaTodo();
   if (name === 'leads') { closeLeadPanel('wl-panel'); LT.wl.load({ resetPage: true }); }
+  if (name === 'booked') { closeLeadPanel('wa-booked-panel'); renderWaBooked(); }
   if (name === 'campaigns') renderWaCampaigns();
   if (name === 'templates') renderWaTemplateEditor(_waFilter() || (_waCampaigns[0] && _waCampaigns[0].id));
 });
@@ -936,6 +937,106 @@ function openWaLeadFromTable(r) {
   _waBucket = bucket;
   _waCurrent = r.id;
   setTab('whatsapp', 'todo');
+}
+
+// ── Booked ───────────────────────────────────────────────────────────────────
+//
+// Every business at the 'booked' stage, from any channel -- a meeting booked
+// over a phone call is exactly as much "booked" as one booked over WhatsApp,
+// see log_call's pipeline wiring. Deliberately not scoped to the campaign
+// filter above the tabs: a meeting is worth seeing regardless of which
+// campaign or channel it came from, so each row says that instead.
+//
+// next_action_at is the operator's own wall-clock time, typed in and read
+// back on their own device -- see db._clean_date. No timezone conversion
+// happens anywhere here on purpose; converting it would be solving a problem
+// that doesn't exist, since a lead is only ever seen by the one operator who
+// booked it.
+
+// A stored value as a real Date, treated as local wall-clock the whole way
+// through. new Date() on a bare "YYYY-MM-DD" is a well-known trap -- it's
+// parsed as UTC midnight, which can land on the wrong day once converted
+// back to local time for display. Padding a time onto it forces the local
+// parse path every engine agrees on.
+function _pipeDateObj(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  const iso = text.length <= 10 ? `${text}T00:00:00` : text.replace(' ', 'T');
+  const d = new Date(iso);
+  return isNaN(d) ? null : d;
+}
+
+function _waBookedGroup(d) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+  const day = new Date(d); day.setHours(0, 0, 0, 0);
+  if (day < today) return 'Overdue';
+  if (day.getTime() === today.getTime()) return 'Today';
+  if (day.getTime() === tomorrow.getTime()) return 'Tomorrow';
+  return 'Later';
+}
+
+async function renderWaBooked() {
+  const rows = await api('/api/pipeline?stage=booked&include_terminal=1') || [];
+  setTabCount('whatsapp', 'booked', rows.length, true);
+  const body = document.getElementById('wa-booked-body');
+  if (!body) return;
+  if (!rows.length) {
+    body.innerHTML = `<div class="empty-state"><p>No meetings booked yet. Set a business's
+      stage to <b>Meeting booked</b> from its lead panel, or from a row's ⋯ menu on Leads.</p></div>`;
+    return;
+  }
+  // A date-only row predates wants_time -- it was booked before this stage
+  // asked for an hour. Still shown, just without a time in it.
+  const withDates = rows.map(r => ({ ...r, _d: _pipeDateObj(r.next_action_at) }));
+  const groups = { Overdue: [], Today: [], Tomorrow: [], Later: [] };
+  withDates.forEach(r => groups[r._d ? _waBookedGroup(r._d) : 'Later'].push(r));
+
+  body.innerHTML = ['Overdue', 'Today', 'Tomorrow', 'Later']
+    .filter(g => groups[g].length)
+    .map(g => `
+      <div class="card-title" style="margin-top:14px">${g}
+        <span class="text-muted text-small">(${groups[g].length})</span></div>
+      <div class="table-wrap">
+        <table class="lead-table"><tbody>
+          ${groups[g].map(waBookedRowHtml).join('')}
+        </tbody></table>
+      </div>`)
+    .join('');
+}
+
+// Maps a pipeline_channel value to what openLeadPanel expects — they differ
+// for calling only ('call' vs 'calling'), an old naming mismatch between the
+// two features that isn't worth reconciling just for this.
+const _PIPE_TO_PANEL_CHANNEL = { call: 'calling', email: 'email', whatsapp: 'whatsapp' };
+
+function waBookedRowHtml(r) {
+  const hasTime = r._d && String(r.next_action_at || '').length > 10;
+  const timeStr = r._d
+    ? r._d.toLocaleString([], hasTime
+        ? { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }
+        : { weekday: 'short', day: 'numeric', month: 'short' })
+    : 'No time set';
+  const via = [r.pipeline_channel, r.wa_campaign_name].filter(Boolean).join(' · ');
+  const channel = _PIPE_TO_PANEL_CHANNEL[r.pipeline_channel] || 'whatsapp';
+  return `<tr style="cursor:pointer" onclick="openWaBookedLead(${r.business_id}, '${channel}')">
+      <td>
+        <span class="biz-name">${esc(r.company || 'Unnamed business')}</span>
+        <span class="sub mono">${esc(r.phone || '')}</span>
+      </td>
+      <td class="nowrap"><b>${esc(timeStr)}</b></td>
+      <td class="text-muted text-small">${via ? `via ${esc(via)}` : ''}</td>
+      <td class="nowrap" onclick="event.stopPropagation()">
+        <a class="btn btn-ghost btn-sm" href="/api/businesses/${r.business_id}/ics">Add to calendar ↓</a>
+      </td>
+    </tr>`;
+}
+
+function openWaBookedLead(businessId, channel) {
+  openLeadPanel(businessId, {
+    channel, panelId: 'wa-booked-panel', splitId: 'wa-booked-split',
+    onClose: () => renderWaBooked(),
+  });
 }
 
 // ── Campaigns ────────────────────────────────────────────────────────────────

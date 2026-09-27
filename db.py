@@ -491,6 +491,12 @@ def init_db():
                 -- Asks for a date when set -- "proposal due", "meeting
                 -- booked". Stored on businesses.next_action_at.
                 wants_date  INTEGER NOT NULL DEFAULT 0,
+                -- Asks for a TIME of day too, not just a date -- "Meeting
+                -- booked" is the only builtin that starts this way. A date
+                -- with no meaningful time ("proposal due Tuesday") stays
+                -- date-only; a real appointment needs the hour. Meaningless
+                -- unless wants_date is also set.
+                wants_time  INTEGER NOT NULL DEFAULT 0,
                 tone        TEXT    NOT NULL DEFAULT 'neutral',
                 sort_order  INTEGER NOT NULL DEFAULT 100,
                 is_builtin  INTEGER NOT NULL DEFAULT 0,
@@ -615,6 +621,9 @@ def init_db():
             "ALTER TABLE businesses ADD COLUMN pipeline_at TEXT DEFAULT NULL",
             # When the next thing is owed: a proposal, a booked meeting.
             "ALTER TABLE businesses ADD COLUMN next_action_at TEXT DEFAULT NULL",
+            # Whether a stage's date is a real appointment (with an hour) or
+            # just a day. See the column comment on pipeline_stages.
+            "ALTER TABLE pipeline_stages ADD COLUMN wants_time INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -715,6 +724,7 @@ def init_db():
 
         try:
             _seed_pipeline_stages(conn)
+            _migrate_pipeline_wants_time(conn)
         except Exception as exc:
             logger.warning("Pipeline stage seeding skipped: %s", exc)
 
@@ -3798,28 +3808,54 @@ def _slugify_outcome(label: str) -> str:
 # point: it stops you pitching someone your cofounder -- or you, last week --
 # already got somewhere with.
 #
-# key: (label, is_terminal, wants_date, tone, sort_order)
+# key: (label, is_terminal, wants_date, wants_time, tone, sort_order)
+#
+# 'booked' is the only one with a real time of day. A meeting is a specific
+# hour you have to be free for; every other builtin is "by this day" at
+# most, which a bare date already says.
 _BUILTIN_PIPELINE_STAGES = {
-    "replied":        ("Replied",        False, False, "info",    10),
-    "proposal_due":   ("Proposal due",   False, True,  "amber",   20),
-    "proposal_sent":  ("Proposal sent",  False, False, "good",    30),
-    "booked":         ("Meeting booked", False, True,  "good",    40),
-    "won":            ("Won",            True,  False, "good",    50),
-    "not_interested": ("Not interested", True,  False, "bad",     60),
+    "replied":        ("Replied",        False, False, False, "info",    10),
+    "proposal_due":   ("Proposal due",   False, True,  False, "amber",   20),
+    "proposal_sent":  ("Proposal sent",  False, False, False, "good",    30),
+    "booked":         ("Meeting booked", False, True,  True,  "good",    40),
+    "won":            ("Won",            True,  False, False, "good",    50),
+    "not_interested": ("Not interested", True,  False, False, "bad",     60),
 }
 
 PIPELINE_CHANNELS = ("whatsapp", "call", "email")
+
+# Settings marker for the one-shot below -- see _migrate_pipeline_wants_time.
+_PIPELINE_WANTS_TIME_MARKER = "_migrated_pipeline_wants_time"
 
 
 def _seed_pipeline_stages(conn):
     """Insert the builtins once. Never updates them -- someone who renamed
     'Proposal due' to suit how they sell should keep that."""
-    for key, (label, term, dated, tone, order) in _BUILTIN_PIPELINE_STAGES.items():
+    for key, (label, term, dated, timed, tone, order) in _BUILTIN_PIPELINE_STAGES.items():
         conn.execute("""
             INSERT OR IGNORE INTO pipeline_stages
-                (key, label, is_terminal, wants_date, tone, sort_order, is_builtin)
-            VALUES(?,?,?,?,?,?,1)
-        """, (key, label, int(term), int(dated), tone, order))
+                (key, label, is_terminal, wants_date, wants_time, tone, sort_order, is_builtin)
+            VALUES(?,?,?,?,?,?,?,1)
+        """, (key, label, int(term), int(dated), int(timed), tone, order))
+
+
+def _migrate_pipeline_wants_time(conn):
+    """
+    One-shot: databases that seeded pipeline_stages before wants_time existed
+    have a 'booked' row stuck at wants_time=0 -- _seed_pipeline_stages never
+    updates an existing row, on purpose, so the INSERT OR IGNORE above cannot
+    fix it. Runs once; a later 'update_pipeline_stage' back to date-only is
+    left alone rather than fought on every restart.
+    """
+    if conn.execute("SELECT 1 FROM settings WHERE key=?",
+                    (_PIPELINE_WANTS_TIME_MARKER,)).fetchone():
+        return
+    conn.execute("""
+        UPDATE pipeline_stages SET wants_time=1
+         WHERE key='booked' AND is_builtin=1
+    """)
+    conn.execute("INSERT INTO settings(key, value) VALUES(?, '1')",
+                 (_PIPELINE_WANTS_TIME_MARKER,))
 
 
 def get_pipeline_stages(include_archived=False, owner_id=None) -> dict:
@@ -3847,13 +3883,19 @@ def get_pipeline_stage(key: str):
         return dict(row) if row else None
 
 
-def create_pipeline_stage(label, is_terminal=False, wants_date=False,
+def create_pipeline_stage(label, is_terminal=False, wants_date=False, wants_time=False,
                           tone="neutral", owner_id=None) -> str:
     """
     Add a stage of your own. Returns its key, which is derived from the label
     once and then kept -- businesses point at it, so renaming the label later
     changes what you read everywhere without stranding the rows.
+
+    wants_time asks for an hour, not just a day -- for a stage that means a
+    real appointment ("Demo scheduled"), the way 'booked' does. Meaningless
+    without wants_date, so it's cleared if that isn't also set.
     """
+    wants_date = bool(wants_date)
+    wants_time = wants_time and wants_date
     with get_db() as conn:
         owner = _resolve_owner_id(conn, owner_id)
         base = _slugify_outcome(label)
@@ -3865,10 +3907,10 @@ def create_pipeline_stage(label, is_terminal=False, wants_date=False,
         ).fetchone()[0]
         conn.execute("""
             INSERT INTO pipeline_stages
-                (key, owner_id, label, is_terminal, wants_date, tone, sort_order, is_builtin)
-            VALUES(?,?,?,?,?,?,?,0)
-        """, (key, owner, (label or "").strip()[:60] or key, int(bool(is_terminal)),
-              int(bool(wants_date)), tone, nxt))
+                (key, owner_id, label, is_terminal, wants_date, wants_time, tone, sort_order, is_builtin)
+            VALUES(?,?,?,?,?,?,?,?,0)
+        """, (key, owner, (label or "").strip()[:60] or key, int(is_terminal),
+              int(wants_date), int(wants_time), tone, nxt))
     return key
 
 
@@ -3877,7 +3919,7 @@ def update_pipeline_stage(key: str, owner_id=None, **fields) -> bool:
     Edit a stage. A built-in can be relabelled but not archived by one
     operator, since the other one is still using it.
     """
-    allowed = {"label", "is_terminal", "wants_date", "tone", "sort_order", "archived"}
+    allowed = {"label", "is_terminal", "wants_date", "wants_time", "tone", "sort_order", "archived"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return False
@@ -3892,9 +3934,14 @@ def update_pipeline_stage(key: str, owner_id=None, **fields) -> bool:
             return False
         if "label" in updates:
             updates["label"] = (str(updates["label"]).strip()[:60]) or row["label"]
-        for flag in ("is_terminal", "wants_date", "archived"):
+        for flag in ("is_terminal", "wants_date", "wants_time", "archived"):
             if flag in updates:
                 updates[flag] = int(bool(updates[flag]))
+        # A stage can't want a time of day with no date to hang it on.
+        wants_date = updates.get("wants_date", row["wants_date"])
+        wants_time = updates.get("wants_time", row["wants_time"])
+        if wants_time and not wants_date:
+            updates["wants_time"] = 0
         if not updates:
             return False
         sets = ", ".join(f"{k}=?" for k in updates)
@@ -3977,11 +4024,27 @@ def set_business_pipeline(business_id: int, stage: str, channel: str = "",
 
 
 def _clean_date(value):
-    """A date from a form: 'YYYY-MM-DD' or a datetime, else nothing."""
+    """
+    A date from a form: 'YYYY-MM-DD' or a datetime, else nothing.
+
+    Stored exactly as typed -- a meeting time is the operator's own wall
+    clock, the same convention call_leads.next_call_at already uses, and
+    since a lead is only ever seen by the one operator who owns it, no
+    timezone conversion is needed or wanted: whatever they meant when they
+    typed it is exactly what they mean when they read it back.
+
+    A <input type="datetime-local"> value has no seconds ('...T15:00', 16
+    chars); padded to 19 so every datetime in the column is one shape --
+    without it, an .ics reader expecting HH:MM:SS chokes on this row alone.
+    """
     text = str(value or "").strip().replace("T", " ")
     if not text:
         return None
-    return text[:19] if re.match(r"^\d{4}-\d{2}-\d{2}", text) else None
+    if not re.match(r"^\d{4}-\d{2}-\d{2}", text):
+        return None
+    if len(text) == 16:
+        text += ":00"
+    return text[:19]
 
 
 def business_ids_for_wa_leads(wa_lead_ids, owner_id=None) -> list:
@@ -4010,25 +4073,35 @@ def set_pipeline_bulk(business_ids, stage: str, channel: str = "", owner_id=None
     return done
 
 
-def get_pipeline_board(owner_id=None, include_terminal=False, limit=200) -> list:
+def get_pipeline_board(owner_id=None, include_terminal=False, stage=None, limit=200) -> list:
     """
     Conversations in progress: every business with a stage set, soonest thing
     owed first, anything overdue at the top. Terminal stages are left out --
-    won and lost are not work.
+    won and lost are not work -- unless `stage` names one directly (the
+    Booked tab asks for 'booked' specifically, terminal or not, since a
+    booked meeting is exactly the kind of terminal stage that's still work
+    until the date has passed).
     """
     with get_db() as conn:
         where = ["b.owner_id = ?", "b.pipeline_stage != ''"]
         params = [_resolve_owner_id(conn, owner_id)]
-        if not include_terminal:
+        if stage:
+            where.append("b.pipeline_stage = ?")
+            params.append(stage)
+        elif not include_terminal:
             where.append("COALESCE(s.is_terminal, 0) = 0")
         rows = conn.execute(f"""
-            SELECT b.id AS business_id, b.name AS company, b.phone, b.city,
+            SELECT b.id AS business_id, b.name AS company, b.phone, b.city, b.website,
                    b.pipeline_stage, b.pipeline_channel, b.pipeline_at, b.next_action_at,
                    COALESCE(s.label, b.pipeline_stage) AS stage_label,
                    COALESCE(s.tone, '')                AS stage_tone,
-                   COALESCE(s.is_terminal, 0)          AS stage_terminal
+                   COALESCE(s.is_terminal, 0)          AS stage_terminal,
+                   COALESCE(s.wants_time, 0)           AS stage_wants_time,
+                   w.id AS wa_lead_id, w.wa_number, wc.name AS wa_campaign_name
               FROM businesses b
               LEFT JOIN pipeline_stages s ON s.key = b.pipeline_stage
+              LEFT JOIN wa_leads w ON w.business_id = b.id
+              LEFT JOIN wa_campaigns wc ON wc.id = w.wa_campaign_id
              WHERE {' AND '.join(where)}
              ORDER BY b.next_action_at IS NULL, b.next_action_at ASC, b.pipeline_at DESC
              LIMIT ?
@@ -4334,6 +4407,7 @@ def log_call(call_lead_id: int, outcome: str, notes: str = "", next_call_at: str
     # one -- otherwise a dead lead would carry a stale callback forever.
     keeps_date = wants_next or not is_terminal
 
+    business_id = None
     with get_db() as conn:
         conn.execute("""
             INSERT INTO call_log(call_lead_id, outcome, notes, next_call_at, call_campaign_id)
@@ -4362,14 +4436,33 @@ def log_call(call_lead_id: int, outcome: str, notes: str = "", next_call_at: str
                    AND status NOT IN ('completed','replied','unsubscribed','bounced')
             """, (call_lead_id,))
 
+        row = conn.execute(
+            "SELECT business_id FROM call_leads WHERE id=?", (call_lead_id,)
+        ).fetchone()
+        business_id = row["business_id"] if row else None
+
         # "Do not call" is a request about contact, not about the phone. Set on
         # the business so it suppresses email and WhatsApp too -- honouring it
         # on one channel only is not honouring it.
-        if outcome == "do_not_call":
-            conn.execute("""
-                UPDATE businesses SET do_not_contact=1
-                 WHERE id = (SELECT business_id FROM call_leads WHERE id=?)
-            """, (call_lead_id,))
+        if outcome == "do_not_call" and business_id:
+            conn.execute("UPDATE businesses SET do_not_contact=1 WHERE id=?", (business_id,))
+
+    # The shared pipeline, once the transaction above has committed --
+    # set_business_pipeline opens its own connection, and this codebase never
+    # nests one open connection inside another's still-open transaction.
+    #
+    # Only for the exact shared key 'booked': it is seeded as a pipeline stage
+    # under the same name on purpose, so a meeting booked over the phone shows
+    # up as booked from WhatsApp and Email too -- the entire reason the stage
+    # lives on the business rather than the channel. A custom call outcome an
+    # operator invented has no guaranteed pipeline_stages counterpart, and
+    # guessing one would be worse than leaving it to an explicit, deliberate
+    # set from the lead panel.
+    if outcome == "booked" and business_id:
+        biz = get_business(business_id)
+        if biz:
+            set_business_pipeline(business_id, "booked", channel="call",
+                                  next_action_at=next_call_at, owner_id=biz["owner_id"])
 
     return {"outcome": outcome, "terminal": is_terminal, "stopped_email": stops_email}
 

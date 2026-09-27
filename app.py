@@ -1995,6 +1995,7 @@ def api_create_pipeline_stage():
         label,
         is_terminal=d.get("is_terminal"),
         wants_date=d.get("wants_date"),
+        wants_time=d.get("wants_time"),
         tone=d.get("tone", "neutral"),
         owner_id=me(),
     )
@@ -2045,11 +2046,67 @@ def api_set_business_pipeline(bid):
 @app.route("/api/pipeline", methods=["GET"])
 @login_required
 def api_pipeline_board():
-    """Conversations in progress — soonest thing owed first, overdue on top."""
+    """
+    Conversations in progress — soonest thing owed first, overdue on top.
+
+    `stage` narrows to one stage by key (the Booked tab asks for
+    ?stage=booked), which also lifts the usual terminal-stages-excluded rule:
+    booked is terminal in the "stops it being generic pipeline work" sense,
+    but a meeting that hasn't happened yet is still very much something to
+    look at.
+    """
     return jsonify(db.get_pipeline_board(
         owner_id=me(),
         include_terminal=request.args.get("include_terminal") == "1",
+        stage=request.args.get("stage") or None,
     ))
+
+
+@app.route("/api/businesses/<int:bid>/ics", methods=["GET"])
+@login_required
+@owned("business", "bid")
+def api_business_ics(bid):
+    """
+    A calendar invite for a booked meeting, wherever it was booked from.
+
+    Same shape as /api/calls/<id>/ics -- kept as its own route rather than a
+    shared function because the two read different rows (a business here, a
+    call_lead there) for what is otherwise identical output.
+    """
+    biz = db.get_business(bid)
+    if not biz or not biz.get("next_action_at") or biz.get("pipeline_stage") != "booked":
+        return jsonify({"error": "No scheduled meeting for this business"}), 404
+
+    raw = biz["next_action_at"]
+    try:
+        start = (datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S") if len(raw) > 10
+                 else datetime.strptime(raw[:10], "%Y-%m-%d"))
+    except ValueError:
+        return jsonify({"error": "Unreadable scheduled time"}), 400
+    end = start + timedelta(minutes=30)
+
+    def _esc(text):
+        return (str(text or "").replace("\\", "\\\\").replace(",", "\\,")
+                .replace(";", "\\;").replace("\n", "\\n"))
+
+    company = biz.get("name") or f"Business {bid}"
+    via = f" (booked via {biz['pipeline_channel']})" if biz.get("pipeline_channel") else ""
+    lines = [
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//ShoutReach//Pipeline//EN",
+        "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "BEGIN:VEVENT",
+        f"UID:shoutreach-pipeline-{bid}-{int(start.timestamp())}@shoutreach",
+        f"DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}",
+        f"DTSTART:{start.strftime('%Y%m%dT%H%M%S')}",
+        f"DTEND:{end.strftime('%Y%m%dT%H%M%S')}",
+        f"SUMMARY:Meeting — {_esc(company)}{_esc(via)}",
+        f"DESCRIPTION:{_esc('Phone: ' + (biz.get('phone') or 'n/a'))}"
+        f"\\n{_esc('Website: ' + (biz.get('website') or 'none'))}",
+        "END:VEVENT", "END:VCALENDAR",
+    ]
+    resp = make_response("\r\n".join(lines) + "\r\n")
+    resp.headers["Content-Type"] = "text/calendar; charset=utf-8"
+    resp.headers["Content-Disposition"] = f'attachment; filename="meeting-{bid}.ics"'
+    return resp
 
 
 @app.route("/api/call-outcomes", methods=["GET"])

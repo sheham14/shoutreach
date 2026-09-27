@@ -152,6 +152,16 @@ function pipelineOverdue(row) {
   return String(row.next_action_at).substring(0, 10) < new Date().toISOString().substring(0, 10);
 }
 
+// A stored value ('YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS') as whichever kind of
+// picker the stage wants. No timezone conversion, on purpose: a meeting time
+// is the operator's own wall clock, exactly like Calling's next_call_at
+// already works, and since a lead is only ever seen by the one operator who
+// owns it, "what I typed" and "what I read back" are always the same person.
+function _pipeInputValue(stored, wantsTime) {
+  const text = String(stored || '');
+  return wantsTime ? text.substring(0, 16).replace(' ', 'T') : text.substring(0, 10);
+}
+
 /**
  * Set (or clear) a business's stage. `channel` is where it was set from, so
  * the other channels can say "booked — via whatsapp" instead of leaving you
@@ -162,6 +172,7 @@ async function setPipelineStage(businessId, channel, after) {
   const live = stages.filter(s => !s.archived);
   const current = await api(`/api/businesses/${businessId}`);
   const now = (current && current.pipeline_stage) || '';
+  const nowStage = pipelineStage(now);
   const values = await chooseDialog({
     title: 'Where is this one up to?',
     body: `<label class="field-label">Stage</label>
@@ -169,12 +180,13 @@ async function setPipelineStage(businessId, channel, after) {
               onchange="_pipeDateToggle()">
         <option value="">Nothing yet</option>
         ${live.map(s => `<option value="${esc(s.key)}" data-date="${s.wants_date ? 1 : 0}"
+           data-time="${s.wants_time ? 1 : 0}"
            ${s.key === now ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}
       </select>
-      <div id="pl-date-wrap" style="display:${pipelineStage(now) && pipelineStage(now).wants_date ? 'block' : 'none'}">
-        <label class="field-label">When is it due?</label>
-        <input id="pl-date" type="date" class="soft-input"
-               value="${esc((current && current.next_action_at || '').substring(0, 10))}" />
+      <div id="pl-date-wrap" style="display:${nowStage && nowStage.wants_date ? 'block' : 'none'}">
+        <label class="field-label" id="pl-date-label">${nowStage && nowStage.wants_time ? 'When is it?' : 'When is it due?'}</label>
+        <input id="pl-date" type="${nowStage && nowStage.wants_time ? 'datetime-local' : 'date'}" class="soft-input"
+               value="${esc(_pipeInputValue(current && current.next_action_at, nowStage && nowStage.wants_time))}" />
       </div>
       <div class="form-hint" style="margin-top:8px">This is the business, not just this
         channel — it shows the same wherever you open them. Setting a stage stops their
@@ -196,13 +208,24 @@ async function setPipelineStage(businessId, channel, after) {
 }
 
 // Only stages that want one ask for a date — "proposal due" does, "replied"
-// doesn't, and showing an empty date box on every stage invites junk.
+// doesn't, and showing an empty date box on every stage invites junk. A stage
+// that wants a real appointment time ('Meeting booked') swaps to a
+// date+time picker rather than a bare date. Switching type clears whatever
+// was typed, since a date string and a datetime-local string aren't the same
+// shape — there's nothing sensible to carry across.
 function _pipeDateToggle() {
   const sel = document.getElementById('pl-stage');
   const wrap = document.getElementById('pl-date-wrap');
-  if (!sel || !wrap) return;
+  const input = document.getElementById('pl-date');
+  const label = document.getElementById('pl-date-label');
+  if (!sel || !wrap || !input) return;
   const opt = sel.options[sel.selectedIndex];
-  wrap.style.display = opt && opt.dataset.date === '1' ? 'block' : 'none';
+  const wantsDate = opt && opt.dataset.date === '1';
+  const wantsTime = opt && opt.dataset.time === '1';
+  wrap.style.display = wantsDate ? 'block' : 'none';
+  const type = wantsTime ? 'datetime-local' : 'date';
+  if (input.type !== type) { input.type = type; input.value = ''; }
+  if (label) label.textContent = wantsTime ? 'When is it?' : 'When is it due?';
 }
 
 // Mirrors db.WA_MAX_LEAD_FOLLOWUPS — how many follow-ups a lead can carry its

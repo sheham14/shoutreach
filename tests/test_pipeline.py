@@ -238,7 +238,7 @@ def test_conflict_shows_stage(db, camp):
 
 
 def test_http_and_ownership(db, app_mod, client, token, camp):
-    print("\n9. OVER HTTP, AND WALLED PER OPERATOR")
+    print("\n13. OVER HTTP, AND WALLED PER OPERATOR")
     db.upsert_wa_leads([{"company": "Http Clinic", "phone": "050 200 0050"}],
                        default_country="AE", wa_campaign_id=camp)
     lead = wa_lead(db, "Http Clinic")
@@ -272,6 +272,12 @@ def test_http_and_ownership(db, app_mod, client, token, camp):
     check("and nothing was written",
           db.get_business(bob_lead["business_id"])["pipeline_stage"] == "")
 
+    db.set_business_pipeline(bob_lead["business_id"], "booked", channel="whatsapp",
+                             owner_id=bob, next_action_at="2026-10-06T10:00")
+    s3, _ = api(client, token, "get", f"/api/businesses/{bob_lead['business_id']}/ics")
+    check("and Bob's booked meeting is a 404 too, not a peek at his calendar",
+          s3 == 404, str(s3))
+
     alice = db.get_user_by_username("admin")["id"]
     bob_board = [r["business_id"] for r in db.get_pipeline_board(owner_id=alice)]
     check("Bob's conversations are not on Alice's board",
@@ -285,8 +291,112 @@ def test_http_and_ownership(db, app_mod, client, token, camp):
           db.update_pipeline_stage(bob_key, owner_id=alice, label="mine now") is False)
 
 
+def test_booked_wants_time(db, camp):
+    print("\n9. 'BOOKED' IS THE ONLY STAGE WITH A REAL TIME OF DAY")
+    stages = db.get_pipeline_stages()
+    check("meeting booked wants a time", stages["booked"]["wants_time"] == 1)
+    for key in ("replied", "proposal_due", "proposal_sent", "won", "not_interested"):
+        check(f"'{key}' does not", stages[key]["wants_time"] == 0, key)
+
+    key = db.create_pipeline_stage("Demo scheduled", wants_date=True, wants_time=True)
+    check("a custom stage can ask for a time too",
+          db.get_pipeline_stage(key)["wants_time"] == 1)
+    key2 = db.create_pipeline_stage("No date at all", wants_date=False, wants_time=True)
+    check("wanting a time with no date is meaningless and is dropped",
+          db.get_pipeline_stage(key2)["wants_time"] == 0, str(db.get_pipeline_stage(key2)))
+
+    db.update_pipeline_stage(key, wants_date=False)
+    check("turning off the date turns off the time with it",
+          db.get_pipeline_stage(key)["wants_time"] == 0,
+          str(db.get_pipeline_stage(key)))
+
+
+def test_datetime_local_padding(db, camp):
+    print("\n10. A DATETIME-LOCAL VALUE (NO SECONDS) IS STORED CONSISTENTLY")
+    db.upsert_wa_leads([{"company": "Padding Co", "phone": "050 200 0080"}],
+                       default_country="AE", wa_campaign_id=camp)
+    lead = wa_lead(db, "Padding Co")
+    res = db.set_business_pipeline(lead["business_id"], "booked", channel="whatsapp",
+                                   next_action_at="2026-11-01T09:30")
+    check("seconds are padded on", res["next_action_at"] == "2026-11-01 09:30:00",
+          res["next_action_at"])
+    check("a bare date is left as a bare date (no time-of-day claimed)",
+          db.set_business_pipeline(lead["business_id"], "proposal_due",
+                                   next_action_at="2026-11-02")["next_action_at"]
+          == "2026-11-02")
+
+
+def test_calling_books_the_shared_pipeline(db):
+    print("\n11. A MEETING BOOKED OVER THE PHONE SHOWS UP EVERYWHERE TOO")
+    db.upsert_businesses([{"company": "Phoned Clinic", "phone": "050 200 0090"}])
+    bid = next(b["id"] for b in db.get_businesses_page(q="Phoned Clinic")["rows"])
+    with db.get_db() as conn:
+        cl_id = db.get_or_create_call_lead(conn, bid)
+
+    result = db.log_call(cl_id, "booked", notes="met on the phone",
+                         next_call_at="2026-10-05 15:00:00")
+    check("log_call still returns its usual shape",
+          result == {"outcome": "booked", "terminal": True, "stopped_email": True}, str(result))
+    biz = db.get_business(bid)
+    check("the shared stage is set", biz["pipeline_stage"] == "booked")
+    check("credited to the call channel", biz["pipeline_channel"] == "call")
+    check("with the meeting's own time, not just a date",
+          biz["next_action_at"] == "2026-10-05 15:00:00", biz["next_action_at"])
+
+    booked_board = [r["business_id"] for r in db.get_pipeline_board(stage="booked")]
+    check("it appears on the Booked board", bid in booked_board)
+    contacts = db.get_businesses_page(q="Phoned Clinic")["rows"]
+    check("and from Contacts, same as a WhatsApp booking would",
+          contacts and contacts[0]["pipeline_stage"] == "booked")
+
+    print("\n   Only the shared 'booked' key wires through -- nothing else guesses")
+    db.upsert_businesses([{"company": "Voicemail Co", "phone": "050 200 0091"}])
+    bid2 = next(b["id"] for b in db.get_businesses_page(q="Voicemail Co")["rows"])
+    with db.get_db() as conn:
+        cl2 = db.get_or_create_call_lead(conn, bid2)
+    db.log_call(cl2, "voicemail")
+    check("a non-booked outcome never touches the shared pipeline",
+          db.get_business(bid2)["pipeline_stage"] == "")
+
+    custom = db.create_call_outcome("Sent a brochure")
+    db.upsert_businesses([{"company": "Brochure Co", "phone": "050 200 0092"}])
+    bid3 = next(b["id"] for b in db.get_businesses_page(q="Brochure Co")["rows"])
+    with db.get_db() as conn:
+        cl3 = db.get_or_create_call_lead(conn, bid3)
+    db.log_call(cl3, custom)
+    check("a custom call outcome with no pipeline counterpart is left alone too",
+          db.get_business(bid3)["pipeline_stage"] == "")
+
+
+def test_business_ics(db, app_mod, client, token, camp):
+    print("\n12. AN .ICS DOWNLOAD FOR A BOOKED MEETING")
+    db.upsert_wa_leads([{"company": "Ics Clinic", "phone": "050 200 0095"}],
+                       default_country="AE", wa_campaign_id=camp)
+    lead = wa_lead(db, "Ics Clinic")
+    bid = lead["business_id"]
+
+    s, body = api(client, token, "get", f"/api/businesses/{bid}/ics")
+    check("no meeting yet means 404, not an empty file", s == 404, str(s))
+
+    db.set_business_pipeline(bid, "booked", channel="whatsapp",
+                             next_action_at="2026-10-05T15:00")
+    r = client.get(f"/api/businesses/{bid}/ics")
+    check(".ics is served once a meeting exists", r.status_code == 200)
+    check("as a calendar file", r.headers.get("Content-Type", "").startswith("text/calendar"))
+    text = r.get_data(as_text=True)
+    check("the start time carries no Z or offset -- it's the operator's own wall clock, "
+          "not a UTC instant",
+          "DTSTART:20261005T150000" in text and "DTSTART:20261005T150000Z" not in text,
+          text)
+    check("the booking channel is named in the summary", "whatsapp" in text.lower())
+    # The cross-operator case (another user's meeting is a 404 here too) is
+    # covered in test_http_and_ownership, which is where a second operator
+    # first exists -- every function up to and including this one still runs
+    # single-operator, like the rest of the file.
+
+
 def test_migration_is_additive(work):
-    print("\n10. MIGRATION: AN OLD DATABASE GAINS THE COLUMNS, KEEPS ITS ROWS")
+    print("\n14. MIGRATION: AN OLD DATABASE GAINS THE COLUMNS, KEEPS ITS ROWS")
     os.environ["DB_PATH"] = os.path.join(work, "old.db")
     import db as db_mod
     importlib.reload(db_mod)
@@ -308,6 +418,21 @@ def test_migration_is_additive(work):
           db_mod.update_pipeline_stage("booked", owner_id=uid, label="Call booked")
           and (db_mod.init_db() or db_mod.get_pipeline_stage("booked")["label"] == "Call booked"))
 
+    print("\n   A database seeded before wants_time existed gets it once, on 'booked' only")
+    with db_mod.get_db() as conn:
+        conn.execute("UPDATE pipeline_stages SET wants_time=0 WHERE key='booked'")
+        conn.execute("DELETE FROM settings WHERE key=?",
+                     (db_mod._PIPELINE_WANTS_TIME_MARKER,))
+    check("simulated pre-upgrade state", db_mod.get_pipeline_stage("booked")["wants_time"] == 0)
+    db_mod.init_db()
+    check("the one-shot turns it on", db_mod.get_pipeline_stage("booked")["wants_time"] == 1)
+
+    db_mod.update_pipeline_stage("booked", owner_id=uid, wants_time=False)
+    db_mod.init_db()
+    check("but never fights a choice made after the one-shot ran",
+          db_mod.get_pipeline_stage("booked")["wants_time"] == 0,
+          "a second init_db must not re-flip this back to 1")
+
 
 def main():
     work = tempfile.mkdtemp(prefix="pipeline-")
@@ -323,6 +448,15 @@ def main():
         test_messaged_filter_and_sent_log(db, camp)
         test_search_widened(db, camp)
         test_conflict_shows_stage(db, camp)
+        # These four run single-operator, like everything above: several of
+        # the helpers they exercise (create/update_pipeline_stage,
+        # set_business_pipeline, upsert_businesses) resolve an owner
+        # themselves and refuse to guess once a second user exists --
+        # test_http_and_ownership is what introduces "bob", so it runs last.
+        test_booked_wants_time(db, camp)
+        test_datetime_local_padding(db, camp)
+        test_calling_books_the_shared_pipeline(db)
+        test_business_ics(db, app_mod, client, token, camp)
         test_http_and_ownership(db, app_mod, client, token, camp)
         test_migration_is_additive(work)
     finally:
