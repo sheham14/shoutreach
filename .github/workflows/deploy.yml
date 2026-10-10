@@ -17,6 +17,11 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ~/shoutreach
+            # Back up the live database first: the restart below runs init_db()
+            # migrations against it. SQLite's online backup is safe while the
+            # app is running (WAL). No backup, no deploy. Keeps the last five.
+            venv/bin/python -c "import sqlite3, sys; s = sqlite3.connect('outreach.db'); d = sqlite3.connect(sys.argv[1]); s.backup(d); d.close(); s.close()" ~/outreach.db.bak-deploy-$(date +%F-%H%M%S) || exit 1
+            ls -1t ~/outreach.db.bak-deploy-* | tail -n +6 | xargs -r rm --
             git pull origin master
             source venv/bin/activate
             pip install -r requirements.txt -q
