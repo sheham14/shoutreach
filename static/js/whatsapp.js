@@ -31,7 +31,7 @@ function startOfLocalDay() {
 
 onTab('whatsapp', name => {
   if (name === 'todo') loadWaTodo();
-  if (name === 'leads') { closeLeadPanel('wl-panel'); LT.wl.load({ resetPage: true }); }
+  if (name === 'leads') { closeLeadPanel('wl-panel'); fillSourceSelect('wl-source'); LT.wl.load({ resetPage: true }); }
   if (name === 'booked') { closeLeadPanel('wa-booked-panel'); renderWaBooked(); }
   if (name === 'campaigns') renderWaCampaigns();
   if (name === 'templates') renderWaTemplateEditor(_waFilter() || (_waCampaigns[0] && _waCampaigns[0].id));
@@ -179,6 +179,11 @@ function renderWaFilterNote() {
     const opt = stageSel.options[stageSel.selectedIndex];
     bits.push(`showing only <b>${esc(opt ? opt.textContent.trim() : stage)}</b>`);
   }
+  const srcSel = document.getElementById('wl-source');
+  if (srcSel && srcSel.value) {
+    const opt = srcSel.options[srcSel.selectedIndex];
+    bits.push(`from <b>${esc(opt ? opt.textContent.replace(/ \(\d.*\)$/, '') : 'one import')}</b>`);
+  }
   if (camp === 'none') bits.push('showing only <b>leads with no campaign</b>');
   else if (camp) {
     const c = _waCampaigns.find(x => String(x.id) === String(camp));
@@ -194,8 +199,10 @@ function clearWaLeadFilters() {
   const stage = document.getElementById('wl-stage');
   const search = document.getElementById('wl-search');
   const camp = document.getElementById('wa-campaign-filter');
+  const source = document.getElementById('wl-source');
   if (stage) stage.value = '';
   if (search) search.value = '';
+  if (source) source.value = '';
   if (camp) camp.value = '';
   renderWaHeader();
   LT.wl.load({ resetPage: true });
@@ -240,7 +247,11 @@ function waCampaignFilterChanged() {
   renderWaHeader();
   const tab = currentTab('whatsapp', 'todo');
   if (tab === 'todo') { _waCurrent = null; loadWaTodo(); }
-  else if (tab === 'leads') { closeLeadPanel('wl-panel'); LT.wl.load({ resetPage: true, keepSelection: false }); }
+  else if (tab === 'leads') {
+    closeLeadPanel('wl-panel');
+    fillSourceSelect('wl-source');
+    LT.wl.load({ resetPage: true, keepSelection: false });
+  }
   else if (tab === 'templates') renderWaTemplateEditor(_waFilter() || (_waCampaigns[0] && _waCampaigns[0].id));
 }
 
@@ -479,7 +490,7 @@ function _waActionsHtml(l) {
   return `<div class="flex gap-2" style="flex-wrap:wrap;margin-top:12px;align-items:center">
       <button class="btn btn-primary" onclick="openWaLink(${l.id})">Open in WhatsApp</button>
       <button class="btn btn-ghost" onclick="skipWaLead()">Skip</button>
-      ${kind === 'opener' ? `<button class="btn btn-ghost btn-sm" onclick="rewordWaMessage(${l.id})">✨ Reword with AI</button>`
+      ${kind === 'opener' ? (window._aiEnabled ? `<button class="btn btn-ghost btn-sm" onclick="rewordWaMessage(${l.id})">✨ Reword with AI</button>` : '')
               : `<button class="btn btn-ghost btn-sm" onclick="waMarkReplied(${l.id})">They replied</button>
                  <button class="btn btn-ghost btn-sm" onclick="waSetPaused([${l.id}], true)">Pause</button>`}
     </div>
@@ -865,11 +876,18 @@ async function moveWaLeadsToCampaign(ids) {
 createLeadTable({
   id: 'wl',
   url: '/api/wa/leads/page',
+  idsUrl: '/api/wa/leads/ids',
+  exportKind: 'wa',
+  exportName: () => {
+    const sel = document.getElementById('wl-source');
+    return sel && sel.value ? sel.options[sel.selectedIndex].text.replace(/ \(\d.*\)$/, '') : 'whatsapp-leads';
+  },
   empty: 'No WhatsApp leads match. Add some with + Add leads, from Contacts, or scrape with WhatsApp as the destination.',
   params: () => ({
     q: document.getElementById('wl-search')?.value.trim(),
     stage: document.getElementById('wl-stage')?.value,
     wa_campaign_id: _waFilter(),
+    source_job_id: document.getElementById('wl-source')?.value,
   }),
   columns: [
     { key: 'company', label: 'Business', sort: true,
@@ -886,7 +904,7 @@ createLeadTable({
     { key: 'template_variant', label: 'Version', sort: true, cls: 'num', render: waVersionCell },
     { key: 'sent_date', label: 'Last sent', sort: true, cls: 'num', render: r => esc(shortDate(r.sent_date)) },
     { key: 'followup_count', label: 'Follow-ups', sort: true, cls: 'num', render: r => r.followup_count || 0 },
-    { key: 'created_at', label: 'Added', sort: true, cls: 'num', render: r => esc(shortDate(r.created_at)) },
+    { key: 'created_at', label: 'Added', sort: true, cls: 'num', render: r => esc(localDateTime(r.created_at)) },
   ],
   mobile: r => mCard(`<span class="biz-name">${esc(r.company || 'Unnamed business')}</span>`,
     `${waStagePill(r.stage)}${r.opened_at && ['ready', 'due'].includes(r.stage) ? ` ${pill('opened', 'amber')}` : ''}
@@ -1651,7 +1669,7 @@ async function importWaLeads(campaignId, country) {
     });
     if (res.status === 401) { window.location.href = '/login'; return; }
     const first = await res.json();
-    await _finishWaImport(first, country, campaignId);
+    await _finishWaImport(first, country, campaignId, fileInput.files[0].name);
     return;
   }
 
@@ -1661,8 +1679,9 @@ async function importWaLeads(campaignId, country) {
       return { company, phone: phone || '', website: website || '' };
     }).filter(r => r.company);
     if (!rows.length) { toast('Nothing to import — one business per line', 'err'); return; }
-    const first = await api('/api/wa/import', 'POST', { rows, country, wa_campaign_id: campaignId });
-    await _finishWaImport(first, country, campaignId);
+    const first = await api('/api/wa/import', 'POST',
+      { rows, country, wa_campaign_id: campaignId, source: 'Paste' });
+    await _finishWaImport(first, country, campaignId, 'Paste');
     return;
   }
 
@@ -1698,15 +1717,18 @@ async function importWaJson(campaignId, country) {
   if (!usable.length) { toast('No row had a company or a phone number', 'err'); return; }
 
   const first = await api('/api/wa/import', 'POST',
-    { rows: usable, country, wa_campaign_id: campaignId });
-  await _finishWaImport(first, country, campaignId);
+    { rows: usable, country, wa_campaign_id: campaignId, source: 'JSON' });
+  await _finishWaImport(first, country, campaignId, 'JSON');
 }
 
-async function _finishWaImport(first, country, campaignId) {
+// The confirmed half of an import names the batch the first half started, so
+// one import stays one entry under "From".
+async function _finishWaImport(first, country, campaignId, source = '') {
   if (!first || first.error) { toast((first && first.error) || 'Import failed', 'err'); return; }
   const final = await confirmChannelConflicts(first, () =>
     api('/api/wa/import', 'POST', {
       rows: first.conflicts.map(c => c.row), country, wa_campaign_id: campaignId, confirm_conflicts: true,
+      batch_id: first.batch_id || null, source,
     })
   );
   const inserted = (first.inserted || 0) + (final !== first ? (final.inserted || 0) : 0);

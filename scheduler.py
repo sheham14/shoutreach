@@ -276,6 +276,16 @@ def run_log_prune():
         logger.exception("Log prune error")
 
 
+def run_trash_purge():
+    """Leads deleted more than TRASH_DAYS ago leave Recently deleted for good."""
+    try:
+        gone = db.purge_deleted_leads()
+        if gone:
+            logger.info(f"Permanently removed {gone} lead(s) deleted over {db.TRASH_DAYS} days ago")
+    except Exception:
+        logger.exception("Recently-deleted purge error")
+
+
 # ── Background thread runner ──────────────────────────────────────────────────
 
 def _run_loop():
@@ -307,6 +317,7 @@ def _run_loop():
 
         if now - last_log_prune > 86400:  # 24 hours
             run_log_prune()
+            run_trash_purge()
             last_log_prune = now
 
         # Sleep up to 60s, but wake immediately on request_run_now() or stop().

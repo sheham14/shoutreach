@@ -611,6 +611,49 @@
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
     padding: 10px 16px; border-top: 1px solid var(--border);
   }
+  .lt-extras { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .trash-group { border-bottom: 1px solid var(--border); }
+  .trash-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 12px 16px; }
+  .trash-head > div:first-child { flex: 1 1 280px; min-width: 0; }
+  .trash-item {
+    display: grid; grid-template-columns: minmax(0,1fr) auto auto auto; gap: 14px; align-items: center;
+    padding: 7px 16px 7px 32px; font-size: 13px; border-top: 1px dashed var(--border);
+  }
+  .trash-item a { color: var(--blue); cursor: pointer; text-decoration: underline; }
+  @media (max-width: 768px) { .trash-item { grid-template-columns: 1fr auto; padding-left: 16px; } }
+  .lt-extras .lt-perpage { width: auto; padding-top: 5px; padding-bottom: 5px; font-size: 12px; }
+
+  /* Full screen: just the table (and its side panel), filling the window.
+     The toolbar and selection bar stay put; the rows scroll under a sticky
+     heading, and the tick box and first column stay put when scrolling
+     sideways, so you always know which row you're on. Below the modal
+     overlay (1000) and the row menus (900), which still open over it. */
+  .lt-fullscreen {
+    position: fixed !important; inset: 0; z-index: 800; margin: 0 !important;
+    padding: 12px; background: var(--bg); overflow: hidden; height: 100vh;
+  }
+  .work-split.lt-fullscreen { align-items: stretch; }
+  .lt-fullscreen > .card:not(.work-panel), .card.lt-fullscreen {
+    height: 100%; display: flex; flex-direction: column; min-height: 0;
+  }
+  .card.lt-fullscreen { padding: 0; }
+  .lt-fullscreen .work-panel { max-height: 100%; position: static; height: 100%; }
+  .lt-fullscreen [id$="-body"] { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .lt-fullscreen .table-wrap { flex: 1; min-height: 0; overflow: auto; }
+  .lt-fullscreen .lead-table th { top: 0; z-index: 3; }
+  .lt-fullscreen .lead-table td.check, .lt-fullscreen .lead-table th.check {
+    position: sticky; left: 0; z-index: 2; background: var(--bg2);
+  }
+  .lt-fullscreen .lead-table td:nth-child(2), .lt-fullscreen .lead-table th:nth-child(2) {
+    position: sticky; left: 36px; z-index: 2; background: var(--bg2);
+    box-shadow: 1px 0 0 var(--border);
+  }
+  .lt-fullscreen .lead-table th.check, .lt-fullscreen .lead-table th:nth-child(2) { z-index: 4; }
+  .lt-fullscreen .lead-table tr.selected td.check,
+  .lt-fullscreen .lead-table tr.selected td:nth-child(2) { background: #0f1a26; }
+  .lt-fullscreen .lead-table tr.current td.check,
+  .lt-fullscreen .lead-table tr.current td:nth-child(2) { background: #0b1d19; }
+  body.lt-fullscreen-open { overflow: hidden; }
   .row-menu { position: relative; display: inline-block; }
   .row-menu > .btn { padding: 3px 9px; }
   /* Fixed, and placed by toggleRowMenu, so a table or panel that scrolls can't
@@ -791,6 +834,7 @@
     .mini-stat:nth-child(2) { border-right: 0; }
     .mini-stat:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
     .lt-count { margin-left: 0; }
+    .lt-fs-btn { display: none; }
     .tab { padding: 9px 10px; }
   }
 

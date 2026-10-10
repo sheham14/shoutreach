@@ -1,4 +1,5 @@
 let _scraperPoll = null;
+let _lastHeldStatus = null;
 
 async function loadScraper() {
   // Arriving from WhatsApp's "Scrape Google Maps" button: aim the form at
@@ -32,7 +33,7 @@ async function startScraper() {
   const autoImport = document.getElementById('sc-autoimport').checked;
   const destination = document.getElementById('sc-destination').value;
   const country     = destination === 'whatsapp' ? countryValue('sc-country') : '';
-  const campaignId  = destination === 'email' ? '' : document.getElementById('sc-campaign').value;
+  const campaignId  = ['email', 'csv'].includes(destination) ? '' : document.getElementById('sc-campaign').value;
   if (!niche || !city) { toast('Enter a niche and city', 'err'); return; }
   if (destination === 'whatsapp' && !country) { toast('Pick the country from the list', 'err'); return; }
   if (destination === 'whatsapp' && !campaignId) {
@@ -82,13 +83,21 @@ const _SCRAPER_DESTINATIONS = {
     campaignHint: "Their messages are written from this campaign's templates, ready to send.",
     campaignOptional: false,
   },
+  csv: {
+    label: 'CSV download',
+    hint: "Visits each website for an email address, like an Email scrape, but puts the leads on no list. "
+        + "They stay with the scrape for you to download as a CSV — from the Progress box while it runs, "
+        + "or from Your scrapes & imports below. Import the file later from any channel.",
+    noImportToggle: true,
+  },
 };
 
 async function scraperDestinationChanged(selectCampaign = '') {
   const destination = document.getElementById('sc-destination').value;
   const spec = _SCRAPER_DESTINATIONS[destination] || _SCRAPER_DESTINATIONS.email;
   document.getElementById('sc-destination-hint').textContent = spec.hint;
-  document.getElementById('sc-autoimport-label').textContent = spec.importLabel;
+  document.getElementById('sc-autoimport-label').textContent = spec.importLabel || '';
+  document.getElementById('sc-autoimport-row').style.display = spec.noImportToggle ? 'none' : 'flex';
   document.getElementById('sc-country-group').style.display =
     destination === 'whatsapp' ? 'block' : 'none';
 
@@ -116,33 +125,57 @@ async function scraperDestinationChanged(selectCampaign = '') {
   }
 }
 
-// ── Your scrapes ─────────────────────────────────────────────────────────────
+// ── Your scrapes & imports ───────────────────────────────────────────────────
 
-const _SCRAPE_FOR = { email: 'Email', calling: 'Calling', whatsapp: 'WhatsApp' };
+const _SCRAPE_FOR = { email: 'Email', calling: 'Calling', whatsapp: 'WhatsApp', csv: 'CSV only' };
 
 async function loadScrapeLists() {
   const tbody = document.getElementById('sc-lists');
   if (!tbody) return;
-  const lists = await api('/api/contacts/sources') || [];
-  if (!Array.isArray(lists) || !lists.length) {
-    tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state"><p>No scrapes yet.</p></div></td></tr>';
+  const [lists, held] = await Promise.all([api('/api/contacts/sources'), api('/api/scraper/held')]);
+  // A CSV-only scrape files no leads, so it's in no import list -- it comes
+  // from its own endpoint and sorts in by when it ran.
+  const rows = [
+    ...(Array.isArray(held) ? held : []).map(h => ({ ...h, kind: 'held' })),
+    ...(Array.isArray(lists) ? lists : []),
+  ].sort((a, b) => (a.kind === 'manual') - (b.kind === 'manual')
+                   || String(b.created_at || '').localeCompare(String(a.created_at || '')));
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state"><p>No scrapes or imports yet.</p></div></td></tr>';
     return;
   }
-  tbody.innerHTML = lists.map(l => {
-    const manual = l.job_id === 'manual';
-    const title = manual ? 'Added by hand or from a CSV' : (l.niche || l.city ? `${l.niche || ''}${l.city ? ` — ${l.city}` : ''}` : l.label);
-    const actions = `
-        <button class="btn btn-ghost btn-sm" onclick="openScrapeInContacts('${escj(String(l.job_id))}')">View</button>
-        <button class="btn btn-primary btn-sm" onclick="addListToChannel('${escj(String(l.job_id))}', '${escj(title)}', ${l.count})">Add all to…</button>`;
+  tbody.innerHTML = rows.map(l => {
+    const manual = l.kind === 'manual';
+    const id = String(l.id);
+    let title, forPill, actions;
+    if (l.kind === 'held') {
+      title = [l.niche, l.city].filter(Boolean).join(' — ') || `Scrape #${l.id}`;
+      forPill = pill('CSV only', 'purple');
+      actions = `<button class="btn btn-primary btn-sm" ${l.count ? '' : 'disabled'}
+          onclick="downloadUrl('/api/scraper/jobs/${l.id}/csv')">⬇ Download CSV</button>`;
+    } else {
+      title = manual ? l.base : (l.name || l.base);
+      forPill = manual ? '<span class="text-muted">—</span>'
+        : `${pill(_SCRAPE_FOR[l.destination] || (l.destination ? l.destination : 'Contacts'))}${
+            l.kind === 'import' ? ` <span class="text-muted text-small">import</span>` : ''}`;
+      actions = `
+        ${manual ? '' : `<button class="btn btn-ghost btn-sm" onclick="renameImport('${escj(id)}', '${escj(l.name || '')}',
+            '${escj(`${l.base} · ${localDateTime(l.created_at)}`)}', loadScrapeLists)">Rename</button>`}
+        <button class="btn btn-ghost btn-sm" onclick="openScrapeInContacts('${escj(id)}')">View</button>
+        <button class="btn btn-primary btn-sm" onclick="addListToChannel('${escj(id)}', '${escj(title)}', ${l.count})">Add all to…</button>`;
+    }
+    const counted = l.kind === 'import' && l.new_count < l.count
+      ? `${l.count} <span class="text-muted">(${l.new_count} new)</span>` : `${l.count}`;
+    const when = l.created_at ? esc(localDateTime(l.created_at)) : '—';
     return `<tr>
       <td><span class="biz-name">${esc(title)}</span>${l.country ? `<span class="sub">${esc(countryName(l.country))}</span>` : ''}</td>
-      <td>${manual ? '<span class="text-muted">—</span>' : pill(_SCRAPE_FOR[l.destination] || 'Email')}</td>
-      <td class="num">${l.count}</td>
-      <td class="num">${esc((l.scraped_at || '').substring(0, 10))}</td>
+      <td>${forPill}</td>
+      <td class="num">${counted}</td>
+      <td class="num">${when}</td>
       <td class="nowrap" style="text-align:right">${actions}</td>
       <td class="m-card">${mCard(`<span class="biz-name">${esc(title)}</span>`,
-        [manual ? '' : `for ${_SCRAPE_FOR[l.destination] || 'Email'}`, `${l.count} leads`,
-         esc((l.scraped_at || '').substring(0, 10))].filter(Boolean).join(' · '),
+        [l.kind === 'held' ? 'CSV only' : (manual ? '' : `for ${_SCRAPE_FOR[l.destination] || 'Contacts'}`),
+         `${l.count} leads`, l.created_at ? when : ''].filter(Boolean).join(' · '),
         `<span class="m-actions">${actions}</span>`)}</td>
     </tr>`;
   }).join('');
@@ -203,7 +236,17 @@ async function pollScraperStatus() {
             : (d.status === 'idle' ? 'Idle' : (d.status || 'Idle'));
   document.getElementById('sc-found').textContent    = d.found    ?? '—';
   document.getElementById('sc-scraped').textContent  = d.progress ?? '—';
-  document.getElementById('sc-imported').textContent = d.imported ?? '—';
+  const held = d.destination === 'csv';
+  document.getElementById('sc-imported-label').textContent = held ? 'Ready to download' : 'Imported';
+  document.getElementById('sc-imported').textContent = held ? (d.held ?? 0) : (d.imported ?? '—');
+  const dl = document.getElementById('sc-download-box');
+  dl.style.display = held && d.held ? 'block' : 'none';
+  if (held && d.held) {
+    document.getElementById('sc-download-btn').onclick = () => downloadUrl(`/api/scraper/jobs/${d.job_id}/csv`);
+  }
+  // A finished CSV scrape belongs in the list below straight away.
+  if (held && ['done', 'stopped', 'error'].includes(d.status) && _lastHeldStatus !== d.status) loadScrapeLists();
+  _lastHeldStatus = held ? d.status : null;
   document.getElementById('sc-captcha-box').style.display =
     d.status === 'captcha' ? 'block' : 'none';
 

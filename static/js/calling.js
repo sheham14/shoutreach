@@ -178,6 +178,12 @@ async function deleteCallCampaign(id) {
 createLeadTable({
   id: 'cl',
   url: '/api/calls/leads',
+  idsUrl: '/api/calls/leads/ids',
+  exportKind: 'call',
+  exportName: () => {
+    const sel = document.getElementById('cl-source');
+    return sel && sel.value ? sel.options[sel.selectedIndex].text.replace(/ \(\d.*\)$/, '') : 'calling-leads';
+  },
   empty: 'Nobody on Calling matches. Add leads with + Add leads, from Contacts, or scrape with Calling as the destination.',
   params: () => ({
     q: document.getElementById('cl-search')?.value.trim(),
@@ -234,12 +240,7 @@ async function loadCallLeads() {
     outcomeSel.innerHTML = '<option value="">Any outcome</option><option value="none">Never called</option>' +
       outcomes.filter(o => !o.archived).map(o => `<option value="${esc(o.key)}">${esc(o.label)}</option>`).join('');
   }
-  const src = document.getElementById('cl-source');
-  if (src && src.options.length <= 1) {
-    const sources = await api('/api/contacts/sources') || [];
-    src.innerHTML = '<option value="">All lists</option>' +
-      sources.map(s => `<option value="${esc(String(s.job_id))}">${esc(s.label)} (${s.count})</option>`).join('');
-  }
+  await fillSourceSelect('cl-source');
   await loadCallCampaigns();
   LT.cl.load();
   refreshLeadPanel('cl-panel');
@@ -431,13 +432,14 @@ async function submitAddLeads() {
     if (!file) { toast('Choose a CSV first', 'err'); return; }
     const fd = new FormData();
     fd.append('file', file);
+    fd.append('channel', 'calling');
     const r = await fetch('/api/contacts/import', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'X-CSRF-Token': await _getCsrfToken() }, body: fd,
     });
     imported = await r.json().catch(() => ({}));
     if (!r.ok || imported.error) { toast(imported.error || 'CSV import failed', 'err'); return; }
-    imported = await _resolveImportConflicts(imported);
+    imported = await _resolveImportConflicts(imported, file.name);
     res = await _addToCalling(imported.business_ids || [], campaignId);
   }
 
@@ -455,15 +457,16 @@ async function submitAddLeads() {
 // rows are confirmed the same way, then folded back into one business id
 // list so the add step sees every business that ended up imported.
 async function _importForCalling(rows) {
-  const first = await api('/api/contacts/import', 'POST', { rows });
+  const first = await api('/api/contacts/import', 'POST', { rows, source: 'Paste', channel: 'calling' });
   if (!first || first.error) return first;
-  return _resolveImportConflicts(first);
+  return _resolveImportConflicts(first, 'Paste');
 }
 
-async function _resolveImportConflicts(first) {
+async function _resolveImportConflicts(first, source = '') {
   const final = await confirmChannelConflicts(first, () =>
     api('/api/contacts/import', 'POST', {
       rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
+      batch_id: first.batch_id || null, source, channel: 'calling',
     })
   );
   if (final === first) return first;
@@ -477,10 +480,7 @@ async function _resolveImportConflicts(first) {
 async function loadCallSources() {
   const sel = document.getElementById('cq-source-filter');
   if (!sel) return;
-  const sources = await api('/api/contacts/sources') || [];
-  sel.innerHTML = '<option value="">All lists</option>' + sources
-    .map(s => `<option value="${esc(String(s.job_id))}">${esc(s.label)} (${s.count})</option>`)
-    .join('');
+  await fillSourceSelect('cq-source-filter');
 }
 
 function setCallBucket(bucket) {

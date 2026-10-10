@@ -43,7 +43,7 @@ const _CT_COLUMNS_BASE = [
     render: r => r.email ? `<span class="mono" style="font-size:12px">${esc(r.email)}</span>${
       r.email_count > 1 ? ` <span class="text-muted">+${r.email_count - 1}</span>` : ''}` : '' },
   { key: 'category', label: 'Category', sort: true, render: r => esc(r.category || '') },
-  { key: 'created_at', label: 'Added', sort: true, cls: 'num', render: r => esc(shortDate(r.created_at)) },
+  { key: 'created_at', label: 'Added', sort: true, cls: 'num', render: r => esc(localDateTime(r.created_at)) },
 ];
 
 const _CT_REASON_COLUMN = {
@@ -66,6 +66,11 @@ createLeadTable({
   mobile: r => mCard(`<span class="biz-name">${esc(r.company || 'Unnamed business')}</span>`,
     channelPills(r), esc([r.city || r.address, r.phone].filter(Boolean).join(' · '))),
   onRowClick: r => openContactDetail(r.id),
+  exportKind: 'business',
+  exportName: () => {
+    const s = _ctSources.find(x => String(x.id) === document.getElementById('ct-source')?.value);
+    return s ? sourceLabel(s) : 'contacts';
+  },
   bulk: () => `
     <button class="btn btn-ghost btn-sm" onclick="contactsToEmail(LT.ct.selectedIds())">+ Email campaign</button>
     <button class="btn btn-ghost btn-sm" onclick="contactsToCalling(LT.ct.selectedIds())">+ Calling</button>
@@ -90,6 +95,11 @@ createLeadTable({
 });
 
 onTab('contacts', name => {
+  // Recently deleted isn't a view of the table -- those leads aren't in it.
+  const trash = name === 'deleted';
+  document.getElementById('ct-split').style.display = trash ? 'none' : '';
+  document.getElementById('ct-trash').style.display = trash ? '' : 'none';
+  if (trash) { loadTrash(); return; }
   _ctView = name;
   LT.ct.cfg.columns = name === 'unassigned'
     ? [_CT_COLUMNS_BASE[0], _CT_REASON_COLUMN, ..._CT_COLUMNS_BASE.slice(2)]
@@ -102,26 +112,125 @@ onTab('contacts', name => {
 });
 
 async function loadContacts() {
-  _ctSources = await api('/api/contacts/sources') || [];
-  const sel = document.getElementById('ct-source');
-  const keep = window._contactsPresetSource ?? sel.value;
+  await _loadContactSources(window._contactsPresetSource);
   window._contactsPresetSource = undefined;
-  sel.innerHTML = '<option value="">All lists</option>' +
-    _ctSources.map(s => `<option value="${esc(String(s.job_id))}">${esc(s.label)} (${s.count})</option>`).join('');
-  sel.value = _ctSources.some(s => String(s.job_id) === String(keep)) ? keep : '';
-  document.getElementById('ct-add-list').style.display = sel.value ? '' : 'none';
   setTab('contacts', currentTab('contacts', 'all'));
+  _refreshTrashCount();
+}
+
+async function _loadContactSources(preset) {
+  const sel = document.getElementById('ct-source');
+  const keep = preset ?? sel.value;
+  const got = await api('/api/contacts/sources');
+  _ctSources = Array.isArray(got) ? got : [];
+  sel.innerHTML = sourceOptionsHtml(_ctSources, keep);
+  sel.value = _ctSources.some(s => String(s.id) === String(keep)) ? String(keep) : '';
+  _syncSourceButtons();
+}
+
+function _syncSourceButtons() {
+  const id = document.getElementById('ct-source').value;
+  document.getElementById('ct-add-list').style.display = id ? '' : 'none';
+  document.getElementById('ct-rename-list').style.display = id && id !== 'manual' ? '' : 'none';
 }
 
 function contactsSourceChanged() {
-  document.getElementById('ct-add-list').style.display = document.getElementById('ct-source').value ? '' : 'none';
+  _syncSourceButtons();
   LT.ct.filter();
 }
 
 function addSelectedListToChannel() {
   const id = document.getElementById('ct-source').value;
-  const list = _ctSources.find(s => String(s.job_id) === id);
-  if (list) addListToChannel(id, list.label, list.count);
+  const list = _ctSources.find(s => String(s.id) === id);
+  if (list) addListToChannel(id, sourceLabel(list), list.count);
+}
+
+function renameSelectedList() {
+  const id = document.getElementById('ct-source').value;
+  const list = _ctSources.find(s => String(s.id) === id);
+  if (list) renameImport(id, list.name, `${list.base} · ${localDateTime(list.created_at)}`,
+                         () => _loadContactSources(id));
+}
+
+// ── Recently deleted ─────────────────────────────────────────────────────────
+//
+// A delete keeps a full copy of each lead for 30 days. Grouped by delete, so a
+// batch removed together comes back together.
+
+async function _refreshTrashCount() {
+  const d = await api('/api/trash');
+  const n = (d && d.groups || []).reduce((sum, g) => sum + g.count, 0);
+  setTabCount('contacts', 'deleted', n);
+  return d;
+}
+
+async function loadTrash() {
+  const box = document.getElementById('ct-trash-body');
+  const d = await _refreshTrashCount();
+  if (!d || d.error) { box.innerHTML = `<div class="empty-state"><p>${esc((d && d.error) || 'Could not load it')}</p></div>`; return; }
+  if (!d.groups.length) {
+    box.innerHTML = `<div class="empty-state"><p>Nothing deleted in the last ${d.days} days.</p></div>`;
+    return;
+  }
+  box.innerHTML = d.groups.map(g => {
+    const names = g.items.slice(0, 6).map(i => esc(i.name || 'Unnamed business')).join(', ')
+      + (g.count > 6 ? ` and ${g.count - 6} more` : '');
+    return `<div class="trash-group">
+      <div class="trash-head">
+        <div>
+          <div class="biz-name">${g.count} lead${g.count === 1 ? '' : 's'} · deleted ${esc(localDateTime(g.deleted_at))}</div>
+          <div class="text-muted text-small" style="margin-top:2px">${names}</div>
+        </div>
+        <span class="text-muted text-small mono" title="Then they're gone for good">${g.days_left} day${g.days_left === 1 ? '' : 's'} left</span>
+        <button class="btn btn-primary btn-sm" onclick="restoreTrash('${escj(g.group)}', ${g.count})">Restore</button>
+        <button class="btn btn-ghost btn-sm" onclick="toggleTrashItems(this)">Show</button>
+        <button class="btn btn-danger btn-sm" onclick="forgetTrash('${escj(g.group)}', ${g.count})">Delete forever</button>
+      </div>
+      <div class="trash-items" style="display:none">${g.items.map(i => `<div class="trash-item">
+          <span>${esc(i.name || 'Unnamed business')}</span>
+          <span class="mono text-muted">${esc(i.phone || '')}</span>
+          <span class="text-muted text-small">${esc((i.channels || '').split(',').filter(Boolean).join(', ') || 'no channel')}</span>
+          <a onclick="restoreTrashItems([${i.id}])">Restore</a>
+        </div>`).join('')}</div>
+    </div>`;
+  }).join('');
+}
+
+function toggleTrashItems(btn) {
+  const items = btn.closest('.trash-group').querySelector('.trash-items');
+  const open = items.style.display === 'none';
+  items.style.display = open ? '' : 'none';
+  btn.textContent = open ? 'Hide' : 'Show';
+}
+
+function _afterRestore(res) {
+  if (!res || res.error) { toast((res && res.error) || 'Could not restore them', 'err'); return; }
+  toast(`Restored ${res.restored}` + (res.exists
+    ? ` — ${res.exists} skipped, already back in your list` : ''));
+  loadTrash();
+  _loadContactSources();
+  LT.ct.load();
+}
+
+async function restoreTrash(group) {
+  _afterRestore(await api('/api/trash/restore', 'POST', { group }));
+}
+
+async function restoreTrashItems(ids) {
+  _afterRestore(await api('/api/trash/restore', 'POST', { ids }));
+}
+
+async function forgetTrash(group, count) {
+  const ok = await chooseDialog({
+    title: `Delete ${count} lead${count === 1 ? '' : 's'} forever?`,
+    body: '<p class="text-small" style="line-height:1.6">They can\'t be restored after this.</p>',
+    confirm: 'Delete forever', danger: true,
+  });
+  if (!ok) return;
+  const res = await api('/api/trash/forget', 'POST', { group });
+  if (!res || res.error) { toast((res && res.error) || 'Could not delete them', 'err'); return; }
+  toast(`Deleted ${res.deleted} for good`);
+  loadTrash();
 }
 
 // From anywhere in the app: jump to one business in Contacts.
@@ -304,7 +413,8 @@ async function deleteBusinesses(ids) {
   const ok = await chooseDialog({
     title: `Delete ${ids.length} contact${ids.length === 1 ? '' : 's'}?`,
     body: `<p class="text-small" style="line-height:1.6">This removes ${ids.length === 1 ? 'the business' : 'them'} from every
-      channel — email addresses, call history and WhatsApp messages included. It can't be undone.</p>
+      channel — email addresses, call history and WhatsApp messages included. You can restore
+      ${ids.length === 1 ? 'it' : 'them'} from <b>Recently deleted</b> for 30 days.</p>
       <p class="text-muted text-small" style="margin-top:8px;line-height:1.6">Anyone who unsubscribed, bounced or asked
       not to be contacted is kept, so a later scrape can't put them back on a list.</p>`,
     confirm: 'Delete', danger: true,
@@ -312,8 +422,11 @@ async function deleteBusinesses(ids) {
   if (!ok) return;
   const res = await api('/api/businesses/delete', 'POST', { business_ids: ids });
   if (!res || res.error) { toast((res && res.error) || 'Could not delete them', 'err'); return; }
-  toast(`Deleted ${res.deleted}` + (res.kept ? ` — kept ${res.kept} who asked not to be contacted` : ''));
+  toast(`Deleted ${res.deleted}` + (res.kept ? ` — kept ${res.kept} who asked not to be contacted` : '')
+        + ' · restore from Recently deleted');
   LT.ct.clear();
+  _loadContactSources();
+  _refreshTrashCount();
   Object.entries(LeadPanel.current).forEach(([panelId, cur]) => {
     if (ids.includes(cur.businessId)) closeLeadPanel(panelId);
   });

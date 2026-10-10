@@ -37,6 +37,11 @@ createLeadTable({
   id: 'el',
   url: '/api/contacts',
   idsUrl: '/api/contacts/ids',
+  exportKind: 'email',
+  exportName: () => {
+    const s = (_emailSources || []).find(x => String(x.id) === document.getElementById('el-source')?.value);
+    return s ? sourceLabel(s) : 'email-leads';
+  },
   empty: 'No email addresses match. Import a CSV or scrape with Email as the destination.',
   params: () => ({
     q: document.getElementById('el-search')?.value.trim(),
@@ -60,7 +65,7 @@ createLeadTable({
     { key: 'status', label: 'Address', sort: true,
       render: r => pill(r.status, _EMAIL_STATUS_TONE[r.status] || '') },
     { key: 'phone', label: 'Phone', sort: true, cls: 'num', render: r => esc(r.phone || '') },
-    { key: 'created_at', label: 'Added', sort: true, cls: 'num', render: r => esc(shortDate(r.created_at)) },
+    { key: 'created_at', label: 'Added', sort: true, cls: 'num', render: r => esc(localDateTime(r.created_at)) },
   ],
   mobile: r => {
     const e = (r.enrollments || [])[0];
@@ -97,12 +102,11 @@ async function loadEmailLeads() {
   campSel.innerHTML = '<option value="">Any campaign</option><option value="none">Not in a campaign</option>' +
     (campaigns || []).map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   campSel.value = keepCamp;
-  _emailSources = sources || [];
+  _emailSources = Array.isArray(sources) ? sources : [];
   const srcSel = document.getElementById('el-source');
   const keepSrc = srcSel.value;
-  srcSel.innerHTML = '<option value="">All lists</option>' +
-    _emailSources.map(s => `<option value="${esc(String(s.job_id))}">${esc(s.label)} (${s.count})</option>`).join('');
-  srcSel.value = keepSrc;
+  srcSel.innerHTML = sourceOptionsHtml(_emailSources, keepSrc);
+  if (![...srcSel.options].some(o => o.value === keepSrc)) srcSel.value = '';
   LT.el.load();
 }
 
@@ -255,6 +259,7 @@ async function importContacts() {
     const final = await confirmChannelConflicts(first, () =>
       api('/api/contacts/import', 'POST', {
         rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
+        batch_id: first.batch_id || null, source: fileInput.files[0].name, channel: 'email',
       })
     );
     reportImport(mergeImportResults(first, final));
@@ -263,10 +268,11 @@ async function importContacts() {
 
   if (paste) {
     const rows = paste.split('\n').map(line => ({ email: line.trim() })).filter(r => r.email);
-    const first = await api('/api/contacts/import', 'POST', { rows });
+    const first = await api('/api/contacts/import', 'POST', { rows, source: 'Paste', channel: 'email' });
     const final = await confirmChannelConflicts(first, () =>
       api('/api/contacts/import', 'POST', {
         rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
+        batch_id: first.batch_id || null, source: 'Paste', channel: 'email',
       })
     );
     reportImport(mergeImportResults(first, final));

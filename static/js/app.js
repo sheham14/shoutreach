@@ -13,6 +13,8 @@ refreshDashboard();
 api('/api/users/me').then(me => {
   const el = document.getElementById('sidebar-username');
   if (el && me.username) el.textContent = me.username;
+  // "Reword with AI" is only offered while AI is switched on in Settings.
+  window._aiEnabled = !!me.ai_enabled;
 });
 
 function toggleFaq(header) {

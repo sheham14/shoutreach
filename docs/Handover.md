@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-09-27 (the Booked tab; built, not yet deployed) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-10-10 (duplicate matching, named imports, CSV downloads, Recently deleted; built, not deployed) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -62,6 +62,15 @@ fix this file.
   too, which it didn't before. One new column (`pipeline_stages.wants_time`)
   and one guarded migration — no change to `businesses`. Reminders were
   considered and explicitly not built (§5c). All 22 test files pass locally.
+- **Built 2026-10-10, NOT deployed: imports you can find again, and undo**
+  (§5d). Phone matching that works outside North America (the cause of a
+  real double import), every scrape and import named and filterable on
+  every Leads tab, "Download CSV only" scrapes, CSV download of selected
+  leads, full-screen tables and rows-per-page, and Recently deleted (30
+  days). Four new tables and two guarded migrations (`_migrate_phone_keys`,
+  `_migrate_lead_batches`); no column changes. **No change to
+  `scraper_worker.py`** — nothing to send the cofounder. All 23 test files
+  pass; the screens were driven in a real browser (§8).
 - **Two people use this install, walled off from each other.** Almost every
   query is scoped to an owner, and a handful deliberately aren't. Read §3
   before adding a query, a route, or a background job.
@@ -76,7 +85,8 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
-| pending | 09-27 | The Booked tab: real appointment times, `.ics`, calling wired into the shared stage | No |
+| pending | 10-10 | Country-aware phone matching; named imports + "From" filter everywhere; CSV-only scrapes; CSV download; full-screen tables; Recently deleted | No |
+| `ac57e66` | 09-27 | The Booked tab: real appointment times, `.ics`, calling wired into the shared stage | Check `gh run list` |
 | `744ad70` | 09-23 | Campaign name as the page heading; fixed the Leads badge undercounting under a filter | Yes |
 | `65ecf8b` | 09-23 | Fixed the email daily cap silently going uncapped across a UTC/local date boundary | Yes |
 | `60d0896` | 09-23 | Pipeline stages on the business; "messaged" filter; the sent log; campaign Settings | Yes |
@@ -230,6 +240,8 @@ visibility into anyone else's leads.
   - `terminal_outcome_keys` — it's matched against `call_status` values already
     written to rows.
   - `reap_stale_scrape_jobs`.
+  - `purge_deleted_leads` — empties Recently deleted after 30 days, from the
+    scheduler, for everyone.
 - **Overlap between operators is advisory only** (`find_cross_owner_matches`).
   The import goes ahead; the notice shows business name, channel and date,
   never contact details; nothing is merged. Matching is heuristic
@@ -608,6 +620,83 @@ operator clicks *Run checks* on its panel:
 
 ---
 
+## 5d. Imports you can find again, and undo — built 2026-10-10
+
+From the cofounder's workflow: scrape Google Maps → paste the CSV into a
+chat → it writes a JSON with each lead's opener and follow-ups → import that.
+The operator ran a WhatsApp scrape and then imported the same leads as JSON,
+and got duplicates.
+
+- **Why the duplicates happened.** `normalize_phone` keyed on the last ten
+  digits, a North American rule. Maps gives local numbers ("050 123 4567"),
+  the chat gives international ones ("+971 50 123 4567"), and the keys came
+  out `0501234567` vs `1501234567`. Only leads that also matched on website
+  or name+address were caught. **The key is now the national number without
+  a leading 0** (`normalize_phone(raw, country)`, via `phonenumbers`):
+  `501234567` either way. NANP keys are unchanged (the same ten digits).
+  `find_existing_business` takes `country`; the WhatsApp import puts its
+  picked country on every row so local numbers resolve. `_migrate_phone_keys`
+  re-keys every stored phone once. **Existing duplicates are not merged** —
+  that's the operator's call; the "From" filter below is how to find and
+  delete one copy.
+- **Named imports** — `lead_batches` (one per scrape, however many posts its
+  worker makes, or one per CSV/JSON/paste) and `lead_batch_members`
+  (many-to-many, with `is_new`). A lead brought by a scrape and again by a
+  JSON file is in both, so filtering by either shows exactly what was in it,
+  and the list says "11 (1 new)". Scrape membership is written in
+  `find_or_create_business` from a row's `source_job_id` (own scrapes only);
+  browser imports call `record_import` in the route. A conflict
+  re-submission sends the first half's `batch_id` and rejoins it (own,
+  `kind='import'`, under 6 hours old). `name` '' means "automatic": the
+  browser builds "dentists — Dubai · 10 Oct, 14:32" (`sourceLabel`) so the
+  time is in the operator's timezone. Rename: `PUT /api/lead-batches/<id>`.
+  `_migrate_lead_batches` made one batch per existing scrape; older CSV/JSON
+  imports had no record of their source and sit in the manual bucket
+  ("Added by hand or before imports were named").
+- **The "From" filter's value is now a batch id**, not a scrape id — the
+  param is still called `source_job_id` on every route, and
+  `/api/contacts/sources` still serves the list (with `id`, `kind`, `base`,
+  `name`, `created_at`, `new_count`). `_source_clause` is the one place it
+  becomes SQL. WhatsApp's Leads tab gained the filter, and WhatsApp and
+  Calling gained "Select all N" (`/api/wa/leads/ids`, `/api/calls/leads/ids`).
+  `businesses.source_job_id` is kept (first scrape that found a lead) and
+  still drives the Unassigned reason.
+- **"Download CSV only" scrapes** — destination `csv`. The claim tells the
+  worker `email`, so every worker already deployed does the email search;
+  the rows it posts are held in `scrape_rows` (one per business, emails
+  merged into `email` + `other_emails`), filed nowhere.
+  `GET /api/scraper/jobs/<id>/csv` downloads them, while running or after;
+  "Your scrapes & imports" lists them (`/api/scraper/held`). The columns are
+  the importer's own names, so the file round-trips.
+- **CSV download of selected leads** — every Leads table's selection bar
+  (`exportKind` in `createLeadTable` → `POST /api/leads/export`).
+  WhatsApp's includes `message` and `followup_1..3` as they'd be sent now.
+  Ids come in the body and are owner-filtered in `export_leads`. Cells go
+  through `_no_formula` except phone-shaped ones, which can't hold a formula
+  and would otherwise gain an apostrophe.
+- **Tables** — every `createLeadTable` toolbar gets, without per-page
+  markup: "Select all N" (always, when something's unticked), 50/100/250/500
+  per page (remembered per table in `localStorage`), and ⛶ Full screen (the
+  table plus its side panel fill the window; heading, tick box and first
+  column stick; Esc closes; hidden on phones).
+- **Recently deleted** — `delete_businesses` copies each business and every
+  row that cascades from it into `deleted_leads` before deleting. What
+  cascades is read from the schema's own `ON DELETE CASCADE` keys
+  (`_cascade_children`), so a new child table is covered automatically.
+  Nothing else reads `deleted_leads`, so a deleted lead is gone from every
+  queue and send at once. Restore re-inserts with the original ids (every
+  table is AUTOINCREMENT, so they were never reused — which also reconnects
+  the `sends` history kept at delete); a link to something deleted since is
+  cleared if nullable, else that row is dropped; a lead that's back already
+  (re-imported) is skipped as `exists`. Purged after 30 days by the
+  scheduler's daily pass. Contacts → Recently deleted, grouped by delete.
+  A deleted user's own trash goes with them.
+- **"Reword with AI" is hidden while AI is off** (`ai_enabled` on
+  `/api/users/me`). The rewording never ran on its own — the variations the
+  cofounder saw were not AI; most likely leads whose JSON copy didn't land
+  and fell back to the campaign's A/B templates.
+- `tests/test_lead_batches.py` covers all of it, including both walls.
+
 ## 6. Deploys and operations
 
 - **Server:** GCP e2-micro, Debian 12, app in `~/shoutreach`, gunicorn with
@@ -725,7 +814,9 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-22 files, all passing as of the Booked-tab work (§5c).
+23 files, all passing as of the import work (§5d). `test_rendering.py` once
+failed with "database is locked" mid-suite and passed on its own and on a
+re-run — watch for it.
 
 `tests/test_pipeline.py` covers stages (§5a/§5c): the built-ins and inventing
 your own, one stage read from all three channels, the cadence stopping on set
@@ -779,6 +870,26 @@ importing runs `init_db()` against `./outreach.db`.
 ## 9. What's next
 
 **Immediately:**
+
+0000. **The import work is built, not pushed** (§5d). Back up first (§6) —
+      `_migrate_phone_keys` rewrites `businesses.phone_normalized` on every
+      row with a phone. After deploy: Contacts → From should list each past
+      scrape with its time; pick the duplicate scrape, Select all, Delete,
+      and check Recently deleted can bring them back. A "Download CSV only"
+      scrape needs no worker update.
+000a. **Built with it: non-admins can pick sending accounts, and account
+      passwords stopped leaking.** `GET /api/accounts` is admin-only, so an
+      email campaign's account picker read "No accounts configured yet" for
+      the cofounder (found 2026-10-10 when he tried to re-add the shared
+      accounts under his own login and got "Forbidden" — adding and testing
+      accounts is admin-only, and that message is ShoutReach, not Google).
+      The picker now reads `GET /api/accounts/names` (id, name, email,
+      status; any signed-in user). **Found while testing it:**
+      `GET /api/campaigns/<id>/accounts` returned whole `smtp_accounts` rows
+      — SMTP and IMAP passwords in plain text — to any campaign owner, admin
+      or not; it now returns the same four fields.
+      `set_campaign_smtp_accounts` ignores ids that don't exist instead of
+      failing the save. `tests/test_accounts.py` §10.
 
 000. **The Booked tab is built, not pushed** (§5c). Before deploying: back
      up the live database (§6) — the migration is one new column and one

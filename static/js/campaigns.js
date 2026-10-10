@@ -341,14 +341,20 @@ async function loadCampaignAccountBadges() {
 }
 
 async function openCampaignAccountsModal() {
-  const [all, assigned] = await Promise.all([
-    api('/api/accounts'),
+  // Names only: this works for every operator, not just admins.
+  const [got, assignedGot] = await Promise.all([
+    api('/api/accounts/names'),
     api(`/api/campaigns/${currentCampaignId}/accounts`),
   ]);
+  const all = Array.isArray(got) ? got : [];
+  const assigned = Array.isArray(assignedGot) ? assignedGot : [];
   const assignedIds = new Set(assigned.map(a => a.id));
   const container = document.getElementById('campaign-account-checkboxes');
-  if (!all.length) {
-    container.innerHTML = '<p class="text-muted text-small">No accounts configured yet. Add them in Settings.</p>';
+  if (!Array.isArray(got)) {
+    container.innerHTML = `<p class="text-muted text-small">${esc((got && got.error) || 'Could not load the accounts')}</p>`;
+  } else if (!all.length) {
+    container.innerHTML = '<p class="text-muted text-small">No sending accounts yet. An admin adds them in Settings → Email accounts; '
+      + 'they are shared by everyone.</p>';
   } else {
     container.innerHTML = all.map(a => `
       <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px">
@@ -356,6 +362,7 @@ async function openCampaignAccountsModal() {
         <div>
           <span style="font-weight:500">${esc(a.name)}</span>
           <span class="mono text-muted" style="font-size:11px;margin-left:6px">${esc(a.email)}</span>
+          ${a.status && a.status !== 'active' ? `<span class="text-muted text-small" style="margin-left:6px">(${esc(a.status)})</span>` : ''}
         </div>
       </label>
     `).join('');

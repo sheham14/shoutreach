@@ -7,6 +7,7 @@ Then open: http://localhost:5000
 import csv
 import io
 import json
+import re
 
 try:
     from openpyxl import Workbook
@@ -634,6 +635,18 @@ def api_get_accounts():
     return jsonify(accounts)
 
 
+@app.route("/api/accounts/names", methods=["GET"])
+@login_required
+def api_account_names():
+    """
+    The shared sending accounts, name and address only, for anyone signed in.
+    An email campaign's "which accounts send this" picker needs the list, and
+    /api/accounts is admin-only because it carries the SMTP setup -- so for
+    an operator who isn't an admin the picker said there were no accounts.
+    """
+    return jsonify(db.get_smtp_account_names())
+
+
 @app.route("/api/accounts", methods=["POST"])
 @admin_required
 def api_create_account():
@@ -776,7 +789,11 @@ def api_test_account_imap(aid):
 @login_required
 @owned("campaign", "cid")
 def api_get_campaign_accounts(cid):
-    return jsonify(db.get_campaign_smtp_accounts(cid))
+    # Name and address only. This used to return the whole smtp_accounts row
+    # -- SMTP and IMAP passwords in plain text -- to whoever owns the
+    # campaign, admin or not. The page only ever shows which accounts send.
+    return jsonify([{k: a.get(k) for k in ("id", "name", "email", "status")}
+                    for a in db.get_campaign_smtp_accounts(cid)])
 
 
 @app.route("/api/campaigns/<int:cid>/accounts", methods=["POST"])
@@ -863,6 +880,10 @@ def api_me():
         "id":       session.get("user_id"),
         "username": session.get("username"),
         "is_admin": session.get("is_admin"),
+        # Whether AI features are switched on (Settings), so the page can
+        # leave out buttons that would only answer "AI isn't enabled".
+        "ai_enabled": bool(session.get("user_id"))
+                      and db.get_settings().get("ai_features_enabled") == "1",
     })
 
 
@@ -1157,6 +1178,33 @@ def _no_formula(value):
     if not isinstance(value, str):
         return value
     return "'" + value if value[:1] in _FORMULA_TRIGGERS else value
+
+
+# A phone number is digits and punctuation only, so it can't carry a formula
+# -- and "+971 50 123 4567" turned into "'+971 50 123 4567" would reach the
+# chat that reads the file, and the import after it, with a stray apostrophe.
+_PHONE_LIKE = re.compile(r"[+\d\s().-]+")
+
+
+def _csv_response(columns, rows, name: str):
+    """
+    A downloadable CSV of `rows` (dicts) under `columns`. Every free-text
+    cell goes through _no_formula except phone-shaped ones. A UTF-8 BOM so
+    Excel reads Arabic and accented business names correctly.
+    """
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(columns)
+    for r in rows:
+        w.writerow([
+            v if isinstance(v, str) and _PHONE_LIKE.fullmatch(v) else _no_formula(v)
+            for v in ("" if r.get(c) is None else r.get(c) for c in columns)
+        ])
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "leads"
+    resp = make_response("﻿" + buf.getvalue())
+    resp.headers["Content-Disposition"] = f'attachment; filename="{safe}.csv"'
+    resp.headers["Content-Type"] = "text/csv; charset=utf-8"
+    return resp
 
 
 # ── API: Stats ────────────────────────────────────────────────────────────────
@@ -1557,19 +1605,28 @@ def _scrape_job_for_import(rows):
     Contacts, even if that CSV came out of a WhatsApp scrape and still carries
     its job id.
     """
+    job = _worker_scrape_job(rows)
+    return job if job and job.get("destination") in ("whatsapp", "calling", "csv") else None
+
+
+def _worker_scrape_job(rows):
+    """The scrape a worker's rows belong to, whatever its destination.
+    Worker requests only; None for a browser import."""
     owner = worker_owner()
     if not owner:
         return None
     job = None
     for jid in {r.get("source_job_id") for r in rows if r.get("source_job_id")}:
-        candidate = db.get_scrape_job(jid)
+        try:
+            candidate = db.get_scrape_job(int(jid))
+        except (TypeError, ValueError):
+            continue
         # Only this worker's own jobs count. A row naming another operator's
         # scrape must not be able to steer where these leads land.
         if candidate and candidate.get("owner_id") == owner:
             job = candidate
             break
-    job = job or db.get_active_scrape_job(owner_id=owner)
-    return job if job and job.get("destination") in ("whatsapp", "calling") else None
+    return job or db.get_active_scrape_job(owner_id=owner)
 
 
 _SCRAPE_EMAIL_FIELDS = ("email", "first_name", "last_name", "mx_valid")
@@ -1589,6 +1646,7 @@ def _import_scraped_whatsapp(rows, job, owner):
     into the scrape's own log, which is where the operator is looking.
     """
     rows = [{k: v for k, v in r.items() if k not in _SCRAPE_EMAIL_FIELDS} for r in rows]
+    new_after = db.max_business_id()
     with_phone = [r for r in rows if (r.get("phone") or "").strip()]
     no_phone = len(rows) - len(with_phone)
     conflicts = db.find_cross_channel_conflicts(with_phone, channel="whatsapp", owner_id=owner)
@@ -1598,6 +1656,7 @@ def _import_scraped_whatsapp(rows, job, owner):
         rows, default_country=job.get("country") or "", owner_id=owner,
         wa_campaign_id=_own_campaign_for_job(job, "wa_campaign"),
     )
+    db.record_import(business_ids, new_after, owner_id=owner, job=job)
 
     notes = []
     if no_phone:
@@ -1626,7 +1685,9 @@ def _import_scraped_calling(rows, job, owner):
     """
     rows = [{k: v for k, v in r.items() if k not in _SCRAPE_EMAIL_FIELDS} for r in rows]
     overlaps = db.find_cross_owner_matches(rows, owner_id=owner)
+    new_after = db.max_business_id()
     inserted, business_ids = db.upsert_businesses(rows, owner_id=owner)
+    db.record_import(business_ids, new_after, owner_id=owner, job=job)
     counts = db.add_to_calling(business_ids, owner_id=owner,
                                call_campaign_id=_own_campaign_for_job(job, "call_campaign"))
 
@@ -1645,6 +1706,23 @@ def _import_scraped_calling(rows, job, owner):
         "ok": True, "inserted": inserted, "business_ids": business_ids,
         "conflicts": [], "overlaps": overlaps, "destination": "calling",
     })
+
+
+def _import_label():
+    """How a browser import arrived, for its batch's automatic name: the file
+    name for an upload, else what the page says it was ('JSON', 'Paste')."""
+    if request.content_type and "multipart" in request.content_type:
+        f = request.files.get("file")
+        return (f.filename if f and f.filename else "CSV")
+    data = request.json if request.is_json else None
+    return str((data or {}).get("source") or "Paste") if isinstance(data, dict) else "JSON"
+
+
+def _import_batch_arg():
+    """The batch a confirmed re-submission rejoins (the first half's)."""
+    if request.is_json and isinstance(request.json, dict):
+        return request.json.get("batch_id")
+    return request.form.get("batch_id")
 
 
 def _own_campaign_for_job(job, kind):
@@ -1764,6 +1842,11 @@ def api_import_contacts():
     owner = import_owner(rows)
 
     channel_job = _scrape_job_for_import(rows)
+    if channel_job and channel_job["destination"] == "csv":
+        # Held on the scrape for download, filed nowhere.
+        held = db.hold_scrape_rows(channel_job["id"], rows)
+        return jsonify({"ok": True, "inserted": held, "business_ids": [],
+                        "conflicts": [], "overlaps": [], "destination": "csv"})
     if channel_job and channel_job["destination"] == "whatsapp":
         return _import_scraped_whatsapp(rows, channel_job, owner)
     if channel_job and channel_job["destination"] == "calling":
@@ -1782,10 +1865,22 @@ def api_import_contacts():
         # about but is nobody's veto, so these rows import normally.
         overlaps = db.find_cross_owner_matches(rows, owner_id=owner)
 
+    new_after = db.max_business_id()
     inserted, business_ids = db.upsert_businesses(rows, owner_id=owner)
+    worker_job = _worker_scrape_job(rows)
+    if worker_job:
+        batch_id = db.record_import(business_ids, new_after, owner_id=owner, job=worker_job)
+    elif _has_valid_worker_key():
+        batch_id = None
+    else:
+        channel = ((request.json or {}).get("channel") if request.is_json else
+                   request.form.get("channel")) or "email"
+        batch_id = db.record_import(business_ids, new_after, owner_id=owner,
+                                    source=_import_label(), channel=channel,
+                                    batch_id=_import_batch_arg())
     return jsonify({
         "ok": True, "inserted": inserted, "invalid_mx": invalid_mx,
-        "business_ids": business_ids,
+        "business_ids": business_ids, "batch_id": batch_id,
         "conflicts": [
             {"business_id": c["business_id"], "business_name": c["business_name"],
              "channels": c["channel_labels"], "row": c["row"]}
@@ -2230,6 +2325,36 @@ def api_delete_businesses():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/trash", methods=["GET"])
+@login_required
+def api_trash():
+    """Recently deleted: this operator's deletes from the last 30 days."""
+    return jsonify({"days": db.TRASH_DAYS, "groups": db.get_deleted_leads(owner_id=me())})
+
+
+@app.route("/api/trash/restore", methods=["POST"])
+@login_required
+def api_trash_restore():
+    d = request.json or {}
+    if not d.get("ids") and not d.get("group"):
+        return jsonify({"ok": False, "error": "Nothing selected"}), 400
+    res = db.restore_deleted_leads(ids=d.get("ids"), group=d.get("group"), owner_id=me())
+    if res["restored"]:
+        db.add_log(f"Restored {res['restored']} deleted contact(s)")
+    return jsonify({"ok": True, **res})
+
+
+@app.route("/api/trash/forget", methods=["POST"])
+@login_required
+def api_trash_forget():
+    """Delete forever now, instead of waiting out the 30 days."""
+    d = request.json or {}
+    if not d.get("ids") and not d.get("group"):
+        return jsonify({"ok": False, "error": "Nothing selected"}), 400
+    n = db.forget_deleted_leads(ids=d.get("ids"), group=d.get("group"), owner_id=me())
+    return jsonify({"ok": True, "deleted": n})
+
+
 @app.route("/api/businesses/enroll", methods=["POST"])
 @login_required
 def api_enroll_businesses():
@@ -2250,7 +2375,38 @@ def api_dashboard():
     return jsonify(db.get_dashboard(owner_id=me(), since=request.args.get("since") or None))
 
 
-# ── API: Lead lists (one per scrape) ──────────────────────────────────────────
+# ── API: Lead lists (one per import) ──────────────────────────────────────────
+
+@app.route("/api/leads/export", methods=["POST"])
+@login_required
+def api_export_leads():
+    """
+    The ticked rows of a Leads table as a CSV. `kind` says what the ids are
+    ('business' for Contacts, 'call', 'email', 'wa'); they come in the body,
+    so export_leads keeps only this operator's own.
+    """
+    d = request.json or {}
+    kind = d.get("kind")
+    if kind not in db.EXPORT_EXTRA_COLUMNS:
+        return jsonify({"ok": False, "error": "Unknown lead list"}), 400
+    ids = d.get("ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"ok": False, "error": "Nothing selected"}), 400
+    if len(ids) > 50_000:
+        return jsonify({"ok": False, "error": "Too many rows"}), 413
+    columns, rows = db.export_leads(kind, ids, owner_id=me())
+    return _csv_response(columns, rows, str(d.get("name") or "leads"))
+
+
+@app.route("/api/lead-batches/<int:batch_id>", methods=["PUT"])
+@login_required
+@owned("lead_batch", "batch_id")
+def api_rename_lead_batch(batch_id):
+    """Rename one import. An empty name puts the automatic one back."""
+    name = str((request.json or {}).get("name") or "")
+    db.rename_lead_batch(batch_id, name, owner_id=me())
+    return jsonify({"ok": True})
+
 
 @app.route("/api/lists/add-to", methods=["POST"])
 @login_required
@@ -2271,7 +2427,7 @@ def api_list_add_to():
             source = int(source)
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "Unknown list"}), 400
-        if not db.owns("scrape_job", source, me()):
+        if not db.owns("lead_batch", source, me()):
             return jsonify({"ok": False, "error": "Not found"}), 404
     ids = d.get("business_ids") or db.get_list_business_ids(source, owner_id=me())
     if not ids:
@@ -2513,6 +2669,18 @@ def api_call_leads_page():
         source_job_id=a.get("source_job_id") or None,
         sort_col=a.get("sort_col", ""), sort_dir=a.get("sort_dir", "desc"), owner_id=me(),
     ))
+
+
+@app.route("/api/calls/leads/ids", methods=["GET"])
+@login_required
+def api_call_lead_ids():
+    """Every business id matching Calling's Leads filters -- "Select all N"."""
+    a = request.args
+    return jsonify({"ids": db.get_call_leads_page(
+        q=a.get("q", ""), outcome=a.get("outcome", ""),
+        call_campaign_id=a.get("call_campaign_id") or None,
+        source_job_id=a.get("source_job_id") or None, owner_id=me(), ids_only=True,
+    )})
 
 
 @app.route("/api/calls/add", methods=["POST"])
@@ -2815,6 +2983,11 @@ def api_wa_import():
         return err
     if not rows:
         return jsonify({"ok": False, "error": "No rows"}), 400
+    # The picked country is what makes a local number comparable with the
+    # same number written internationally, so the duplicate check needs it
+    # on every row, not just the WhatsApp link.
+    rows = [r if (r.get("country") or "").strip() else {**r, "country": default_country}
+            for r in rows]
     if len(rows) > 50_000:
         return jsonify({"ok": False, "error": "Too many rows (max 50,000)."}), 413
 
@@ -2830,10 +3003,13 @@ def api_wa_import():
             rows = [r for r in rows if (r.get("phone"), r.get("company")) not in flagged_keys]
 
     overlaps = db.find_cross_owner_matches(rows, owner_id=me())
+    new_after = db.max_business_id()
     inserted, business_ids, drafts = db.upsert_wa_leads(
         rows, default_country=default_country, owner_id=me(), wa_campaign_id=campaign_id)
+    batch_id = db.record_import(business_ids, new_after, owner_id=me(), source=_import_label(),
+                                channel="whatsapp", batch_id=_import_batch_arg())
     return jsonify({
-        "ok": True, "inserted": inserted, "business_ids": business_ids,
+        "ok": True, "inserted": inserted, "business_ids": business_ids, "batch_id": batch_id,
         "overlaps": overlaps, "drafts": drafts,
         "conflicts": [
             {"business_id": c["business_id"], "business_name": c["business_name"],
@@ -2887,7 +3063,20 @@ def api_wa_leads_page():
         page=page, per_page=per_page, q=a.get("q", ""), stage=a.get("stage", ""),
         wa_campaign_id=a.get("wa_campaign_id") or None,
         sort_col=a.get("sort_col", ""), sort_dir=a.get("sort_dir", "desc"), owner_id=me(),
+        source=a.get("source_job_id") or None,
     ))
+
+
+@app.route("/api/wa/leads/ids", methods=["GET"])
+@login_required
+def api_wa_lead_ids():
+    """Every WhatsApp lead id matching the Leads tab's filters -- "Select all N"."""
+    a = request.args
+    return jsonify({"ids": db.get_wa_leads_page(
+        q=a.get("q", ""), stage=a.get("stage", ""),
+        wa_campaign_id=a.get("wa_campaign_id") or None, owner_id=me(),
+        source=a.get("source_job_id") or None, ids_only=True,
+    )})
 
 
 @app.route("/api/wa/sent", methods=["GET"])
@@ -3451,9 +3640,32 @@ def _job_payload(job: dict) -> dict:
         "destination": job.get("destination") or "email",
         "country":  job.get("country") or "",
         "campaign_id": job.get("campaign_id"),
+        "held":     db.count_scrape_rows(job["id"]) if job.get("destination") == "csv" else 0,
         "logs":     logs[-80:],
         "heartbeat_secs": None if heartbeat_secs is None else int(heartbeat_secs),
     }
+
+
+@app.route("/api/scraper/held", methods=["GET"])
+@login_required
+def api_scraper_held():
+    """This operator's "Download CSV only" scrapes."""
+    return jsonify(db.get_held_scrapes(owner_id=me()))
+
+
+@app.route("/api/scraper/jobs/<int:job_id>/csv", methods=["GET"])
+@login_required
+@owned("scrape_job", "job_id")
+def api_scraper_job_csv(job_id):
+    """
+    A "Download CSV only" scrape's businesses as a CSV, with the importer's
+    own column names. Works while the scrape is still running -- it's
+    whatever has arrived so far.
+    """
+    job = db.get_scrape_job(job_id)
+    rows = db.get_scrape_rows(job_id)
+    name = "_".join(x for x in (job.get("niche"), job.get("city")) if x) or f"scrape_{job_id}"
+    return _csv_response(db.SCRAPE_CSV_COLUMNS, rows, name)
 
 
 @app.route("/api/scraper/status")
@@ -3496,6 +3708,11 @@ def api_scraper_start():
     if destination == "whatsapp" and country not in db.WA_COUNTRY_CODES:
         return jsonify({"ok": False, "error": "Pick the country these numbers are in"}), 400
     campaign_id = d.get("campaign_id") or None
+    if destination == "csv":
+        # Nothing is filed, so there's no campaign or country to file into.
+        # The worker only sends rows when importing is on, and sending them
+        # is how they reach the scrape to be downloaded.
+        campaign_id, country, auto_import = None, "", True
     if destination == "whatsapp" and not campaign_id:
         # Every WhatsApp lead is written to from its campaign's copy.
         return jsonify({"ok": False, "error": "Pick the WhatsApp campaign these leads go into"}), 400
@@ -3567,7 +3784,10 @@ def api_scraper_claim():
         "auto_import": bool(job["auto_import"]),
         # Tells the worker whether to hunt for emails at all. Where the rows
         # end up is decided server-side regardless -- see _scrape_job_for_import.
-        "destination": job.get("destination") or "email",
+        # A "Download CSV only" scrape searches like an Email one (a worker
+        # reads any destination it doesn't know as phone-only), so it is sent
+        # as 'email' and every worker already in use does the email search.
+        "destination": "email" if job.get("destination") == "csv" else (job.get("destination") or "email"),
         "country":     job.get("country") or "",
     })
 

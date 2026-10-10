@@ -41,6 +41,7 @@
           <option value="email">Email</option>
           <option value="calling">Calling</option>
           <option value="whatsapp">WhatsApp</option>
+          <option value="csv">Nowhere yet — just download a CSV</option>
         </select>
         <div class="form-hint" id="sc-destination-hint">
           Visits each business's website looking for an email address.
@@ -69,7 +70,7 @@
         <input id="sc-max" type="number" value="50" min="5" max="200" />
         <div class="form-hint">Google Maps typically returns 60–80 per search.</div>
       </div>
-      <div class="form-group" style="display:flex;align-items:center;gap:10px">
+      <div class="form-group" id="sc-autoimport-row" style="display:flex;align-items:center;gap:10px">
         <input type="checkbox" id="sc-autoimport" checked style="width:auto;margin:0" />
         <label for="sc-autoimport" id="sc-autoimport-label" style="margin:0;font-size:13px;color:var(--text)">Import leads into Contacts as they're found</label>
       </div>
@@ -97,9 +98,14 @@
           <div class="stat-value" id="sc-scraped" style="font-size:22px">—</div>
         </div>
         <div class="stat-card" style="padding:12px">
-          <div class="stat-label">Imported</div>
+          <div class="stat-label" id="sc-imported-label">Imported</div>
           <div class="stat-value blue" id="sc-imported" style="font-size:22px">—</div>
         </div>
+      </div>
+
+      <div id="sc-download-box" style="display:none;margin-bottom:12px">
+        <button class="btn btn-primary btn-sm" id="sc-download-btn">⬇ Download CSV</button>
+        <span class="text-muted text-small" style="margin-left:8px">Whatever it has found so far — download again later for the rest.</span>
       </div>
 
       <div id="sc-captcha-box" style="display:none;background:rgba(245,166,35,.1);border:1px solid var(--amber);border-radius:8px;padding:14px;margin-bottom:12px">
@@ -113,19 +119,20 @@
     </div>
   </div>
 
-  <!-- Every past scrape, so a whole list can be sent to a channel in one go --
-       including one scraped for another channel, or before a campaign existed. -->
+  <!-- Every past scrape and import, so a whole batch can be sent to a channel
+       in one go -- including one scraped for another channel, or before a
+       campaign existed -- and every "download a CSV" scrape, to download. -->
   <div class="card" style="margin-bottom:24px">
     <div class="card-header">
       <div>
-        <div class="card-title">Your scrapes</div>
-        <div class="text-muted text-small" style="margin-top:2px">Send everything a scrape found to a channel and campaign in one go.</div>
+        <div class="card-title">Your scrapes &amp; imports</div>
+        <div class="text-muted text-small" style="margin-top:2px">Download a CSV-only scrape, or send everything a scrape or import brought to a channel in one go.</div>
       </div>
       <button class="btn btn-ghost btn-sm" onclick="loadScrapeLists()">↻ Refresh</button>
     </div>
     <div class="table-wrap">
       <table class="lead-table m-table">
-        <thead><tr><th>Scrape</th><th>Scraped for</th><th>Leads</th><th>Date</th><th></th></tr></thead>
+        <thead><tr><th>Scrape or import</th><th>For</th><th>Leads</th><th>When</th><th></th></tr></thead>
         <tbody id="sc-lists"></tbody>
       </table>
     </div>

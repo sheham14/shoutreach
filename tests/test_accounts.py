@@ -200,6 +200,31 @@ def main():
             check(f"{path} refuses an unauthenticated caller", code in (401, 403),
                   f"got {code}")
 
+        print("\n10. AN OPERATOR WHO ISN'T AN ADMIN CAN PICK SENDING ACCOUNTS")
+        uid = db.create_user("cofounder", "test-password-123", is_admin=False)
+        plain = app_mod.app.test_client()
+        with plain.session_transaction() as s:
+            s["user_id"] = uid
+            s["is_admin"] = False
+            s["csrf_token"] = "t"
+        check("the full account list stays admin-only",
+              plain.get("/api/accounts").status_code == 403)
+        r = plain.get("/api/accounts/names")
+        names = r.get_json() if r.status_code == 200 else None
+        check("the names list loads for them", names and names[0]["email"] == "me@hexiv.co", str(names))
+        check("...with no SMTP setup in it",
+              names and set(names[0]) == {"id", "name", "email", "status"}, str(names))
+        check("signed out, it's refused", anon.get("/api/accounts/names").status_code in (401, 403))
+        cid = db.create_campaign("Theirs", owner_id=uid)
+        cid = cid[0] if isinstance(cid, tuple) else cid
+        r = plain.post(f"/api/campaigns/{cid}/accounts", headers={"X-CSRF-Token": "t"},
+                       json={"account_ids": [aid, 99999]})
+        got = plain.get(f"/api/campaigns/{cid}/accounts").get_json()
+        check("they can assign one to their campaign, and an unknown id is ignored",
+              r.status_code == 200 and [a["id"] for a in got] == [aid], f"{r.status_code} {got}")
+        check("reading it back carries no passwords or SMTP setup",
+              got and set(got[0]) == {"id", "name", "email", "status"}, str(got))
+
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

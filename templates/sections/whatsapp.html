@@ -97,6 +97,10 @@
             <option value="off">Taken off WhatsApp</option>
           </optgroup>
         </select>
+        <select id="wl-source" class="filter-select" onchange="LT.wl.filter()"
+                title="Which scrape or import they came from">
+          <option value="">All imports</option>
+        </select>
         <span class="lt-count" id="wl-count"></span>
       </div>
       <!-- An empty table under an active filter has to say so, or it reads as

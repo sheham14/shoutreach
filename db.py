@@ -6,6 +6,7 @@ All tables, queries, and helpers live here.
 import sqlite3
 import json
 import logging
+import math
 import datetime
 import random
 import re
@@ -540,6 +541,73 @@ def init_db():
                 last_seen  TEXT    DEFAULT NULL,
                 created_at TEXT    NOT NULL DEFAULT (datetime('now'))
             );
+
+            -- One row per import: a scrape (one batch however many times its
+            -- worker posts), or a CSV / JSON / paste. This is what the "From"
+            -- filter on every Leads tab lists, so a batch of leads can be
+            -- found, acted on and removed together.
+            CREATE TABLE IF NOT EXISTS lead_batches (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id      INTEGER NOT NULL DEFAULT 0,
+                -- 'scrape' or 'import'.
+                kind          TEXT    NOT NULL DEFAULT 'import',
+                -- What the operator called it. '' means "use the automatic
+                -- name", which the browser builds from `source` and the time
+                -- in the operator's own timezone.
+                name          TEXT    NOT NULL DEFAULT '',
+                -- How it arrived, for the automatic name: a file name, or
+                -- 'JSON' / 'CSV' / 'Paste'. Empty for a scrape, whose niche
+                -- and city name it instead.
+                source        TEXT    NOT NULL DEFAULT '',
+                -- The channel the import was aimed at ('email', 'calling',
+                -- 'whatsapp', '' for Contacts only).
+                channel       TEXT    NOT NULL DEFAULT '',
+                scrape_job_id INTEGER DEFAULT NULL REFERENCES scrape_jobs(id) ON DELETE SET NULL,
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- Which businesses each import brought. Many-to-many: a lead a
+            -- scrape found and a JSON file brought again belongs to both, so
+            -- picking either shows exactly what was in it. `is_new` is whether
+            -- this import created the business rather than matching one.
+            CREATE TABLE IF NOT EXISTS lead_batch_members (
+                batch_id    INTEGER NOT NULL REFERENCES lead_batches(id) ON DELETE CASCADE,
+                business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+                is_new      INTEGER NOT NULL DEFAULT 0,
+                added_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (batch_id, business_id)
+            );
+
+            -- What a "Download CSV only" scrape found. Held on the scrape, not
+            -- filed as businesses, so it reaches no list until someone imports
+            -- it. One row per business (row_key), merged as the worker
+            -- re-sends a business with more found.
+            CREATE TABLE IF NOT EXISTS scrape_rows (
+                job_id     INTEGER NOT NULL REFERENCES scrape_jobs(id) ON DELETE CASCADE,
+                row_key    TEXT    NOT NULL,
+                data       TEXT    NOT NULL DEFAULT '{}',
+                created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (job_id, row_key)
+            );
+
+            -- Recently deleted: a full copy of each deleted business and
+            -- every row hanging off it, kept 30 days so a delete can be
+            -- undone. The live tables never see these, so nothing that sends
+            -- or counts has to remember to skip them.
+            CREATE TABLE IF NOT EXISTS deleted_leads (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id     INTEGER NOT NULL DEFAULT 0,
+                -- Everything deleted in one go shares this, so a batch
+                -- deleted together can be restored together.
+                delete_group TEXT    NOT NULL,
+                business_id  INTEGER NOT NULL,
+                name         TEXT    NOT NULL DEFAULT '',
+                phone        TEXT    NOT NULL DEFAULT '',
+                -- Which channels it was on, for the list ("whatsapp,call").
+                channels     TEXT    NOT NULL DEFAULT '',
+                data         TEXT    NOT NULL,
+                deleted_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
         """)
 
         # Schema migrations — safe to run repeatedly on existing databases.
@@ -648,6 +716,8 @@ def init_db():
         _migrate_wa_campaigns(conn)
         _migrate_wa_no_review(conn)
         _migrate_wa_message_source(conn)
+        _migrate_phone_keys(conn)
+        _migrate_lead_batches(conn)
 
         # Uniqueness is per owner, not global. The old global index is dropped
         # rather than left in place: while it exists, a second operator
@@ -704,6 +774,10 @@ def init_db():
             # covers rows with an address, so it cannot serve these.
             "CREATE INDEX IF NOT EXISTS businesses_owner_idx     ON businesses(owner_id)",
             "CREATE INDEX IF NOT EXISTS email_leads_owner_idx    ON email_leads(owner_id)",
+            "CREATE INDEX IF NOT EXISTS lead_batches_owner_idx   ON lead_batches(owner_id, created_at)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS lead_batches_job_unique ON lead_batches(scrape_job_id) WHERE scrape_job_id IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS lead_batch_members_biz_idx ON lead_batch_members(business_id)",
+            "CREATE INDEX IF NOT EXISTS deleted_leads_owner_idx  ON deleted_leads(owner_id, deleted_at)",
         ):
             try:
                 conn.execute(idx_sql)
@@ -833,6 +907,7 @@ def owns(kind: str, row_id, owner_id) -> bool:
         "call_campaign": "SELECT 1 FROM call_campaigns WHERE id=? AND owner_id=?",
         "wa_campaign":   "SELECT 1 FROM wa_campaigns WHERE id=? AND owner_id=?",
         "scrape_job":    "SELECT 1 FROM scrape_jobs WHERE id=? AND owner_id=?",
+        "lead_batch":    "SELECT 1 FROM lead_batches WHERE id=? AND owner_id=?",
         "email_lead":    "SELECT 1 FROM email_leads WHERE id=? AND owner_id=?",
         "wa_lead":       ("SELECT 1 FROM wa_leads w JOIN businesses b ON b.id=w.business_id "
                           "WHERE w.id=? AND b.owner_id=?"),
@@ -1414,7 +1489,9 @@ SCRAPE_ACTIVE_STATUSES = ("queued", "claimed", "running", "captcha")
 
 # Each channel scrapes for itself. Email hunts each site for an address;
 # Calling and WhatsApp only need the phone number Maps already shows.
-SCRAPE_DESTINATIONS = ("email", "calling", "whatsapp")
+# 'csv' files nothing: its rows are held on the scrape (scrape_rows) for the
+# operator to download, and reach no list until someone imports them.
+SCRAPE_DESTINATIONS = ("email", "calling", "whatsapp", "csv")
 
 # A worker that has not checked in for this long is treated as gone. It has to
 # comfortably exceed the worker's own post interval, or a busy scrape that goes
@@ -1436,6 +1513,96 @@ def create_scrape_job(niche, city, max_results=50, auto_import=True, owner_id=No
               (country or "").strip().upper(),
               int(campaign_id) if campaign_id else None))
         return cur.lastrowid
+
+
+# The columns a held scrape downloads with, in order. They are the import's
+# own column names, so the file goes back in through any importer as it is --
+# a chat only has to add `message` and `followup_1..3` for WhatsApp.
+SCRAPE_CSV_COLUMNS = ("company", "phone", "email", "other_emails", "website", "address",
+                      "city", "category", "rating", "review_count", "status")
+
+
+def _held_row_key(r: dict) -> str:
+    """One business per key, so the worker re-sending a business (or sending
+    it once per email address it found) merges rather than repeats."""
+    phone = normalize_phone(r.get("phone") or "")
+    if phone:
+        return "p:" + phone
+    domain = canonical_domain(r.get("website") or "")
+    if domain and not is_freemail(domain):
+        return "d:" + domain
+    return "n:" + normalize_company(r.get("company") or r.get("name") or "") + "|" +         _locality_key(r.get("address") or "")
+
+
+def hold_scrape_rows(job_id: int, rows: list) -> int:
+    """
+    Keep a "Download CSV only" scrape's rows on the scrape instead of filing
+    them. Returns how many businesses were new to this scrape. A business
+    seen again fills its blanks, and every email address found for it is kept
+    -- the first in `email`, the rest in `other_emails`, since an import reads
+    `email` as one address.
+    """
+    new = 0
+    with get_db() as conn:
+        job = conn.execute("SELECT city FROM scrape_jobs WHERE id=?", (int(job_id),)).fetchone()
+        city = job["city"] if job else ""
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            key = _held_row_key(r)
+            if key in ("n:|", ""):
+                continue
+            row = conn.execute("SELECT data FROM scrape_rows WHERE job_id=? AND row_key=?",
+                               (int(job_id), key)).fetchone()
+            data = json.loads(row["data"]) if row else {}
+            emails = [e for e in (data.get("email"), *(data.get("other_emails") or "").split("; ")) if e]
+            email = (r.get("email") or "").strip().lower()
+            if email and email not in emails:
+                emails.append(email)
+            for col in SCRAPE_CSV_COLUMNS:
+                if col in ("email", "other_emails"):
+                    continue
+                incoming = r.get("company") or r.get("name") if col == "company" else r.get(col)
+                if incoming not in (None, "") and data.get(col) in (None, ""):
+                    data[col] = incoming
+            data.setdefault("city", city)
+            data["email"] = emails[0] if emails else ""
+            data["other_emails"] = "; ".join(emails[1:])
+            conn.execute("""
+                INSERT INTO scrape_rows(job_id, row_key, data) VALUES(?, ?, ?)
+                ON CONFLICT(job_id, row_key) DO UPDATE SET data = excluded.data
+            """, (int(job_id), key, json.dumps(data)))
+            new += 0 if row else 1
+    return new
+
+
+def get_scrape_rows(job_id: int) -> list:
+    """A held scrape's rows, in the order they were found."""
+    with get_db() as conn:
+        return [json.loads(r["data"]) for r in conn.execute(
+            "SELECT data FROM scrape_rows WHERE job_id=? ORDER BY created_at, rowid",
+            (int(job_id),))]
+
+
+def count_scrape_rows(job_id: int) -> int:
+    with get_db() as conn:
+        return conn.execute("SELECT COUNT(*) FROM scrape_rows WHERE job_id=?",
+                            (int(job_id),)).fetchone()[0]
+
+
+def get_held_scrapes(owner_id=None, limit: int = 50) -> list:
+    """This operator's "Download CSV only" scrapes, newest first, with how
+    many businesses each holds -- they have no leads, so the lead lists can't
+    show them."""
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT j.id, j.niche, j.city, j.status, j.created_at, j.finished_at,
+                   (SELECT COUNT(*) FROM scrape_rows r WHERE r.job_id = j.id) AS count
+              FROM scrape_jobs j
+             WHERE j.owner_id = ? AND j.destination = 'csv'
+             ORDER BY j.id DESC LIMIT ?
+        """, (_resolve_owner_id(conn, owner_id), int(limit))).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_scrape_job(job_id: int):
@@ -1799,24 +1966,52 @@ _COMPANY_NOISE = {
 }
 
 
-def normalize_phone(raw: str) -> str:
+def normalize_phone(raw: str, country: str = "") -> str:
     """
-    Reduce a phone number to something comparable.
+    Reduce a phone number to something comparable: the number without its
+    country code or trunk 0.
 
-    Google Maps returns the same number as "+1 709-555-0123", "(709) 555-0123"
-    and "709.555.0123" depending on the listing, so the raw string can never
-    answer "have I already dialled this business". Digits only, and for North
-    American numbers the trailing ten -- which drops a leading 1 country code
-    so the two forms of the same number match.
+    Google Maps gives a listing's number in local form ("050 123 4567") and
+    anything that rewrites it -- a chat turning a scrape into JSON, a CSV
+    someone tidied -- tends to give it in international form
+    ("+971 50 123 4567"). Both have to reduce to the same key, or the second
+    import of a lead creates a second business. The old key was "the last ten
+    digits", which only worked for North American numbers: elsewhere the two
+    forms came out as "0501234567" and "1501234567" and never matched.
 
-    Deliberately not a full E.164 parser: that needs a phone-number library and
-    a country to resolve against, and this is aimed at NANP lists. Numbers
+    The national number (what follows the country code) is the same in both
+    forms, so that is the key, with any leading 0 dropped so a local number
+    read without a country still agrees with one read with it. For NANP
+    numbers it is the same ten digits as before, so existing keys there keep
+    matching.
+
+    Without a country or a + the digits are read as international only when
+    that gives a valid number; otherwise local, minus the trunk 0. Numbers
     shorter than seven digits are treated as unusable rather than guessed at.
     """
     digits = re.sub(r"\D", "", raw or "")
     if len(digits) < 7:
         return ""
-    return digits[-10:] if len(digits) >= 10 else digits
+    text = (raw or "").strip()
+    country = (country or "").strip().upper()
+    number = None
+    try:
+        if text.startswith("+") or text.startswith("00"):
+            number = phonenumbers.parse("+" + (digits[2:] if text.startswith("00") else digits), None)
+            number = number if phonenumbers.is_possible_number(number) else None
+        elif country in WA_COUNTRY_CODES:
+            number = phonenumbers.parse(text, country)
+            number = number if phonenumbers.is_possible_number(number) else None
+        elif len(digits) > 10:
+            number = phonenumbers.parse("+" + digits, None)
+            number = number if phonenumbers.is_valid_number(number) else None
+    except phonenumbers.NumberParseException:
+        number = None
+    key = (phonenumbers.national_significant_number(number) if number is not None
+           else digits).lstrip("0")
+    if number is None and len(key) > 10:
+        key = key[-10:]
+    return key if len(key) >= 7 else ""
 
 
 def normalize_company(raw: str) -> str:
@@ -1964,10 +2159,12 @@ def find_or_create_business(conn, r: dict, owner_id=None) -> int:
     email = (r.get("email") or "").strip().lower()
 
     owner_id = _resolve_owner_id(conn, owner_id)
+    country = (r.get("country") or "").strip().upper()
     row = find_existing_business(conn, email=email, phone=phone, website=website,
-                                 company=name, address=address, owner_id=owner_id)
+                                 company=name, address=address, owner_id=owner_id,
+                                 country=country)
 
-    phone_norm = normalize_phone(phone)
+    phone_norm = normalize_phone(phone, country)
     domain = canonical_domain(website)
     if not domain and email and "@" in email:
         # Same fallback find_existing_business uses for matching -- repeated
@@ -2015,9 +2212,10 @@ def find_or_create_business(conn, r: dict, owner_id=None) -> int:
             rating, reviews, web_status, r.get("source_job_id") or None, row["id"],
         ))
         _note_alternate_name(conn, row["id"], name)
+        _note_scrape_member(conn, row["id"], r.get("source_job_id"), owner_id, is_new=False)
         return row["id"]
 
-    return conn.execute("""
+    business_id = conn.execute("""
         INSERT INTO businesses(
             owner_id, name, phone, phone_normalized, website, domain, address, city,
             country, category, rating, review_count, web_status,
@@ -2029,6 +2227,30 @@ def find_or_create_business(conn, r: dict, owner_id=None) -> int:
         rating, reviews, web_status, r.get("source_job_id") or None,
         json.dumps(r.get("extra", {}) if isinstance(r.get("extra"), dict) else {}),
     )).lastrowid
+    _note_scrape_member(conn, business_id, r.get("source_job_id"), owner_id, is_new=True)
+    return business_id
+
+
+def _note_scrape_member(conn, business_id: int, job_id, owner_id: int, is_new: bool):
+    """
+    File a business under the batch of the scrape that brought it. Only the
+    importing operator's own scrape: a row can carry any job id (a CSV
+    column), and one naming someone else's scrape must not create or join
+    their batch.
+    """
+    if not job_id:
+        return
+    try:
+        job = conn.execute("SELECT * FROM scrape_jobs WHERE id=? AND owner_id=?",
+                           (int(job_id), owner_id)).fetchone()
+    except (TypeError, ValueError):
+        return
+    if not job:
+        return
+    conn.execute("""
+        INSERT OR IGNORE INTO lead_batch_members(batch_id, business_id, is_new)
+        VALUES(?, ?, ?)
+    """, (_scrape_batch_id(conn, dict(job)), business_id, 1 if is_new else 0))
 
 
 def upsert_businesses(rows, owner_id=None):
@@ -2253,12 +2475,11 @@ def _email_lead_filters(q="", source_job_id=None, status=None, include_deleted=F
             )
             params.append(call_status)
 
-    if source_job_id is not None and source_job_id != "":
-        if str(source_job_id) == SOURCE_MANUAL:
-            clauses.append("b.source_job_id IS NULL")
-        else:
-            clauses.append("b.source_job_id = ?")
-            params.append(int(source_job_id))
+    # source_job_id is the "From" filter: a lead batch id, or SOURCE_MANUAL.
+    clause, extra = _source_clause(source_job_id)
+    if clause:
+        clauses.append(clause)
+        params.extend(extra)
 
     # 'none' is addresses not in any campaign -- the ones still waiting to be
     # used, which is what you look for when building a new one.
@@ -2355,75 +2576,220 @@ def get_email_lead_ids_matching(q="", source_job_id=None, status=None, include_d
         ).fetchall()]
 
 
-def get_lead_sources(owner_id=None):
+# ── Lead batches (one per import) ────────────────────────────────────────────
+#
+# Every import is a batch: a scrape (however many times its worker posts) or a
+# CSV / JSON / paste. The "From" filter on each Leads tab picks one, so a
+# batch can be found, acted on and removed together. A business belongs to
+# every batch that brought it -- a lead a scrape found and a JSON file brought
+# again shows under both -- and to none if it was added by hand or before
+# batches existed, which is the SOURCE_MANUAL bucket.
+
+
+def _migrate_lead_batches(conn):
     """
-    The lead lists: one entry per scrape that produced businesses, newest
-    first, plus a 'manual' bucket for hand-added and CSV-imported rows.
+    One batch per existing scrape that produced businesses, holding them --
+    what the "From" filter showed before batches existed. Everything else
+    (CSV, JSON, by hand) had no record of which import it came from, so it
+    stays in the manual bucket. Guarded by a settings marker.
+    """
+    if conn.execute("SELECT 1 FROM settings WHERE key='_migrated_lead_batches'").fetchone():
+        return
+    jobs = conn.execute("""
+        SELECT DISTINCT j.id, j.owner_id, j.destination, j.created_at
+          FROM businesses b JOIN scrape_jobs j ON j.id = b.source_job_id AND j.owner_id = b.owner_id
+    """).fetchall()
+    for j in jobs:
+        conn.execute("""
+            INSERT OR IGNORE INTO lead_batches(owner_id, kind, channel, scrape_job_id, created_at)
+            VALUES(?, 'scrape', ?, ?, ?)
+        """, (j["owner_id"], j["destination"] or "", j["id"], j["created_at"]))
+        batch = conn.execute("SELECT id FROM lead_batches WHERE scrape_job_id=?", (j["id"],)).fetchone()
+        conn.execute("""
+            INSERT OR IGNORE INTO lead_batch_members(batch_id, business_id, is_new, added_at)
+            SELECT ?, id, 1, created_at FROM businesses WHERE source_job_id=? AND owner_id=?
+        """, (batch["id"], j["id"], j["owner_id"]))
+    conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('_migrated_lead_batches', ?)",
+                 (str(len(jobs)),))
 
-    Counts businesses rather than addresses: a scrape of 40 clinics that
-    happened to find three addresses at one of them found 40 leads, and
-    reporting 42 would misdescribe the list.
 
-    LEFT JOIN, not a foreign key -- a business whose scrape_jobs row has gone
-    still counts, it just shows as an unknown source rather than vanishing
-    from the filter.
+def max_business_id() -> int:
+    """The newest business id. Taken before an import, so the businesses it
+    creates (ids above this -- ids are AUTOINCREMENT, never reused) can be
+    told from the ones it matched."""
+    with get_db() as conn:
+        return conn.execute("SELECT COALESCE(MAX(id), 0) FROM businesses").fetchone()[0]
+
+
+def _scrape_batch_id(conn, job: dict) -> int:
+    row = conn.execute("SELECT id FROM lead_batches WHERE scrape_job_id=?", (job["id"],)).fetchone()
+    if row:
+        return row["id"]
+    return conn.execute("""
+        INSERT INTO lead_batches(owner_id, kind, channel, scrape_job_id, created_at)
+        VALUES(?, 'scrape', ?, ?, COALESCE(?, datetime('now')))
+    """, (job["owner_id"], job.get("destination") or "", job["id"], job.get("created_at"))).lastrowid
+
+
+# A confirmed re-submission (the "yes, these too" after a conflict list) joins
+# the batch its first half created rather than starting a second one. Only an
+# import batch of the operator's own, and only a recent one.
+_BATCH_REJOIN_HOURS = 6
+
+
+def record_import(business_ids, new_after_id: int, owner_id=None, job: dict = None,
+                  source: str = "", channel: str = "", batch_id=None):
+    """
+    File what one import touched under its batch, creating the batch on first
+    use. `job` makes it the scrape's batch; otherwise `batch_id` rejoins an
+    earlier half of the same import, else a new import batch is made from
+    `source` and `channel`. Returns the batch id, or None if nothing was
+    touched (an import that brought nothing makes no batch).
     """
     with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        ids = _own_business_ids(conn, business_ids, owner)
+        if not ids:
+            return None
+        if job:
+            bid = _scrape_batch_id(conn, job)
+        else:
+            bid = None
+            if batch_id:
+                try:
+                    row = conn.execute(f"""
+                        SELECT id FROM lead_batches
+                         WHERE id=? AND owner_id=? AND kind='import'
+                           AND created_at >= datetime('now', '-{_BATCH_REJOIN_HOURS} hours')
+                    """, (int(batch_id), owner)).fetchone()
+                except (TypeError, ValueError):
+                    row = None
+                bid = row["id"] if row else None
+            if bid is None:
+                bid = conn.execute(
+                    "INSERT INTO lead_batches(owner_id, kind, source, channel) VALUES(?, 'import', ?, ?)",
+                    (owner, (source or "").strip()[:120], channel or ""),
+                ).lastrowid
+        conn.executemany("""
+            INSERT OR IGNORE INTO lead_batch_members(batch_id, business_id, is_new)
+            VALUES(?, ?, ?)
+        """, [(bid, i, 1 if i > int(new_after_id or 0) else 0) for i in ids])
+        return bid
+
+
+def rename_lead_batch(batch_id: int, name: str, owner_id=None) -> bool:
+    """'' puts the automatic name back."""
+    with get_db() as conn:
+        cur = conn.execute("UPDATE lead_batches SET name=? WHERE id=? AND owner_id=?",
+                           ((name or "").strip()[:120], int(batch_id),
+                            _resolve_owner_id(conn, owner_id)))
+        return cur.rowcount > 0
+
+
+def _batch_base(r) -> str:
+    """The automatic name, before the browser adds the time."""
+    if r["kind"] == "scrape":
+        if r["niche"] or r["city"]:
+            return " — ".join(x for x in (r["niche"], r["city"]) if x)
+        return "Scrape (details deleted)"
+    src = (r["source"] or "").strip()
+    if not src:
+        return "Import"
+    if src.upper() in ("JSON", "CSV"):
+        return f"{src.upper()} import"
+    if src.lower() == "paste":
+        return "Pasted import"
+    return src
+
+
+def get_lead_sources(owner_id=None):
+    """
+    The batches this operator's leads came from, newest first, plus the
+    manual bucket (added by hand, or before batches existed) last.
+
+    Each carries `name` (what the operator called it, or '') and `base` plus
+    `created_at` for the automatic name -- the browser joins those with the
+    time in the operator's own timezone. `label` is the same thing in UTC,
+    for anything that can't. Counts are businesses; `new_count` is how many
+    of them this import created rather than matched. Empty batches (every
+    lead since deleted) are left out.
+    """
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
         rows = conn.execute("""
-            SELECT b.source_job_id           AS job_id,
-                   j.niche                   AS niche,
-                   j.city                    AS city,
-                   j.created_at              AS scraped_at,
-                   j.destination             AS destination,
-                   j.country                 AS country,
-                   j.status                  AS status,
-                   COUNT(*)                  AS count
-              FROM businesses b
-              -- The job has to be this operator's own. A row can name any job
-              -- id -- a CSV column, a worker's tag -- and joining on the id
-              -- alone would print someone else's niche and city as a list.
-              LEFT JOIN scrape_jobs j ON j.id = b.source_job_id AND j.owner_id = b.owner_id
+            SELECT lb.id, lb.kind, lb.name, lb.source, lb.channel, lb.scrape_job_id,
+                   lb.created_at,
+                   j.niche, j.city, j.destination, j.country, j.status,
+                   COUNT(m.business_id)  AS count,
+                   SUM(m.is_new)         AS new_count
+              FROM lead_batches lb
+              JOIN lead_batch_members m ON m.batch_id = lb.id
+              LEFT JOIN scrape_jobs j ON j.id = lb.scrape_job_id AND j.owner_id = lb.owner_id
+             WHERE lb.owner_id = ?
+             GROUP BY lb.id
+             ORDER BY lb.created_at DESC, lb.id DESC
+        """, (owner,)).fetchall()
+        manual = conn.execute("""
+            SELECT COUNT(*) FROM businesses b
              WHERE b.owner_id = ?
-             GROUP BY b.source_job_id
-             ORDER BY (b.source_job_id IS NULL), b.source_job_id DESC
-        """, (_resolve_owner_id(conn, owner_id),)).fetchall()
+               AND NOT EXISTS (SELECT 1 FROM lead_batch_members m WHERE m.business_id = b.id)
+        """, (owner,)).fetchone()[0]
 
     out = []
     for r in rows:
-        if r["job_id"] is None:
-            label = "Added manually / CSV"
-        elif r["niche"] or r["city"]:
-            date = (r["scraped_at"] or "")[:10]
-            label = f"{r['niche']} — {r['city']}" + (f" · {date}" if date else "")
-        else:
-            label = f"Scrape #{r['job_id']} (details deleted)"
+        base = _batch_base(r)
         out.append({
-            "job_id": r["job_id"] if r["job_id"] is not None else SOURCE_MANUAL,
-            "label":  label,
-            "count":  r["count"],
-            "niche": r["niche"] or "",
-            "city": r["city"] or "",
-            "scraped_at": r["scraped_at"],
-            "destination": r["destination"] or "",
-            "country": r["country"] or "",
+            "id": r["id"], "job_id": r["id"], "kind": r["kind"], "name": r["name"] or "",
+            "base": base, "created_at": r["created_at"],
+            "label": r["name"] or f"{base} · {(r['created_at'] or '')[:16]} UTC",
+            "count": r["count"], "new_count": r["new_count"] or 0,
+            "channel": r["channel"] or r["destination"] or "",
+            "destination": r["destination"] or r["channel"] or "",
+            "scrape_job_id": r["scrape_job_id"],
+            "niche": r["niche"] or "", "city": r["city"] or "",
+            "scraped_at": r["created_at"], "country": r["country"] or "",
             "status": r["status"] or "",
         })
+    if manual:
+        out.append({"id": SOURCE_MANUAL, "job_id": SOURCE_MANUAL, "kind": "manual", "name": "",
+                    "base": "Added by hand or before imports were named",
+                    "label": "Added by hand or before imports were named",
+                    "created_at": None, "count": manual, "new_count": 0, "channel": "",
+                    "destination": "", "scrape_job_id": None, "niche": "", "city": "",
+                    "scraped_at": None, "country": "", "status": ""})
     return out
 
 
-def get_list_business_ids(source_job_id, owner_id=None) -> list:
-    """Every business of this operator's that one lead list (a scrape, or the
-    hand-added bucket) produced -- what "Add all to..." acts on."""
+def _source_clause(source, alias: str = "b"):
+    """
+    SQL narrowing a business query to one batch, or to the manual bucket.
+    ('', []) when no source is picked. Ownership stays the caller's own owner
+    predicate on `alias`: membership only ever holds an operator's own
+    businesses, so this opens no way across the wall.
+    """
+    if source in (None, ""):
+        return "", []
+    col = f"{alias}.id" if alias else "id"
+    if str(source) == SOURCE_MANUAL:
+        return (f"NOT EXISTS (SELECT 1 FROM lead_batch_members m WHERE m.business_id = {col})",
+                [])
+    try:
+        bid = int(source)
+    except (TypeError, ValueError):
+        return "0", []
+    return (f"EXISTS (SELECT 1 FROM lead_batch_members m "
+            f"WHERE m.business_id = {col} AND m.batch_id = ?)", [bid])
+
+
+def get_list_business_ids(source, owner_id=None) -> list:
+    """Every business of this operator's in one batch (or the manual bucket)
+    -- what "Add all to..." acts on."""
     with get_db() as conn:
         owner = _resolve_owner_id(conn, owner_id)
-        if str(source_job_id) == SOURCE_MANUAL:
-            rows = conn.execute(
-                "SELECT id FROM businesses WHERE owner_id=? AND source_job_id IS NULL ORDER BY id",
-                (owner,))
-        else:
-            rows = conn.execute(
-                "SELECT id FROM businesses WHERE owner_id=? AND source_job_id=? ORDER BY id",
-                (owner, int(source_job_id)))
+        clause, params = _source_clause(source)
+        rows = conn.execute(
+            f"SELECT b.id FROM businesses b WHERE b.owner_id=? AND {clause or '1'} ORDER BY b.id",
+            [owner, *params])
         return [r["id"] for r in rows]
 
 
@@ -2537,6 +2903,7 @@ def find_cross_channel_conflicts(rows: list, channel: str, owner_id=None) -> lis
                 company=(r.get("company") or r.get("name") or ""),
                 address=(r.get("address") or ""),
                 owner_id=owner_id,
+                country=(r.get("country") or ""),
             )
             if existing:
                 resolved.append((r, existing))
@@ -2630,6 +2997,7 @@ def find_cross_owner_matches(rows: list, owner_id=None) -> list:
                 company=(r.get("company") or r.get("name") or ""),
                 address=(r.get("address") or ""),
                 exclude_owner_id=owner_id,
+                country=(r.get("country") or ""),
             )
             if other:
                 resolved.append((r, other))
@@ -3366,6 +3734,19 @@ def get_smtp_accounts():
         ).fetchall()]
 
 
+def get_smtp_account_names() -> list:
+    """
+    Every sending account as a name and an address only -- what an operator
+    who isn't an admin needs to choose which shared inboxes their campaign
+    sends from. Accounts are shared by everyone on the install; their hosts,
+    usernames and passwords are admin setup, so none of that is in here.
+    """
+    with get_db() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT id, name, email, status FROM smtp_accounts ORDER BY id"
+        ).fetchall()]
+
+
 def get_smtp_account(account_id: int):
     with get_db() as conn:
         r = conn.execute("SELECT * FROM smtp_accounts WHERE id=?", (account_id,)).fetchone()
@@ -3427,6 +3808,10 @@ def get_campaign_smtp_accounts(campaign_id: int):
 
 def set_campaign_smtp_accounts(campaign_id: int, account_ids: list):
     with get_db() as conn:
+        # Only accounts that exist: an id from the request body that doesn't
+        # would otherwise fail the foreign key and lose the whole save.
+        known = {r["id"] for r in conn.execute("SELECT id FROM smtp_accounts")}
+        account_ids = [a for a in (_clean_ids(account_ids)) if a in known]
         conn.execute("DELETE FROM campaign_accounts WHERE campaign_id=?", (campaign_id,))
         for aid in account_ids:
             conn.execute(
@@ -3495,7 +3880,7 @@ def get_today_count():
 
 
 def find_existing_business(conn, email="", phone="", website="", company="", address="",
-                           exclude_id=None, owner_id=None, exclude_owner_id=None):
+                           exclude_id=None, owner_id=None, exclude_owner_id=None, country=""):
     """
     Find the business row matching these details. Returns a row or None.
     Read-only -- never creates a row; find_or_create_business wraps this with
@@ -3540,7 +3925,7 @@ def find_existing_business(conn, email="", phone="", website="", company="", add
         if row:
             return row
 
-    phone_key = normalize_phone(phone)
+    phone_key = normalize_phone(phone, country)
     if phone_key:
         row = conn.execute(
             "SELECT * FROM businesses WHERE phone_normalized=? AND phone_normalized!='' "
@@ -4594,9 +4979,11 @@ def _call_queue_filter(bucket, owner, source_job_id=None, only_no_website=False,
         else:
             order = "cl.next_call_at IS NULL, cl.next_call_at ASC, b.created_at DESC"
 
-    if source_job_id:
-        where.append("b.source_job_id = ?")
-        params.append(int(source_job_id))
+    # source_job_id is the "From" filter: a lead batch id, or SOURCE_MANUAL.
+    clause, extra = _source_clause(source_job_id)
+    if clause:
+        where.append(clause)
+        params.extend(extra)
     if only_no_website:
         where.append("b.web_status = 'no_website'")
     if call_campaign_id:
@@ -4657,7 +5044,8 @@ _CALL_LEAD_SORT = {
 
 
 def get_call_leads_page(page=1, per_page=50, q="", outcome="", call_campaign_id=None,
-                        source_job_id=None, sort_col="", sort_dir="desc", owner_id=None):
+                        source_job_id=None, sort_col="", sort_dir="desc", owner_id=None,
+                        ids_only=False):
     """
     Every lead on Calling as one table -- the Leads tab. Unlike the queue this
     includes closed-out and opted-out leads: it is where you go to see and
@@ -4679,12 +5067,11 @@ def get_call_leads_page(page=1, per_page=50, q="", outcome="", call_campaign_id=
         where.append("cl.id IN (SELECT call_lead_id FROM call_campaign_members "
                      "WHERE call_campaign_id = ?)")
         params.append(int(call_campaign_id))
-    if source_job_id not in (None, ""):
-        if str(source_job_id) == SOURCE_MANUAL:
-            where.append("b.source_job_id IS NULL")
-        else:
-            where.append("b.source_job_id = ?")
-            params.append(int(source_job_id))
+    # source_job_id is the "From" filter: a lead batch id, or SOURCE_MANUAL.
+    clause, extra = _source_clause(source_job_id)
+    if clause:
+        where.append(clause)
+        params.extend(extra)
     q = (q or "").strip()
     if q:
         where.append("(b.name LIKE ? OR b.phone LIKE ? OR b.website LIKE ? "
@@ -4696,6 +5083,10 @@ def get_call_leads_page(page=1, per_page=50, q="", outcome="", call_campaign_id=
     order = (f"{col} IS NULL, {col} {direction}" if col else "cl.created_at DESC, cl.id DESC")
 
     with get_db() as conn:
+        if ids_only:
+            # Business ids, which is what this table's rows are keyed by.
+            return [r[0] for r in conn.execute(
+                f"SELECT b.id {_CALL_QUEUE_JOIN} WHERE {' AND '.join(where)}", params)]
         total = conn.execute(
             f"SELECT COUNT(*) {_CALL_QUEUE_JOIN} WHERE {' AND '.join(where)}", params
         ).fetchone()[0]
@@ -4725,6 +5116,136 @@ def get_call_leads_page(page=1, per_page=50, q="", outcome="", call_campaign_id=
         r["campaigns"] = campaigns.get(r["call_lead_id"], [])
     return {"rows": rows, "total": total, "page": page, "per_page": per_page,
             "pages": max(1, (total + per_page - 1) // per_page)}
+
+
+# ── Lead export ──────────────────────────────────────────────────────────────
+
+# The columns every download starts with: the import's own names, so a file
+# downloaded here goes back in through any importer as it is.
+EXPORT_BASE_COLUMNS = ("company", "phone", "email", "website", "address", "city", "country",
+                       "category", "rating", "review_count", "added")
+EXPORT_EXTRA_COLUMNS = {
+    "business": ("channels", "pipeline_stage", "notes"),
+    "call":     ("call_status", "call_attempts", "next_call_at", "pipeline_stage", "notes"),
+    "email":    ("email_status", "first_name", "last_name", "pipeline_stage", "notes"),
+    # message and followup_1..3 are what the lead would be sent now, so the
+    # file can go through a chat for new copy and straight back in.
+    "wa":       ("wa_number", "campaign", "wa_status", "pipeline_stage",
+                 "message", "followup_1", "followup_2", "followup_3", "notes"),
+}
+
+
+def _clean_ids(ids) -> list:
+    out = []
+    for i in ids or []:
+        try:
+            out.append(int(i))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def export_leads(kind: str, ids, owner_id=None) -> tuple:
+    """
+    The selected rows of one Leads table, as (columns, rows) for a CSV.
+
+    `ids` are whatever that table's rows are keyed by -- businesses for
+    Contacts and Calling, addresses for Email, WhatsApp leads for WhatsApp --
+    and anything not this operator's own is dropped, since they arrive in a
+    request body. Order follows `ids`, so the file reads like the table did.
+    """
+    if kind not in EXPORT_EXTRA_COLUMNS:
+        raise ValueError("Unknown lead list")
+    columns = EXPORT_BASE_COLUMNS + EXPORT_EXTRA_COLUMNS[kind]
+    clean = _clean_ids(ids)
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        if kind in ("business", "call"):
+            pairs = [(k, k) for k in _own_business_ids(conn, clean, owner)]
+        elif kind == "email":
+            got = {r["id"]: r["business_id"] for r in conn.execute(
+                f"SELECT id, business_id FROM email_leads WHERE id IN ({','.join('?' * len(clean))}) "
+                f"AND owner_id = ?", (*clean, owner))} if clean else {}
+            pairs = [(k, got[k]) for k in clean if k in got]
+        else:
+            keys = _own_wa_lead_ids(conn, clean, owner)
+            got = {r["id"]: r["business_id"] for r in conn.execute(
+                f"SELECT id, business_id FROM wa_leads WHERE id IN ({','.join('?' * len(keys))})",
+                keys)} if keys else {}
+            pairs = [(k, got[k]) for k in keys if k in got]
+        if not pairs:
+            return columns, []
+
+        biz_ids = sorted({b for _, b in pairs})
+        ph = ",".join("?" * len(biz_ids))
+        biz = {r["id"]: dict(r) for r in conn.execute(f"""
+            SELECT b.*,
+                   (SELECT s.label FROM pipeline_stages s WHERE s.key = b.pipeline_stage) AS stage_label,
+                   (SELECT e.email FROM email_leads e WHERE e.business_id = b.id AND e.status != 'deleted'
+                     ORDER BY e.duplicate_of IS NOT NULL, e.status != 'active', e.id LIMIT 1) AS first_email,
+                   EXISTS (SELECT 1 FROM email_leads e WHERE e.business_id = b.id
+                            AND e.status != 'deleted')                                   AS on_email,
+                   EXISTS (SELECT 1 FROM call_leads c WHERE c.business_id = b.id
+                            AND c.removed_at IS NULL)                                    AS on_call,
+                   EXISTS (SELECT 1 FROM wa_leads w WHERE w.business_id = b.id AND w.moved_to = ''
+                            AND w.removed_at IS NULL)                                    AS on_wa
+              FROM businesses b WHERE b.id IN ({ph})
+        """, biz_ids)}
+        calls = {r["business_id"]: dict(r) for r in conn.execute(
+            f"SELECT * FROM call_leads WHERE business_id IN ({ph})", biz_ids)} if kind == "call" else {}
+        emails = {r["id"]: dict(r) for r in conn.execute(
+            f"SELECT * FROM email_leads WHERE id IN ({','.join('?' * len(pairs))})",
+            [k for k, _ in pairs])} if kind == "email" else {}
+
+    wa_rows = {}
+    if kind == "wa":
+        cache = {}
+        for k, _ in pairs:
+            lead = get_wa_lead(k)
+            if not lead:
+                continue
+            cid = lead.get("wa_campaign_id")
+            if cid not in cache:
+                cache[cid] = get_wa_campaign(cid) if cid else None
+            camp = cache[cid]
+            wa_rows[k] = {
+                "wa_number": lead.get("wa_number") or "",
+                "campaign": (camp or {}).get("name") or "",
+                "wa_status": lead.get("wa_status") or "",
+                "message": wa_message_for(lead, camp, "opener"),
+                **{f"followup_{n + 1}": wa_message_for({**lead, "followup_count": n}, camp, "followup")
+                   for n in range(WA_MAX_LEAD_FOLLOWUPS)},
+            }
+
+    out = []
+    for key, bid in pairs:
+        b = biz.get(bid)
+        if not b:
+            continue
+        row = {
+            "company": b["name"], "phone": b["phone"], "email": b["first_email"] or "",
+            "website": b["website"], "address": b["address"], "city": b["city"],
+            "country": b["country"], "category": b["category"],
+            "rating": b["rating"], "review_count": b["review_count"],
+            "added": b["created_at"],
+            "pipeline_stage": b["stage_label"] or b["pipeline_stage"] or "",
+            "notes": b["notes"],
+            "channels": ",".join(n for n, on in (("email", b["on_email"]), ("calling", b["on_call"]),
+                                                 ("whatsapp", b["on_wa"])) if on),
+        }
+        if kind == "call":
+            c = calls.get(bid) or {}
+            row.update({"call_status": c.get("call_status") or "",
+                        "call_attempts": c.get("call_attempts") or 0,
+                        "next_call_at": c.get("next_call_at") or ""})
+        elif kind == "email":
+            e = emails.get(key) or {}
+            row.update({"email": e.get("email") or "", "email_status": e.get("status") or "",
+                        "first_name": e.get("first_name") or "", "last_name": e.get("last_name") or ""})
+        elif kind == "wa":
+            row.update(wa_rows.get(key) or {})
+        out.append(row)
+    return columns, out
 
 
 def reopen_call_lead(call_lead_id: int) -> bool:
@@ -5840,6 +6361,47 @@ def _migrate_wa_no_review(conn):
 _WA_MESSAGE_SOURCE_MARKER = "_migrated_wa_message_source"
 
 
+def _business_country(conn, business_id: int) -> str:
+    """The country a business's number is in: its own, else its WhatsApp
+    lead's (the one place a country is always picked), else ''."""
+    row = conn.execute("""
+        SELECT COALESCE(NULLIF(b.country,''), w.country, '') AS country
+          FROM businesses b LEFT JOIN wa_leads w ON w.business_id = b.id
+         WHERE b.id = ?
+    """, (business_id,)).fetchone()
+    return (row["country"] or "") if row else ""
+
+
+def _migrate_phone_keys(conn):
+    """
+    Re-key every stored phone with normalize_phone's country-aware rule.
+
+    The old key was a number's last ten digits, so a lead scraped as
+    "050 123 4567" and imported again as "+971 50 123 4567" never matched and
+    became a second business. Re-keying is what lets the next import find the
+    leads already here. North American keys come out unchanged. Duplicates
+    that already exist are left alone -- merging two businesses is the
+    operator's call, not a migration's. Guarded by a settings marker so it
+    runs once.
+    """
+    if conn.execute("SELECT 1 FROM settings WHERE key='_migrated_phone_keys'").fetchone():
+        return
+    rows = conn.execute("""
+        SELECT b.id, b.phone, b.phone_normalized,
+               COALESCE(NULLIF(b.country,''), w.country, '') AS country
+          FROM businesses b LEFT JOIN wa_leads w ON w.business_id = b.id
+         WHERE b.phone != ''
+    """).fetchall()
+    changed = 0
+    for r in rows:
+        key = normalize_phone(r["phone"], r["country"])
+        if key != (r["phone_normalized"] or ""):
+            conn.execute("UPDATE businesses SET phone_normalized=? WHERE id=?", (key, r["id"]))
+            changed += 1
+    conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('_migrated_phone_keys', ?)",
+                 (str(changed),))
+
+
 def _migrate_wa_message_source(conn):
     """
     One-shot: say where each lead's own copy came from.
@@ -5974,7 +6536,11 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
                     drafts_report["followups"][i] += 1
             has_draft = bool(opener_draft or any(followup_drafts))
 
-            business_id = find_or_create_business(conn, r, owner_id=owner_id)
+            # The country is what lets "050 123 4567" from a scrape match
+            # "+971 50 123 4567" from a file, so the row is matched with it.
+            business_id = find_or_create_business(
+                conn, {**r, "country": (r.get("country") or default_country or "").strip().upper()},
+                owner_id=owner_id)
             touched.add(business_id)
             if business_id not in ordered_ids:
                 ordered_ids.append(business_id)
@@ -6271,7 +6837,8 @@ _WA_LEAD_SORT = {
 
 
 def get_wa_leads_page(page=1, per_page=50, q="", stage="", wa_campaign_id=None,
-                      sort_col="", sort_dir="desc", owner_id=None) -> dict:
+                      sort_col="", sort_dir="desc", owner_id=None, source=None,
+                      ids_only=False):
     """
     Every WhatsApp lead as one table -- the Leads tab.
 
@@ -6283,6 +6850,8 @@ def get_wa_leads_page(page=1, per_page=50, q="", stage="", wa_campaign_id=None,
     replied, and the deal stage means nothing before it.
 
     wa_campaign_id: a campaign id, or 'none' for leads with no campaign.
+    source: the "From" filter -- a lead batch id, or SOURCE_MANUAL.
+    ids_only: every matching lead id instead of a page, for "Select all N".
     """
     page = max(1, int(page or 1))
     per_page = max(1, min(int(per_page or 50), 500))
@@ -6304,6 +6873,10 @@ def get_wa_leads_page(page=1, per_page=50, q="", stage="", wa_campaign_id=None,
             " OR EXISTS (SELECT 1 FROM email_leads el WHERE el.business_id = b.id "
             "            AND el.email LIKE ?))")
         inner_params.extend([f"%{q}%"] * 7)
+    clause, extra = _source_clause(source)
+    if clause:
+        inner_where.append(clause)
+        inner_params.extend(extra)
 
     stage = (stage or "").strip()
     outer_where, outer_params = [], []
@@ -6336,6 +6909,9 @@ def get_wa_leads_page(page=1, per_page=50, q="", stage="", wa_campaign_id=None,
     params = [*stage_params, *inner_params]
     where = " AND ".join(outer_where)
     with get_db() as conn:
+        if ids_only:
+            return [r["id"] for r in conn.execute(
+                f"SELECT id FROM ({inner}) WHERE {where}", (*params, *outer_params))]
         total = conn.execute(f"SELECT COUNT(*) FROM ({inner}) WHERE {where}",
                              (*params, *outer_params)).fetchone()[0]
         rows = conn.execute(
@@ -6843,12 +7419,12 @@ def _business_filter(view="all", channel="", q="", source_job_id=None) -> tuple:
         where.append("(company LIKE ? OR phone LIKE ? OR website LIKE ? OR address LIKE ? "
                      "OR city LIKE ? OR category LIKE ? OR email LIKE ?)")
         params.extend([f"%{q}%"] * 7)
-    if source_job_id not in (None, ""):
-        if str(source_job_id) == SOURCE_MANUAL:
-            where.append("source_job_id IS NULL")
-        else:
-            where.append("source_job_id = ?")
-            params.append(int(source_job_id))
+    # source_job_id is the "From" filter: a lead batch id, or SOURCE_MANUAL.
+    # The outer query here reads a subquery with no alias; `id` is the business.
+    clause, extra = _source_clause(source_job_id, alias="")
+    if clause:
+        where.append(clause)
+        params.extend(extra)
     return (" AND ".join(where) or "1=1"), params
 
 
@@ -7086,7 +7662,8 @@ def update_business(business_id: int, fields: dict, owner_id=None):
                             (int(business_id), owner)).fetchone():
             return False, "Not found"
         if "phone" in updates:
-            updates["phone_normalized"] = normalize_phone(updates["phone"])
+            country = updates.get("country") or _business_country(conn, int(business_id))
+            updates["phone_normalized"] = normalize_phone(updates["phone"], country)
         if "website" in updates:
             updates["domain"] = canonical_domain(updates["website"])
         if "do_not_contact" in fields:
@@ -7134,13 +7711,229 @@ def delete_businesses(business_ids, owner_id=None) -> dict:
                       AND e.status IN ('unsubscribed','bounced')))
         """, ids)}
         doomed = [i for i in ids if i not in protected]
+        group = None
         if doomed:
+            # A copy of each goes to Recently deleted first, so the delete
+            # can be undone for TRASH_DAYS.
+            group = _trash_businesses(conn, doomed, owner_id)
             dph = ",".join("?" * len(doomed))
             # enrollments and call_campaign_members hang off the channel rows
             # and cascade with them; sends has no foreign key and keeps its
             # history for campaign totals.
             conn.execute(f"DELETE FROM businesses WHERE id IN ({dph})", doomed)
-        return {"deleted": len(doomed), "kept": len(protected)}
+        return {"deleted": len(doomed), "kept": len(protected), "group": group}
+
+
+# ── Recently deleted ─────────────────────────────────────────────────────────
+#
+# A deleted business is copied, with every row that cascades from it, into
+# deleted_leads before the real delete runs. Nothing else in the app reads
+# deleted_leads, so a deleted lead is gone from every list, queue and send the
+# moment it's deleted -- the copy only exists to put it back. What hangs off a
+# business is read from the schema's own ON DELETE CASCADE foreign keys rather
+# than listed here, so a table added later is copied without anyone having to
+# remember this exists.
+
+TRASH_DAYS = 30
+
+
+def _cascade_children(conn) -> dict:
+    """parent table -> [(child table, child column)], for every ON DELETE
+    CASCADE foreign key -- exactly what deleting a business takes with it."""
+    out = {}
+    for (table,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"):
+        for fk in conn.execute(f"PRAGMA foreign_key_list({table})"):
+            if (fk["on_delete"] or "").upper() == "CASCADE":
+                out.setdefault(fk["table"], []).append((table, fk["from"]))
+    return out
+
+
+def _snapshot_business(conn, business_id: int, children: dict) -> list:
+    """[[table, [row, ...]], ...] for one business, parents before children."""
+    tables = []
+    row = conn.execute("SELECT * FROM businesses WHERE id=?", (business_id,)).fetchone()
+    if not row:
+        return tables
+    tables.append(["businesses", [dict(row)]])
+    queue = [("businesses", [business_id])]
+    while queue:
+        parent, ids = queue.pop(0)
+        for child, col in children.get(parent, []):
+            rows = [dict(r) for r in conn.execute(
+                f"SELECT * FROM {child} WHERE {col} IN ({','.join('?' * len(ids))})", ids)]
+            if not rows:
+                continue
+            tables.append([child, rows])
+            if "id" in rows[0]:
+                queue.append((child, [r["id"] for r in rows]))
+    return tables
+
+
+def _trash_businesses(conn, business_ids: list, owner_id: int) -> str:
+    """Copy these businesses into Recently deleted as one group. Returns the
+    group key."""
+    group = secrets.token_hex(8)
+    children = _cascade_children(conn)
+    for bid in business_ids:
+        tables = _snapshot_business(conn, bid, children)
+        if not tables:
+            continue
+        b = tables[0][1][0]
+        present = {t for t, _ in tables}
+        channels = ",".join(name for name, table in (("email", "email_leads"), ("calling", "call_leads"),
+                                                     ("whatsapp", "wa_leads")) if table in present)
+        conn.execute("""
+            INSERT INTO deleted_leads(owner_id, delete_group, business_id, name, phone, channels, data)
+            VALUES(?,?,?,?,?,?,?)
+        """, (owner_id, group, bid, b.get("name") or "", b.get("phone") or "", channels,
+              json.dumps(tables)))
+    return group
+
+
+def purge_deleted_leads(days: int = TRASH_DAYS) -> int:
+    """
+    Empty Recently deleted of anything older than `days`, for every operator.
+    Deliberately unscoped, like reap_stale_scrape_jobs: it runs from the
+    scheduler with nobody logged in, and only ever drops expired copies.
+    """
+    with get_db() as conn:
+        return conn.execute(
+            f"DELETE FROM deleted_leads WHERE deleted_at < datetime('now', '-{int(days)} days')"
+        ).rowcount
+
+
+def get_deleted_leads(owner_id=None) -> list:
+    """This operator's Recently deleted, newest first, one entry per delete."""
+    purge_deleted_leads()
+    with get_db() as conn:
+        rows = conn.execute(f"""
+            SELECT id, delete_group, business_id, name, phone, channels, deleted_at,
+                   julianday(deleted_at, '+{TRASH_DAYS} days') - julianday('now') AS days_left
+              FROM deleted_leads WHERE owner_id = ?
+             ORDER BY deleted_at DESC, id
+        """, (_resolve_owner_id(conn, owner_id),)).fetchall()
+    groups, order = {}, []
+    for r in rows:
+        g = groups.get(r["delete_group"])
+        if not g:
+            g = groups[r["delete_group"]] = {"group": r["delete_group"], "deleted_at": r["deleted_at"],
+                                            # Rounded up: just deleted reads "30 days".
+                                            "days_left": max(0, math.ceil(r["days_left"] or 0)),
+                                            "items": []}
+            order.append(g)
+        g["items"].append({"id": r["id"], "business_id": r["business_id"], "name": r["name"],
+                           "phone": r["phone"], "channels": r["channels"]})
+    for g in order:
+        g["count"] = len(g["items"])
+    return order
+
+
+def _restore_one(conn, tables: list, owner_id: int) -> str:
+    """
+    Put one deleted business back. Returns 'restored', or 'exists' when the
+    business is already back in the list (re-imported since), in which case
+    nothing is written: restoring would make it a duplicate.
+
+    Rows go back with their original ids -- every table is AUTOINCREMENT, so
+    those ids have never been handed out again -- which also reconnects the
+    send history that was kept when the lead was deleted. A row pointing at
+    something deleted since (a campaign) has that link cleared if it can be,
+    and is left out if it can't; a column the table no longer has is dropped
+    and a new column takes its default.
+    """
+    b = tables[0][1][0]
+    if conn.execute("SELECT 1 FROM businesses WHERE id=?", (b["id"],)).fetchone():
+        return "exists"
+    first_email = next((r.get("email") for t, rows in tables if t == "email_leads"
+                        for r in rows if r.get("email")), "")
+    if find_existing_business(conn, email=first_email or "", phone=b.get("phone") or "",
+                              website=b.get("website") or "", company=b.get("name") or "",
+                              address=b.get("address") or "", owner_id=owner_id,
+                              country=b.get("country") or ""):
+        return "exists"
+
+    conn.execute("SAVEPOINT restore_lead")
+    try:
+        for table, rows in tables:
+            info = {c["name"]: c for c in conn.execute(f"PRAGMA table_info({table})")}
+            if not info:
+                continue
+            fks = [dict(f) for f in conn.execute(f"PRAGMA foreign_key_list({table})")]
+            for row in rows:
+                row = {k: v for k, v in row.items() if k in info}
+                skip = False
+                for fk in fks:
+                    value = row.get(fk["from"])
+                    if value is None:
+                        continue
+                    target = fk["to"] or "id"
+                    if conn.execute(f"SELECT 1 FROM {fk['table']} WHERE {target}=?",
+                                    (value,)).fetchone():
+                        continue
+                    if info[fk["from"]]["notnull"]:
+                        skip = True
+                        break
+                    row[fk["from"]] = None
+                if skip:
+                    continue
+                cols = list(row)
+                try:
+                    conn.execute(
+                        f"INSERT INTO {table}({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
+                        [row[c] for c in cols])
+                except sqlite3.IntegrityError:
+                    if table == "businesses":
+                        raise
+                    # One clashing row (an address re-imported under another
+                    # business) is left out rather than failing the whole lead.
+                    continue
+    except sqlite3.IntegrityError:
+        conn.execute("ROLLBACK TO restore_lead")
+        conn.execute("RELEASE restore_lead")
+        return "exists"
+    conn.execute("RELEASE restore_lead")
+    return "restored"
+
+
+def restore_deleted_leads(ids=None, group: str = None, owner_id=None) -> dict:
+    """
+    Put deleted leads back -- the ones named, or a whole delete group -- and
+    take them out of Recently deleted. Returns {"restored": n, "exists": n}.
+    `ids` come from a request body, so only this operator's own are used.
+    """
+    counts = {"restored": 0, "exists": 0}
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        if group:
+            rows = conn.execute("SELECT id, data FROM deleted_leads WHERE owner_id=? AND delete_group=?",
+                                (owner, str(group))).fetchall()
+        else:
+            clean = _clean_ids(ids)
+            rows = conn.execute(
+                f"SELECT id, data FROM deleted_leads WHERE owner_id=? "
+                f"AND id IN ({','.join('?' * len(clean))})", (owner, *clean)).fetchall() if clean else []
+        for r in rows:
+            outcome = _restore_one(conn, json.loads(r["data"]), owner)
+            counts[outcome] += 1
+            if outcome == "restored":
+                conn.execute("DELETE FROM deleted_leads WHERE id=?", (r["id"],))
+    return counts
+
+
+def forget_deleted_leads(ids=None, group: str = None, owner_id=None) -> int:
+    """Delete forever, now, rather than in TRASH_DAYS."""
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        if group:
+            return conn.execute("DELETE FROM deleted_leads WHERE owner_id=? AND delete_group=?",
+                                (owner, str(group))).rowcount
+        clean = _clean_ids(ids)
+        if not clean:
+            return 0
+        return conn.execute(
+            f"DELETE FROM deleted_leads WHERE owner_id=? AND id IN ({','.join('?' * len(clean))})",
+            (owner, *clean)).rowcount
 
 
 def create_business(fields: dict, owner_id=None) -> tuple:
@@ -7438,6 +8231,8 @@ def delete_user(uid: int) -> tuple:
                        f"that data first - deleting the account would leave "
                        f"it unreachable.")
     with get_db() as conn:
+        # Their Recently deleted is nobody else's to restore.
+        conn.execute("DELETE FROM deleted_leads WHERE owner_id=?", (uid,))
         conn.execute("DELETE FROM users WHERE id=?", (uid,))
     return True, None
 

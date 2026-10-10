@@ -656,7 +656,7 @@ async function _waPanelSection(d) {
       : `<div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px;align-items:center">
           <button class="btn btn-primary btn-sm" onclick="openFromPanel(${w.id}, '${kind}', '${esc(w.wa_number)}', '${panelId}')">Open in WhatsApp</button>
           ${kind === 'opener'
-            ? `<button class="btn btn-ghost btn-sm" onclick="rewordWaMessage(${w.id}, '${panelId}')">✨ Reword with AI</button>`
+            ? (window._aiEnabled ? `<button class="btn btn-ghost btn-sm" onclick="rewordWaMessage(${w.id}, '${panelId}')">✨ Reword with AI</button>` : '')
             : `<button class="btn btn-ghost btn-sm" onclick="waMarkReplied(${w.id}, true)">They replied</button>
                <button class="btn btn-ghost btn-sm" onclick="waSetPaused([${w.id}], true)">Pause follow-ups</button>`}
         </div>`;

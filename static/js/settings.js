@@ -162,6 +162,7 @@ async function saveSettings() {
   if (googleKey && !googleKey.startsWith("●"))
     payload.google_api_key = googleKey.trim();
   await api("/api/settings", "POST", payload);
+  window._aiEnabled = payload.ai_features_enabled === "1";
   toast("Settings saved ✓");
 }
 

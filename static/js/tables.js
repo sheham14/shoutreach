@@ -149,6 +149,146 @@ function shortDate(s) {
   return d.substring(0, 10) === new Date().toISOString().substring(0, 10) ? d.substring(11, 16) : d.substring(0, 10);
 }
 
+// A database timestamp (UTC, "YYYY-MM-DD HH:MM:SS") in the operator's own
+// timezone, e.g. "10 Oct, 14:32" -- for "Added" and for naming imports, where
+// the time is how you tell two batches from the same day apart.
+function localDateTime(s) {
+  if (!s) return '';
+  const raw = String(s).trim().replace(' ', 'T');
+  const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(raw) ? raw : raw + 'Z');
+  if (isNaN(d)) return String(s);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleString(undefined, {
+    day: 'numeric', month: 'short', ...(sameYear ? {} : { year: 'numeric' }),
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
+// ── Imports ("From" filter) ──────────────────────────────────────────────────
+//
+// Every scrape and every CSV / JSON / paste import is one entry. A lead shows
+// under every import that brought it. The automatic name is built here so its
+// time is in the operator's timezone; a renamed one shows its own name.
+
+function sourceLabel(s) {
+  if (!s) return '';
+  if (s.kind === 'manual') return s.base || s.label;
+  return s.name || `${s.base} · ${localDateTime(s.created_at)}`;
+}
+
+function sourceOptionsHtml(sources, selected = '', allLabel = 'All imports') {
+  return `<option value="">${esc(allLabel)}</option>` + (sources || []).map(s => {
+    const id = String(s.id ?? s.job_id);
+    const fresh = s.kind === 'import' && s.new_count < s.count ? `, ${s.new_count} new` : '';
+    return `<option value="${esc(id)}" ${id === String(selected) ? 'selected' : ''}>${
+      esc(sourceLabel(s))} (${s.count}${fresh})</option>`;
+  }).join('');
+}
+
+// Fill a "From" <select>, keeping what was picked if it still exists.
+async function fillSourceSelect(id, allLabel) {
+  const sel = document.getElementById(id);
+  if (!sel) return [];
+  const sources = await api('/api/contacts/sources') || [];
+  const keep = sel.value;
+  sel.innerHTML = sourceOptionsHtml(Array.isArray(sources) ? sources : [], keep, allLabel);
+  if (keep && ![...sel.options].some(o => o.value === keep)) sel.value = '';
+  return sources;
+}
+
+async function renameImport(sourceId, current, auto, after) {
+  if (!sourceId || sourceId === 'manual') return;
+  const name = await chooseDialog({
+    title: 'Name this import',
+    body: `<input id="rename-import" class="search-input" style="width:100%" maxlength="120"
+             value="${esc(current || '')}" placeholder="${esc(auto || '')}" />
+           <p class="text-muted text-small" style="margin-top:8px">Leave it empty to go back to the automatic name.</p>`,
+    confirm: 'Save',
+    collect: () => document.getElementById('rename-import').value.trim() || ' ',
+  });
+  if (name === null) return;
+  const res = await api(`/api/lead-batches/${sourceId}`, 'PUT', { name: name.trim() });
+  if (!res || res.error) { toast((res && res.error) || 'Could not rename it', 'err'); return; }
+  toast('Renamed ✓');
+  if (after) after();
+}
+
+// ── Downloads ────────────────────────────────────────────────────────────────
+
+// POST something and save what comes back as a file. A plain link can't carry
+// a body, and the ids a selection is made of can run to thousands.
+async function downloadPost(url, body, fallbackName = 'leads.csv') {
+  const res = await fetch(url, {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': await _getCsrfToken() },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) { window.location.href = '/login'; return; }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    toast(err.error || 'Download failed', 'err');
+    return;
+  }
+  saveBlob(await res.blob(), _fileNameFrom(res) || fallbackName);
+}
+
+function downloadUrl(url) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function saveBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+function _fileNameFrom(res) {
+  const m = (res.headers.get('Content-Disposition') || '').match(/filename="?([^";]+)"?/);
+  return m ? m[1] : '';
+}
+
+// ── Full-screen tables ───────────────────────────────────────────────────────
+
+let _ltFullscreen = null;
+
+function _ltFullscreenTarget(id) {
+  const count = document.getElementById(`${id}-count`) || document.getElementById(`${id}-body`);
+  if (!count) return null;
+  // The whole split when there is one, so a lead opened from the table still
+  // shows its side panel beside it.
+  return count.closest('.work-split') || count.closest('.card');
+}
+
+function toggleTableFullscreen(id) {
+  const target = _ltFullscreenTarget(id);
+  if (!target) return;
+  const on = !target.classList.contains('lt-fullscreen');
+  if (_ltFullscreen && _ltFullscreen !== target) _ltFullscreen.classList.remove('lt-fullscreen');
+  target.classList.toggle('lt-fullscreen', on);
+  document.body.classList.toggle('lt-fullscreen-open', on);
+  _ltFullscreen = on ? target : null;
+  if (LT[id]) LT[id].render();
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || !_ltFullscreen) return;
+  if (document.querySelector('.modal-overlay.open, .modal.open')) return;
+  _ltFullscreen.classList.remove('lt-fullscreen');
+  document.body.classList.remove('lt-fullscreen-open');
+  _ltFullscreen = null;
+  Object.values(LT).forEach(t => t.render && t.render());
+});
+
+const LT_PAGE_SIZES = [50, 100, 250, 500];
+
 // ── Placeholders ─────────────────────────────────────────────────────────────
 //
 // The same {{name|fallback}} rules the server uses to write the real message,
@@ -338,10 +478,20 @@ function _placeRowMenu() {
  *                columns are hidden at phone widths when this is given.
  *   empty     -- text when nothing matches
  *   onLoad(data)  -- optional
+ *   exportKind -- optional; what the row ids are ('business', 'call', 'email',
+ *                 'wa'), which adds "Download CSV" to the selection bar
+ *   exportName() -- optional; the downloaded file's name
+ *
+ * Every table also gets, in its toolbar: "Select all N" whenever there is more
+ * than one page, a rows-per-page choice (remembered per table), and a full
+ * screen toggle (Esc closes it).
  */
 function createLeadTable(cfg) {
+  let savedPerPage = 0;
+  try { savedPerPage = +localStorage.getItem(`lt-perpage:${cfg.id}`) || 0; } catch (_) { /* private mode */ }
   const t = {
-    cfg, page: 1, perPage: cfg.perPage || 50, sortCol: '', sortDir: 'desc',
+    cfg, page: 1, perPage: LT_PAGE_SIZES.includes(savedPerPage) ? savedPerPage : (cfg.perPage || 50),
+    sortCol: '', sortDir: 'desc',
     rows: [], total: 0, pages: 1, selected: new Set(), currentId: null, _timer: null,
   };
   const rowId = r => (cfg.rowId ? cfg.rowId(r) : r.id);
@@ -380,6 +530,18 @@ function createLeadTable(cfg) {
   t.togglePage = on => { t.rows.forEach(r => on ? t.selected.add(rowId(r)) : t.selected.delete(rowId(r))); t.render(); };
   t.clear = () => { t.selected.clear(); t.render(); };
   t.selectedIds = () => [...t.selected];
+  t.setPerPage = n => {
+    t.perPage = LT_PAGE_SIZES.includes(+n) ? +n : 50;
+    try { localStorage.setItem(`lt-perpage:${cfg.id}`, String(t.perPage)); } catch (_) { /* private mode */ }
+    t.load({ resetPage: true });
+  };
+  t.download = async () => {
+    const ids = t.selectedIds();
+    if (!ids.length || !cfg.exportKind) return;
+    toast(`Preparing ${ids.length} lead${ids.length === 1 ? '' : 's'}…`);
+    const name = (cfg.exportName && cfg.exportName()) || `${cfg.id}-leads`;
+    await downloadPost('/api/leads/export', { kind: cfg.exportKind, ids, name }, `${name}.csv`);
+  };
   t.selectAllMatching = async () => {
     if (!cfg.idsUrl) return;
     const res = await api(`${cfg.idsUrl}?${t.query()}`);
@@ -402,15 +564,18 @@ function createLeadTable(cfg) {
       const from = t.total ? (t.page - 1) * t.perPage + 1 : 0;
       const to = Math.min(t.page * t.perPage, t.total);
       count.textContent = t.total ? `${from}–${to} of ${t.total}` : '0';
+      _renderToolbarExtras(t, count);
     }
 
     const more = allOnPage && cfg.idsUrl && t.total > t.rows.length && n < t.total
       ? ` <a onclick="LT['${cfg.id}'].selectAllMatching()">Select all ${t.total}</a>` : '';
     const bulk = `<div class="lt-bulk ${n ? 'show' : ''}">
-        <span class="sel">${n} selected</span>${more}
+        <span class="sel">${n} selected</span>${n < t.total ? more : ''}
         <a onclick="LT['${cfg.id}'].clear()">Clear</a>
         <span style="flex-basis:8px"></span>
         ${n && cfg.bulk ? cfg.bulk() : ''}
+        ${n && cfg.exportKind ? `<button class="btn btn-ghost btn-sm" onclick="LT['${cfg.id}'].download()"
+            title="Download the selected leads as a CSV">⬇ Download CSV</button>` : ''}
       </div>`;
 
     const head = `<tr>
@@ -456,6 +621,32 @@ function createLeadTable(cfg) {
 
   LT[cfg.id] = t;
   return t;
+}
+
+// The controls every table's toolbar gets, after its count: select every
+// match without paging, how many rows a page shows, and full screen. Added
+// here rather than in each page's markup so no table can be missing them.
+function _renderToolbarExtras(t, count) {
+  const id = t.cfg.id;
+  let box = document.getElementById(`${id}-extras`);
+  if (!box) {
+    box = document.createElement('span');
+    box.id = `${id}-extras`;
+    box.className = 'lt-extras';
+    count.insertAdjacentElement('afterend', box);
+  }
+  // Always there while something is left unticked: everything on this page
+  // when it all fits, else every match on every page.
+  const onePage = t.total <= t.rows.length;
+  const all = t.total && t.selected.size < t.total && (onePage || t.cfg.idsUrl)
+    ? `<button class="btn btn-ghost btn-sm" onclick="LT['${id}'].${onePage ? 'togglePage(true)' : 'selectAllMatching()'}"
+         title="Tick every lead that matches the filters${onePage ? '' : ', on every page'}">Select all ${t.total}</button>` : '';
+  const sizes = LT_PAGE_SIZES.map(n => `<option value="${n}" ${n === t.perPage ? 'selected' : ''}>${n} per page</option>`).join('');
+  const fs = _ltFullscreen && _ltFullscreen === _ltFullscreenTarget(id);
+  box.innerHTML = `${all}
+    <select class="filter-select lt-perpage" onchange="LT['${id}'].setPerPage(this.value)" title="Rows per page">${sizes}</select>
+    <button class="btn btn-ghost btn-sm lt-fs-btn" onclick="toggleTableFullscreen('${id}')"
+            title="${fs ? 'Back to the page (Esc)' : 'Show just this table, full screen'}">${fs ? '✕ Exit full screen' : '⛶ Full screen'}</button>`;
 }
 
 // Summaries of "added 3, skipped 2 because…" responses, shared by every
