@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-10-10 (follow-up sequences, Email To do, Get leads, Settings split; built, not deployed) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-10-11 (follow-up sequences, Email To do, Get leads, Settings split; deployed) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -62,7 +62,7 @@ fix this file.
   too, which it didn't before. One new column (`pipeline_stages.wants_time`)
   and one guarded migration — no change to `businesses`. Reminders were
   considered and explicitly not built (§5c). All 22 test files pass locally.
-- **Built 2026-10-10, NOT deployed: the UI cleanup and follow-up sequences**
+- **Deployed 2026-10-11 16:41 UTC (`3ea7efd`): the UI cleanup and follow-up sequences**
   (§5e). WhatsApp follow-ups are a list that cycles forever (a lead's own
   first, as many as it brought); Email has a To do for real replies; one
   **Get leads** page replaces seven ways in; Settings is My settings / Team
@@ -94,7 +94,7 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
-| pending | 10-10 | Follow-up sequences + long-term gap; Email To do; Get leads page; Settings split; sidebar regrouped | No |
+| `3ea7efd` | 10-11 | Follow-up sequences + long-term gap; Email To do; Get leads page; Settings split; sidebar regrouped | Yes |
 | `916dabb` | 10-10 | Deploys back up the database first | Yes |
 | `8305454` | 10-10 | Country-aware phone matching; named imports + "From" filter everywhere; CSV-only scrapes; CSV download; full-screen tables; Recently deleted; account passwords no longer sent to campaign owners | Yes |
 | `ac57e66` | 09-27 | The Booked tab: real appointment times, `.ics`, calling wired into the shared stage | Check `gh run list` |
@@ -708,7 +708,7 @@ and got duplicates.
   and fell back to the campaign's A/B templates.
 - `tests/test_lead_batches.py` covers all of it, including both walls.
 
-## 5e. Follow-up sequences, Email To do, and one way in — built 2026-10-10
+## 5e. Follow-up sequences, Email To do, and one way in — live 2026-10-11 (`3ea7efd`)
 
 From the operator going through the app and finding it scattered ("having
 built this myself I myself forget where to find certain options").
@@ -945,8 +945,8 @@ importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
-00000. **§5e is built, not pushed.** The deploy backs up on its own now (§6).
-      After it: WhatsApp → Messages shows "Follow-up 1" holding each
+00000. **§5e is live** (`3ea7efd`, 2026-10-11; backed up by the deploy). Still to
+      check by hand: WhatsApp → Messages shows "Follow-up 1" holding each
       campaign's old follow-up; Email → To do is empty (older replies start
       as done); Settings as the cofounder shows only My settings.
 0000. **The import work is live** (§5d, `8305454`, 2026-10-10). Still to do
