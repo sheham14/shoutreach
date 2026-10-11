@@ -309,6 +309,13 @@ let _aclSelected = new Set();
 let _aclRows = [];
 let _aclTimer = null;
 
+// "Import a file, paste or scrape" from the Add leads window: Get leads,
+// aimed at Calling and the campaign picked here.
+function callAddFromGetLeads() {
+  const sel = document.getElementById('acl-campaign');
+  openGetLeads({ dest: 'calling', campaign: sel && sel.value !== '__new' ? sel.value : '' });
+}
+
 async function openAddLeadsModal(campaignId = '') {
   if (!_callCampaigns.length) await loadCallCampaigns();
   document.getElementById('acl-campaign-wrap').innerHTML =
@@ -317,7 +324,6 @@ async function openAddLeadsModal(campaignId = '') {
                          selected: campaignId || '' });
   _aclSelected.clear();
   document.getElementById('acl-search').value = '';
-  document.getElementById('acl-manual').value = '';
   setAddLeadsTab('existing');
   openModal('modal-add-call-leads');
   aclSearch();
@@ -325,7 +331,7 @@ async function openAddLeadsModal(campaignId = '') {
 
 function setAddLeadsTab(tab) {
   _aclTab = tab;
-  ['existing', 'manual', 'csv'].forEach(t => {
+  ['existing'].forEach(t => {
     const btn = document.getElementById(`acl-tab-${t}`);
     if (btn) {
       btn.classList.toggle('btn-primary', t === tab);
@@ -403,78 +409,16 @@ async function _addToCalling(businessIds, campaignId) {
 }
 
 async function submitAddLeads() {
+  if (!_aclSelected.size) { toast('Select at least one lead', 'err'); return; }
   const campaignId = await resolveCampaignSelect('acl-campaign', '/api/call-campaigns');
   if (campaignId === null) return;
-  let res, imported = null;
-
-  if (_aclTab === 'existing') {
-    if (!_aclSelected.size) { toast('Select at least one lead', 'err'); return; }
-    res = await _addToCalling([..._aclSelected], campaignId);
-
-  } else if (_aclTab === 'manual') {
-    // "Name, phone, website" per line. Deliberately forgiving about the tail:
-    // the name is the only part you always have when typing from a list.
-    const rows = document.getElementById('acl-manual').value
-      .split('\n').map(l => l.trim()).filter(Boolean)
-      .map(line => {
-        const [company, phone, website] = line.split(',').map(x => (x || '').trim());
-        return { company, phone: phone || '', website: website || '',
-                 status: website ? 'no_email' : 'no_website' };
-      })
-      .filter(r => r.company);
-    if (!rows.length) { toast('Nothing to add — one business per line', 'err'); return; }
-    imported = await _importForCalling(rows);
-    if (!imported || imported.error) { toast((imported && imported.error) || 'Could not add those', 'err'); return; }
-    res = await _addToCalling(imported.business_ids || [], campaignId);
-
-  } else {
-    const file = document.getElementById('acl-csv').files[0];
-    if (!file) { toast('Choose a CSV first', 'err'); return; }
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('channel', 'calling');
-    const r = await fetch('/api/contacts/import', {
-      method: 'POST', credentials: 'same-origin',
-      headers: { 'X-CSRF-Token': await _getCsrfToken() }, body: fd,
-    });
-    imported = await r.json().catch(() => ({}));
-    if (!r.ok || imported.error) { toast(imported.error || 'CSV import failed', 'err'); return; }
-    imported = await _resolveImportConflicts(imported, file.name);
-    res = await _addToCalling(imported.business_ids || [], campaignId);
-  }
-
+  const res = await _addToCalling([..._aclSelected], campaignId);
   if (!res || res.error) { toast((res && res.error) || 'Could not add them', 'err'); return; }
   toast(describeAdd(res, 'Added to Calling:'));
-  if (imported) notifyCrossOwnerOverlap(imported);
   closeModal('modal-add-call-leads');
   await loadCallCampaigns();
   const tab = currentTab('calling', 'todo');
   if (tab === 'leads') LT.cl.load(); else if (tab === 'todo') loadCallQueue();
-}
-
-// A CSV or pasted line for calling can still carry an email column, which
-// goes through the same email-channel check as the Contacts importer. Held
-// rows are confirmed the same way, then folded back into one business id
-// list so the add step sees every business that ended up imported.
-async function _importForCalling(rows) {
-  const first = await api('/api/contacts/import', 'POST', { rows, source: 'Paste', channel: 'calling' });
-  if (!first || first.error) return first;
-  return _resolveImportConflicts(first, 'Paste');
-}
-
-async function _resolveImportConflicts(first, source = '') {
-  const final = await confirmChannelConflicts(first, () =>
-    api('/api/contacts/import', 'POST', {
-      rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
-      batch_id: first.batch_id || null, source, channel: 'calling',
-    })
-  );
-  if (final === first) return first;
-  return {
-    inserted: (first.inserted || 0) + (final.inserted || 0),
-    business_ids: [...(first.business_ids || []), ...(final.business_ids || [])],
-    overlaps: first.overlaps || [],
-  };
 }
 
 async function loadCallSources() {

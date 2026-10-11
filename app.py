@@ -2325,6 +2325,22 @@ def api_delete_businesses():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/email/replies", methods=["GET"])
+@login_required
+def api_email_replies():
+    """Email -> To do: replies waiting on you; ?done=1 for the ones dealt with."""
+    return jsonify(db.get_email_replies(owner_id=me(), done=request.args.get("done") == "1"))
+
+
+@app.route("/api/email/replies/<int:eid>/done", methods=["POST", "DELETE"])
+@login_required
+@owned("enrollment", "eid")
+def api_email_reply_done(eid):
+    """POST takes a reply off To do; DELETE puts it back."""
+    db.set_email_reply_done(eid, request.method == "POST")
+    return jsonify({"ok": True, "waiting": db.count_email_replies(owner_id=me())})
+
+
 @app.route("/api/trash", methods=["GET"])
 @login_required
 def api_trash():
@@ -3453,7 +3469,8 @@ def api_wa_update_campaign(cid):
     d = request.json or {}
     if "country" in d and d["country"] and str(d["country"]).upper() not in db.WA_COUNTRY_CODES:
         return jsonify({"ok": False, "error": "Unknown country"}), 400
-    allowed = ("name", "notes", "country", "status", "templates", "followup_days", "variables")
+    allowed = ("name", "notes", "country", "status", "templates", "followup_days",
+               "long_followup_days", "variables")
     opener_from = d.get("opener_from")
     if opener_from is not None and not isinstance(opener_from, list):
         return jsonify({"ok": False, "error": "opener_from must be a list"}), 400

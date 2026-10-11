@@ -8,18 +8,40 @@
       <div class="page-sub">Sequences that send on their own, inside your send window and daily limits</div>
     </div>
     <div class="flex gap-2">
-      <button class="btn btn-ghost" onclick="openImportModal()">⬆ Import CSV</button>
+      <button class="btn btn-ghost" onclick="openImportModal()" title="A CSV or JSON file, or a paste — on Get leads">⬆ Import</button>
       <button class="btn btn-primary" onclick="openNewCampaignModal()">+ New campaign</button>
     </div>
   </div>
 
   <div class="tabs" data-tab-group="email">
-    <button class="tab active" data-tab="campaigns" onclick="setTab('email','campaigns')">Campaigns <span class="count">0</span></button>
+    <button class="tab active" data-tab="todo" onclick="setTab('email','todo')"
+            title="People who wrote back — automatic replies and out-of-office are left out">To do <span class="count">0</span></button>
     <button class="tab" data-tab="leads" onclick="setTab('email','leads')">Leads <span class="count">0</span></button>
+    <button class="tab" data-tab="campaigns" onclick="setTab('email','campaigns')">Campaigns <span class="count">0</span></button>
     <button class="tab" data-tab="suppressed" onclick="setTab('email','suppressed')">Unsubscribed &amp; bad addresses</button>
   </div>
 
-  <div class="tab-pane active" data-pane-group="email" data-pane="campaigns">
+  <!-- Email sends on its own, so its To do is only people who wrote back.
+       Automatic replies and out-of-office never get here (sender._is_auto_reply). -->
+  <div class="tab-pane active" data-pane-group="email" data-pane="todo">
+    <div class="work-split" id="er-split" style="grid-template-columns:1fr">
+      <div class="card">
+        <div class="lt-toolbar">
+          <div class="text-muted text-small" style="flex:1;min-width:220px;line-height:1.5">
+            Replies to your campaigns, newest first. Their sequence has already stopped. Answer them from your
+            inbox, then mark them done. Out-of-office and automatic replies aren't counted.
+          </div>
+          <label class="text-small text-muted" style="display:flex;gap:6px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="er-done" onchange="loadEmailReplies()" style="width:auto;margin:0" /> Show done
+          </label>
+        </div>
+        <div id="er-body"></div>
+      </div>
+      <div class="card work-panel sheet" id="er-panel" style="display:none"></div>
+    </div>
+  </div>
+
+  <div class="tab-pane" data-pane-group="email" data-pane="campaigns">
     <div id="campaigns-list"></div>
   </div>
 

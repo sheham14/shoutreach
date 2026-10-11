@@ -56,6 +56,39 @@ function aiProviderChanged(keepModel) {
     .join("");
 }
 
+// ── The page ─────────────────────────────────────────────────────────────────
+//
+// My settings is everyone's; Team setup, Activity log and Database are for
+// admins, and aren't shown to anyone else -- they'd only answer "Forbidden".
+
+let _settingsMe = null;
+
+async function loadSettingsPage() {
+  const me = await api('/api/users/me');
+  _settingsMe = me && !me.error ? me : null;
+  const admin = !!(_settingsMe && _settingsMe.is_admin);
+  document.querySelectorAll('#section-settings .admin-only').forEach(el => { el.style.display = admin ? '' : 'none'; });
+  const name = document.getElementById('cfg-me-name');
+  if (name) name.textContent = (_settingsMe && _settingsMe.username) || '';
+  let tab = window._settingsTab || currentTab('settings', 'mine');
+  window._settingsTab = null;
+  if (!admin) tab = 'mine';
+  setTab('settings', tab);
+  loadSettings();
+  if (admin) { loadAccounts(); loadUsers(); }
+}
+
+// From Activity log or Database, back to a Settings tab.
+function openSettingsTab(name) {
+  window._settingsTab = name;
+  showSection('settings');
+}
+
+function changeMyPassword() {
+  if (!_settingsMe) return;
+  openChangePasswordModal(_settingsMe.id, _settingsMe.username);
+}
+
 async function loadSettings() {
   // Both shell variants show the origin; PowerShell quotes it, cmd does not.
   ["cfg-worker-origin", "cfg-worker-origin-cmd"].forEach(id => {

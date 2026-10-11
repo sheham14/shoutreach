@@ -522,9 +522,12 @@ def _scan_inbox_for_replies(host: str, user: str, pwd: str):
 
             # A single reply can reference multiple of our messages (the whole
             # thread chain). Dedupe to (campaign_id, email_lead_id) pairs.
+            subject = _decoded_header(parsed.get("Subject"))
             for cid, email_lead_id in set(matched):
-                updated = db.mark_enrollment_replied(cid, email_lead_id)
+                updated = db.mark_enrollment_replied(cid, email_lead_id, subject=subject,
+                                                     from_email=from_email)
                 if updated:
+                    db.note_email_reply_stage(email_lead_id)
                     db.add_log(
                         f"↩ Reply detected from {from_email} (campaign {cid}, "
                         f"lead {email_lead_id}) — sequence stopped",
@@ -534,6 +537,17 @@ def _scan_inbox_for_replies(host: str, user: str, pwd: str):
         M.logout()
     except Exception as e:
         db.add_log(f"IMAP reply check error ({user}): {e}", "WARN")
+
+
+def _decoded_header(value) -> str:
+    """A header as readable text: "=?utf-8?b?...?=" subjects decoded."""
+    if not value:
+        return ""
+    try:
+        from email.header import decode_header, make_header
+        return str(make_header(decode_header(str(value)))).strip()
+    except Exception:
+        return str(value).strip()
 
 
 def check_replies(settings: dict):

@@ -228,11 +228,27 @@ function _pipeDateToggle() {
   if (label) label.textContent = wantsTime ? 'When is it?' : 'When is it due?';
 }
 
-// Mirrors db.WA_MAX_LEAD_FOLLOWUPS — how many follow-ups a lead can carry its
-// own wording for before the campaign template takes over for good. Here
+// Mirrors db.WA_MAX_LEAD_FOLLOWUPS — not a limit anyone should meet, just the
+// ceiling on how far into the sequence a lead's own wording can go. Here
 // rather than in whatsapp.js because the side panel renders the same messages
 // and this file loads first.
-const WA_MAX_LEAD_FOLLOWUPS = 3;
+const WA_MAX_LEAD_FOLLOWUPS = 50;
+
+// Where follow-up `i` (0-based; default the next one out) comes from — the
+// same rule as db.wa_message_for: the lead's own wording for that position;
+// inside the lead's own run, a gap takes the campaign's follow-up at that
+// position; after it, the campaign's list from the top, round and round.
+function waFollowupWhere(l, i = l.followup_count || 0) {
+  let drafts = [];
+  try { drafts = JSON.parse(l.draft_followups || '[]'); } catch (e) { drafts = []; }
+  if (!Array.isArray(drafts)) drafts = [];
+  if (drafts[i]) return { own: true, text: "this lead's own wording" };
+  const own = l.own_followups || 0;
+  const steps = Math.max(1, l.campaign_followup_steps || 1);
+  const pos = i < own ? i : i - own;
+  return { own: false, step: pos % steps + 1, steps,
+           text: steps > 1 ? `the campaign's follow-up ${pos % steps + 1} of ${steps}` : "the campaign's follow-up" };
+}
 
 // wa_leads.message_source, said in the operator's words.
 const WA_SOURCE_LABELS = {
@@ -662,10 +678,11 @@ async function _waPanelSection(d) {
         </div>`;
     const fuIndex = w.followup_count || 0;
     const ownFollowup = fuIndex < WA_MAX_LEAD_FOLLOWUPS;
+    const where = waFollowupWhere(w, fuIndex);
     body = `${kind === 'followup' ? lastSent : ''}
       <span class="field-label">${kind === 'opener'
         ? `Message${w.template_variant ? ` · version ${esc(w.template_variant)}` : ''}`
-        : `Follow-up due · ${fuIndex + 1}${ownFollowup ? ` of ${WA_MAX_LEAD_FOLLOWUPS}` : ''}`}</span>
+        : `Follow-up ${fuIndex + 1} due · ${esc(where.text)}`}</span>
       <textarea id="wl-msg" class="soft-input" style="min-height:110px"
                 ${kind === 'opener'
                   ? `onchange="saveWaMessage(${w.id}, this.value, '${panelId}')"`
@@ -674,8 +691,9 @@ async function _waPanelSection(d) {
       ${kind === 'opener' && w.message_edited ? `<div class="text-muted text-small">${
         WA_SOURCE_LABELS[w.message_source] || (w.paraphrased ? WA_SOURCE_LABELS.ai : WA_SOURCE_LABELS.manual)} ·
         <a style="color:var(--blue);cursor:pointer" onclick="resetWaMessage(${w.id}, '${panelId}')">Reset to template</a></div>` : ''}
-      ${kind === 'followup' && !ownFollowup ? `<div class="text-muted text-small">Past this lead's written
-        follow-ups — the campaign template from here on.</div>` : ''}
+      ${kind === 'followup' ? `<div class="text-muted text-small">${where.own
+        ? 'Clear the box to go back to the campaign\'s follow-up.'
+        : 'Edit it and this lead keeps your version for this follow-up.'}</div>` : ''}
       <div id="wl-actions">${actions}</div>`;
   } else if (stage === 'waiting' || stage === 'paused') {
     body = `${lastSent}

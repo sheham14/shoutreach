@@ -1,8 +1,78 @@
+<!-- Settings in two halves. My settings is everyone's own: password, scrape
+     worker key, audit links. Team setup is what both operators share -- email
+     accounts, sending rules, AI, users -- and only an admin can change it, so
+     only an admin sees it (it used to show everyone buttons that answered
+     "Forbidden"). Activity log and Database are admin tools reached from here. -->
 <div class="section" id="section-settings">
   <div class="page-header">
     <div class="page-title">Settings</div>
   </div>
 
+  <div class="tabs" data-tab-group="settings">
+    <button class="tab active" data-tab="mine" onclick="setTab('settings','mine')">My settings</button>
+    <button class="tab admin-only" data-tab="team" onclick="setTab('settings','team')" style="display:none">Team setup</button>
+    <button class="tab admin-only" onclick="showSection('logs')" style="display:none">Activity log</button>
+    <button class="tab admin-only" onclick="showSection('database')" style="display:none">Database</button>
+  </div>
+
+  <div class="tab-pane active" data-pane-group="settings" data-pane="mine">
+  <div class="card" style="padding:24px">
+    <div class="card-title" style="margin-bottom:4px">Your password</div>
+    <p class="text-muted text-small" style="margin-bottom:14px">Signed in as <b id="cfg-me-name">…</b>.</p>
+    <button class="btn btn-ghost btn-sm" onclick="changeMyPassword()">Change password</button>
+  </div>
+
+  <div id="settings-worker-card" class="card" style="padding:24px;margin-top:24px">
+    <div class="card-title" style="margin-bottom:6px">Your scrape worker key</div>
+    <div class="form-hint" style="margin-bottom:16px">
+      Scrapes run on your own machine, not on this server — the browser needs a
+      screen you can see to solve CAPTCHAs. This key is yours alone: a worker
+      using it runs only the scrapes you start, and anyone else runs their own
+      worker with their own key. Treat it like a password.
+    </div>
+    <div class="form-group">
+      <label>Worker API Key</label>
+      <div class="flex gap-2">
+        <input id="cfg-worker-key" type="password" readonly value="••••••••••••" style="flex:1" />
+        <button class="btn btn-ghost btn-sm" onclick="revealWorkerKey()" id="cfg-worker-reveal">Show</button>
+        <button class="btn btn-ghost btn-sm" onclick="copyWorkerKey()">Copy</button>
+        <button class="btn btn-danger btn-sm" onclick="rotateWorkerKey()">Rotate</button>
+      </div>
+      <div class="form-hint">
+        Rotating immediately stops your worker until you give it the new key.
+        Nobody else's worker is affected.
+      </div>
+    </div>
+    <div class="form-hint" style="margin-top:14px">On your machine:</div>
+    <div class="mono mono-block" style="margin-top:6px;padding:10px 12px;background:var(--bg3);border-radius:6px;font-size:11px;line-height:1.8;white-space:nowrap">
+      <span style="color:var(--muted)"># PowerShell — quotes required</span><br>
+      $env:SHOUTREACH_URL = "<span id="cfg-worker-origin">…</span>"<br>
+      $env:SHOUTREACH_API_KEY = "&lt;the key above&gt;"<br>
+      <br>
+      <span style="color:var(--muted)">:: cmd.exe — no quotes, they become part of the value</span><br>
+      set SHOUTREACH_URL=<span id="cfg-worker-origin-cmd">…</span><br>
+      set SHOUTREACH_API_KEY=&lt;the key above&gt;<br>
+      <br>
+      python scraper_worker.py
+    </div>
+  </div>
+
+  <div class="card" style="padding:24px;margin-top:24px">
+    <div class="card-title" style="margin-bottom:4px">Your audit links</div>
+    <p class="text-muted text-small" style="margin-bottom:10px">Tools you check every lead with, one click from any lead's panel.
+      Fill-ins: <span class="mono">{domain}</span> <span class="mono">{website}</span> <span class="mono">{name}</span>
+      <span class="mono">{city}</span> <span class="mono">{country}</span> <span class="mono">{category}</span>
+      <span class="mono">{phone}</span> — e.g. <span class="mono">https://www.semrush.com/analytics/overview/?q={domain}</span>.
+      Only you see yours.</p>
+    <div id="cfg-audit-links" style="display:flex;flex-direction:column;gap:6px"></div>
+    <div class="flex gap-2" style="margin-top:10px">
+      <button class="btn btn-ghost btn-sm" onclick="addAuditLinkRow()">+ Add link</button>
+      <button class="btn btn-primary btn-sm" onclick="saveAuditLinks()">Save links</button>
+    </div>
+  </div>
+  </div>
+
+  <div class="tab-pane" data-pane-group="settings" data-pane="team">
   <div class="warning-box">
     ⚠ Before activating any campaign, ensure your domain has SPF, DKIM, and DMARC records configured.
     Without these, emails will land in spam or be rejected. See README.md for a setup checklist.
@@ -151,53 +221,6 @@
         Shared by everyone on this server.</div>
     </div>
     <button class="btn btn-primary" onclick="saveSettings()" style="margin-bottom:22px">Save key</button>
-
-    <div class="card-title" style="font-size:13px;margin-bottom:4px">Your audit links</div>
-    <p class="text-muted text-small" style="margin-bottom:10px">Tools you check every lead with, one click from any lead's panel.
-      Fill-ins: <span class="mono">{domain}</span> <span class="mono">{website}</span> <span class="mono">{name}</span>
-      <span class="mono">{city}</span> <span class="mono">{country}</span> <span class="mono">{category}</span>
-      <span class="mono">{phone}</span> — e.g. <span class="mono">https://www.semrush.com/analytics/overview/?q={domain}</span>.
-      Only you see yours.</p>
-    <div id="cfg-audit-links" style="display:flex;flex-direction:column;gap:6px"></div>
-    <div class="flex gap-2" style="margin-top:10px">
-      <button class="btn btn-ghost btn-sm" onclick="addAuditLinkRow()">+ Add link</button>
-      <button class="btn btn-primary btn-sm" onclick="saveAuditLinks()">Save links</button>
-    </div>
-  </div>
-
-  <div id="settings-worker-card" class="card" style="padding:24px;margin-top:24px">
-    <div class="card-title" style="margin-bottom:6px">Lead Scraper Worker</div>
-    <div class="form-hint" style="margin-bottom:16px">
-      Scrapes run on your own machine, not on this server — the browser needs a
-      screen you can see to solve CAPTCHAs. This key is yours alone: a worker
-      using it runs only the scrapes you start, and anyone else runs their own
-      worker with their own key. Treat it like a password.
-    </div>
-    <div class="form-group">
-      <label>Worker API Key</label>
-      <div class="flex gap-2">
-        <input id="cfg-worker-key" type="password" readonly value="••••••••••••" style="flex:1" />
-        <button class="btn btn-ghost btn-sm" onclick="revealWorkerKey()" id="cfg-worker-reveal">Show</button>
-        <button class="btn btn-ghost btn-sm" onclick="copyWorkerKey()">Copy</button>
-        <button class="btn btn-danger btn-sm" onclick="rotateWorkerKey()">Rotate</button>
-      </div>
-      <div class="form-hint">
-        Rotating immediately stops your worker until you give it the new key.
-        Nobody else's worker is affected.
-      </div>
-    </div>
-    <div class="form-hint" style="margin-top:14px">On your machine:</div>
-    <div class="mono mono-block" style="margin-top:6px;padding:10px 12px;background:var(--bg3);border-radius:6px;font-size:11px;line-height:1.8;white-space:nowrap">
-      <span style="color:var(--muted)"># PowerShell — quotes required</span><br>
-      $env:SHOUTREACH_URL = "<span id="cfg-worker-origin">…</span>"<br>
-      $env:SHOUTREACH_API_KEY = "&lt;the key above&gt;"<br>
-      <br>
-      <span style="color:var(--muted)">:: cmd.exe — no quotes, they become part of the value</span><br>
-      set SHOUTREACH_URL=<span id="cfg-worker-origin-cmd">…</span><br>
-      set SHOUTREACH_API_KEY=&lt;the key above&gt;<br>
-      <br>
-      python scraper_worker.py
-    </div>
   </div>
 
   <div id="settings-users-card" class="card" style="padding:24px;margin-top:24px;display:none">
@@ -211,5 +234,6 @@
         <tbody id="users-table"><tr><td colspan="4" class="empty-state"><p>Loading...</p></td></tr></tbody>
       </table>
     </div>
+  </div>
   </div>
 </div>

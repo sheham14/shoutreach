@@ -1,9 +1,16 @@
 <div class="section" id="section-database">
   <div class="page-header">
     <div>
-      <div class="page-title">Database</div>
-      <div class="page-sub">Read-only view — passwords are masked</div>
+      <div class="page-title">Settings</div>
+      <div class="page-sub">Database — a read-only view; passwords are masked</div>
     </div>
+  </div>
+  <!-- Opened from Settings, so it carries Settings' tabs. -->
+  <div class="tabs">
+    <button class="tab" onclick="openSettingsTab('mine')">My settings</button>
+    <button class="tab" onclick="openSettingsTab('team')">Team setup</button>
+    <button class="tab" onclick="showSection('logs')">Activity log</button>
+    <button class="tab active" onclick="showSection('database')">Database</button>
   </div>
 
   <div id="db-table-pills" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px"></div>

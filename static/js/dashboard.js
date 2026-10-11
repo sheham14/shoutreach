@@ -65,8 +65,10 @@ function updateSidebarCounts(todo) {
   const calls = todo.calls_due || 0;
   const waEl = document.getElementById('nav-count-whatsapp');
   const callEl = document.getElementById('nav-count-calling');
+  const emailEl = document.getElementById('nav-count-email');
   if (waEl) waEl.textContent = wa ? wa : '';
   if (callEl) callEl.textContent = calls ? calls : '';
+  if (emailEl) emailEl.textContent = todo.email_replies ? todo.email_replies : '';
 }
 
 async function refreshDashboard() {
@@ -81,6 +83,7 @@ async function refreshDashboard() {
     _todoTile('whatsapp', t.wa_sent_today, 'sent today', "openWhatsAppTodo('ready')"),
     _todoTile('calling', t.calls_due, 'callbacks due now', "openCallingTodo('today')"),
     _todoTile('calling', t.calls_new, 'never called', "openCallingTodo('new')"),
+    _todoTile('email', t.email_replies, 'email replies to answer', "openEmailTodo()"),
   ].join('');
 
   const e = d.email || {};

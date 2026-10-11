@@ -17,7 +17,13 @@ async function loadScraper() {
     presetCampaign = campaign_id ? String(campaign_id) : '';
   }
   await scraperDestinationChanged(presetCampaign);
-  loadScrapeLists();
+  // Arriving with a preset for the importer (a channel's "Import a file…")
+  // opens that tab; otherwise whichever tab was open last.
+  const preset = window._getLeadsPreset;
+  window._getLeadsPreset = null;
+  setTab('getleads', preset ? 'import' : currentTab('getleads', 'scrape'));
+  if (preset) await _applyGetLeadsPreset(preset);
+  _refreshImportCount();
   await pollScraperStatus();
   // Keep polling while the section is open so the worker indicator stays
   // honest even when no job is running -- otherwise you only learn the worker
@@ -123,6 +129,276 @@ async function scraperDestinationChanged(selectCampaign = '') {
   } else {
     sel.onchange = null;
   }
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────────────────
+
+onTab('getleads', name => {
+  if (name === 'history') loadScrapeLists();
+  if (name === 'import') getLeadsDestChanged();
+});
+
+// From anywhere: open Get leads on the importer, aimed at a channel (and a
+// campaign and country, for WhatsApp). What each channel's "+ Add leads"
+// sends you to for anything new.
+function openGetLeads(preset = {}) {
+  window._getLeadsPreset = { dest: 'contacts', ...preset };
+  if (typeof closeModal === 'function') {
+    ['modal-import-wa', 'modal-add-call-leads'].forEach(id => {
+      if (document.getElementById(id)?.classList.contains('open')) closeModal(id);
+    });
+  }
+  showSection('scraper');
+}
+
+async function _applyGetLeadsPreset(p) {
+  const dest = document.getElementById('gl-dest');
+  dest.value = p.dest || 'contacts';
+  await getLeadsDestChanged(p.campaign || '', p.country || '');
+}
+
+async function _refreshImportCount() {
+  const [lists, held] = await Promise.all([api('/api/contacts/sources'), api('/api/scraper/held')]);
+  const n = (Array.isArray(lists) ? lists.filter(l => l.kind !== 'manual').length : 0)
+          + (Array.isArray(held) ? held.length : 0);
+  setTabCount('getleads', 'history', n);
+}
+
+// ── Import a file or paste ───────────────────────────────────────────────────
+
+const _GL_DEST = {
+  contacts: { hint: 'Every business lands in Contacts. Rows with an email address are also listed under Email '
+                  + '— nothing is sent until you put them in a campaign.' },
+  calling:  { hint: 'They go on your Calling list, ready to dial.',
+              campaigns: '/api/call-campaigns', optional: true,
+              campaignHint: 'Optional. They always land on Calling; this also puts them in a campaign.' },
+  whatsapp: { hint: 'They land in Ready to send, each with its message written — from the file if it brings one, '
+                  + 'else from the campaign.',
+              campaigns: '/api/wa/campaigns', optional: false,
+              campaignHint: "Messages are written from this campaign's templates unless a row brings its own." },
+};
+
+async function getLeadsDestChanged(selectCampaign = '', country = '') {
+  const dest = document.getElementById('gl-dest').value;
+  const spec = _GL_DEST[dest] || _GL_DEST.contacts;
+  document.getElementById('gl-dest-hint').textContent = spec.hint;
+  const group = document.getElementById('gl-campaign-group');
+  document.getElementById('gl-country-group').style.display = dest === 'whatsapp' ? 'block' : 'none';
+  if (dest === 'whatsapp') {
+    await loadCountries();
+    const wrap = document.getElementById('gl-country-wrap');
+    if (!document.getElementById('gl-country')) {
+      wrap.innerHTML = countryPickerHtml('gl-country', country || _countries.used[0] || 'AE');
+    } else if (country) {
+      setCountryPicker('gl-country', country);
+    }
+  }
+  if (!spec.campaigns) { group.style.display = 'none'; return; }
+  group.style.display = 'block';
+  document.getElementById('gl-campaign-label').textContent =
+    `${dest === 'whatsapp' ? 'WhatsApp' : 'Calling'} campaign`;
+  document.getElementById('gl-campaign-hint').textContent = spec.campaignHint;
+  const got = await api(spec.campaigns);
+  const list = (Array.isArray(got) ? got : []).filter(c => c.status !== 'archived');
+  const keep = selectCampaign || document.getElementById('gl-campaign')?.value || '';
+  document.getElementById('gl-campaign-wrap').innerHTML = campaignSelectHtml('gl-campaign', list, {
+    allowNone: spec.optional, noneLabel: 'No campaign — just add them to Calling',
+    selected: keep || (!spec.optional && list[0] ? list[0].id : ''),
+  });
+  const sel = document.getElementById('gl-campaign');
+  if (!spec.optional && !list.length) { sel.value = '__new'; sel.dispatchEvent(new Event('change')); }
+  if (dest === 'whatsapp') {
+    sel.addEventListener('change', () => {
+      const c = list.find(x => String(x.id) === sel.value);
+      if (c && c.country) setCountryPicker('gl-country', c.country);
+    });
+  }
+}
+
+// One CSV line, quotes and all ("Smith, Jones & Co" stays one cell).
+function _csvCells(line) {
+  const out = [];
+  let cur = '', q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) {
+      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') q = false;
+      else cur += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ',') { out.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+
+// Split CSV text into lines, keeping a quoted cell's line breaks inside it.
+function _csvLines(text) {
+  const lines = [];
+  let cur = '', q = false;
+  for (const ch of text.replace(/\r\n?/g, '\n')) {
+    if (ch === '"') q = !q;
+    if (ch === '\n' && !q) { lines.push(cur); cur = ''; } else cur += ch;
+  }
+  lines.push(cur);
+  return lines.filter(l => l.trim());
+}
+
+const _GL_HEADERS = ['company', 'name', 'phone', 'email', 'website', 'address', 'city', 'country',
+                     'category', 'rating', 'review_count', 'message', 'followup_1', 'first_name'];
+
+function _jsonRows(text) {
+  let parsed;
+  try { parsed = JSON.parse(text); } catch (e) { toast(`That isn't valid JSON — ${e.message}`, 'err'); return null; }
+  const rows = Array.isArray(parsed) ? parsed : parsed && parsed.rows;
+  if (!Array.isArray(rows) || !rows.length) { toast('Expected an array of rows, or {"rows": [...]}', 'err'); return null; }
+  if (rows.some(r => !r || typeof r !== 'object' || Array.isArray(r))) {
+    toast('Every row must be an object with named keys like "company"', 'err');
+    return null;
+  }
+  return rows;
+}
+
+// What was pasted, as rows: JSON; CSV with a header row; or one business per
+// line ("name, phone, website, email"), where a line that's just an address
+// is an email.
+function _pastedRows(text) {
+  const t = text.trim();
+  if (t.startsWith('[') || t.startsWith('{')) {
+    const rows = _jsonRows(t);
+    return rows ? { rows, source: 'JSON' } : null;
+  }
+  const lines = _csvLines(t);
+  const head = _csvCells(lines[0]).map(h => h.toLowerCase());
+  if (head.some(h => _GL_HEADERS.includes(h))) {
+    const rows = lines.slice(1).map(l => {
+      const cells = _csvCells(l);
+      return Object.fromEntries(head.map((h, i) => [h, cells[i] ?? '']).filter(([h]) => h));
+    });
+    return { rows, source: 'CSV' };
+  }
+  const rows = lines.map(l => {
+    const cells = _csvCells(l);
+    if (cells.length === 1 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cells[0])) return { email: cells[0] };
+    const [company, phone, website, email] = cells;
+    return { company: company || '', phone: phone || '', website: website || '', email: email || '' };
+  }).filter(r => r.company || r.email || r.phone);
+  return { rows, source: 'Paste' };
+}
+
+async function _postImport(url, rows, file, fields) {
+  if (file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    Object.entries(fields).forEach(([k, v]) => { if (v !== '' && v != null) fd.append(k, v); });
+    const r = await fetch(url, { method: 'POST', credentials: 'same-origin',
+                                 headers: { 'X-CSRF-Token': await _getCsrfToken() }, body: fd });
+    if (r.status === 401) { window.location.href = '/login'; return null; }
+    const body = await r.json().catch(() => ({}));
+    return r.ok ? body : { error: body.error || `Import failed (${r.status})` };
+  }
+  return api(url, 'POST', { rows, ...fields });
+}
+
+async function importLeads() {
+  const dest = document.getElementById('gl-dest').value;
+  const file = document.getElementById('gl-file').files[0];
+  const paste = document.getElementById('gl-paste').value.trim();
+  if (!file && !paste) { toast('Choose a file or paste something', 'err'); return; }
+
+  let country = '', campaignId = '';
+  if (dest === 'whatsapp') {
+    country = countryValue('gl-country');
+    if (!country) { toast('Pick the country from the list', 'err'); return; }
+    campaignId = await resolveCampaignSelect('gl-campaign', '/api/wa/campaigns', { country });
+    if (!campaignId) { if (campaignId === '') toast('Pick the campaign these leads go into', 'err'); return; }
+  } else if (dest === 'calling') {
+    campaignId = await resolveCampaignSelect('gl-campaign', '/api/call-campaigns');
+    if (campaignId === null) return;
+  }
+
+  // A CSV file goes up as it is; a JSON file or a paste is read here first,
+  // so a malformed one is a message about the paste, not a 400.
+  let rows = null, upload = null, source;
+  if (file) {
+    source = file.name;
+    if (/\.json$/i.test(file.name)) { rows = _jsonRows(await file.text()); if (!rows) return; }
+    else upload = file;
+  } else {
+    const parsed = _pastedRows(paste);
+    if (!parsed) return;
+    if (!parsed.rows.length) { toast('Nothing to import — check the paste', 'err'); return; }
+    ({ rows, source } = parsed);
+  }
+
+  const btn = document.getElementById('gl-submit');
+  const status = document.getElementById('gl-status');
+  btn.disabled = true;
+  status.textContent = 'Importing…';
+  try {
+    const res = dest === 'whatsapp'
+      ? await _importToWhatsApp(rows, upload, source, country, campaignId)
+      : await _importToContacts(rows, upload, source, dest, campaignId);
+    if (!res) return;
+    _showImportResult(res);
+    document.getElementById('gl-file').value = '';
+    document.getElementById('gl-paste').value = '';
+    _refreshImportCount();
+    if (typeof loadCountries === 'function' && dest === 'whatsapp') loadCountries(true);
+  } finally {
+    btn.disabled = false;
+    status.textContent = '';
+  }
+}
+
+async function _importToWhatsApp(rows, upload, source, country, campaignId) {
+  const first = await _postImport('/api/wa/import', rows, upload,
+                                  { country, wa_campaign_id: campaignId, source });
+  if (!first || first.error) { toast((first && first.error) || 'Import failed', 'err'); return null; }
+  const final = await confirmChannelConflicts(first, () =>
+    api('/api/wa/import', 'POST', {
+      rows: first.conflicts.map(c => c.row), country, wa_campaign_id: campaignId, confirm_conflicts: true,
+      batch_id: first.batch_id || null, source,
+    }));
+  notifyCrossOwnerOverlap(first);
+  const inserted = (first.inserted || 0) + (final !== first ? (final.inserted || 0) : 0);
+  return {
+    text: `${inserted} lead${inserted === 1 ? '' : 's'} on WhatsApp, ready to send`
+          + describeWaDrafts(_mergeWaDrafts(first, final)),
+    batch: first.batch_id || (final && final.batch_id),
+  };
+}
+
+async function _importToContacts(rows, upload, source, dest, campaignId) {
+  const channel = dest === 'calling' ? 'calling' : 'email';
+  const first = await _postImport('/api/contacts/import', rows, upload, { source, channel });
+  if (!first || first.error) { toast((first && first.error) || 'Import failed', 'err'); return null; }
+  const final = await confirmChannelConflicts(first, () =>
+    api('/api/contacts/import', 'POST', {
+      rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
+      batch_id: first.batch_id || null, source, channel,
+    }));
+  notifyCrossOwnerOverlap(first);
+  const ids = [...(first.business_ids || []), ...(final !== first ? (final.business_ids || []) : [])];
+  const batch = first.batch_id || (final && final.batch_id);
+  const inv = (first.invalid_mx || 0) + (final !== first ? (final.invalid_mx || 0) : 0);
+  const invText = inv ? ` · ${inv} email address${inv === 1 ? '' : 'es'} on a domain that can't receive mail` : '';
+  if (dest === 'calling') {
+    const added = await _addToCalling(ids, campaignId);
+    if (!added || added.error) { toast((added && added.error) || 'Imported, but not added to Calling', 'err'); return null; }
+    return { text: describeAdd(added, 'Added to Calling:') + invText, batch };
+  }
+  return { text: `${ids.length} business${ids.length === 1 ? '' : 'es'} imported${invText}`, batch };
+}
+
+function _showImportResult(res) {
+  const box = document.getElementById('gl-result');
+  box.style.display = 'block';
+  box.innerHTML = `<b>Done.</b> ${esc(res.text)}
+    ${res.batch ? ` · <a style="color:var(--blue);cursor:pointer" onclick="openScrapeInContacts('${res.batch}')">See them in Contacts →</a>
+      · <a style="color:var(--blue);cursor:pointer" onclick="setTab('getleads','history')">Your imports</a>` : ''}`;
+  toast('Imported ✓');
 }
 
 // ── Your scrapes & imports ───────────────────────────────────────────────────

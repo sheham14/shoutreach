@@ -692,6 +692,19 @@ def init_db():
             # Whether a stage's date is a real appointment (with an hour) or
             # just a day. See the column comment on pipeline_stages.
             "ALTER TABLE pipeline_stages ADD COLUMN wants_time INTEGER NOT NULL DEFAULT 0",
+            # Follow-ups as a sequence (see wa_message_for). followup_steps is
+            # how many the campaign's list holds and own_followups how many a
+            # lead brought, both kept here so the due check stays plain SQL.
+            # long_followup_days 0 means off: one gap forever.
+            "ALTER TABLE wa_campaigns ADD COLUMN followup_steps INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE wa_campaigns ADD COLUMN long_followup_days INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE wa_leads ADD COLUMN own_followups INTEGER NOT NULL DEFAULT 0",
+            # Email -> To do: what a detected reply was, and when it was dealt
+            # with. Only the headers are ever read -- never a reply's body.
+            "ALTER TABLE enrollments ADD COLUMN replied_at TEXT DEFAULT NULL",
+            "ALTER TABLE enrollments ADD COLUMN reply_subject TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE enrollments ADD COLUMN reply_from TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE enrollments ADD COLUMN reply_done_at TEXT DEFAULT NULL",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -718,6 +731,8 @@ def init_db():
         _migrate_wa_message_source(conn)
         _migrate_phone_keys(conn)
         _migrate_lead_batches(conn)
+        _migrate_wa_followup_counts(conn)
+        _migrate_email_reply_todo(conn)
 
         # Uniqueness is per owner, not global. The old global index is dropped
         # rather than left in place: while it exists, a second operator
@@ -1342,6 +1357,10 @@ def _repoint_channel_refs(conn, email_map: dict, call_map: dict):
                next_send_at  TEXT,
                enrolled_at   TEXT    NOT NULL DEFAULT (datetime('now')),
                variant_label TEXT,
+               replied_at    TEXT DEFAULT NULL,
+               reply_subject TEXT NOT NULL DEFAULT '',
+               reply_from    TEXT NOT NULL DEFAULT '',
+               reply_done_at TEXT DEFAULT NULL,
                UNIQUE(campaign_id, email_lead_id)
            );""",
         "contact_id", "email_lead_id", email_map,
@@ -3693,13 +3712,17 @@ def complete_enrollment(enroll_id):
         conn.execute("UPDATE enrollments SET status='completed' WHERE id=?", (enroll_id,))
 
 
-def mark_enrollment_replied(campaign_id, email_lead_id):
+def mark_enrollment_replied(campaign_id, email_lead_id, subject: str = "", from_email: str = ""):
     """Mark a (campaign, address) enrollment as replied.
 
     Updates rows in ANY non-terminal state — including 'completed' (last step
     already sent) and 'paused' — so a reply that arrives after the sequence
     finishes still counts in reply-rate stats. Skips rows already in a final
     state ('replied', 'bounced', 'unsubscribed').
+
+    Records when, the subject line and the sender, for Email -> To do, where
+    it waits until someone marks it done. Automatic replies never get here:
+    sender._is_auto_reply drops them before matching.
 
     Returns the number of rows actually updated, so callers can avoid logging
     duplicate "reply detected" messages every time the IMAP scan re-walks the
@@ -3708,11 +3731,90 @@ def mark_enrollment_replied(campaign_id, email_lead_id):
     with get_db() as conn:
         cur = conn.execute("""
             UPDATE enrollments
-               SET status='replied'
+               SET status='replied', replied_at=datetime('now'),
+                   reply_subject=?, reply_from=?, reply_done_at=NULL
              WHERE campaign_id=? AND email_lead_id=?
                AND status NOT IN ('replied','bounced','unsubscribed')
-        """, (campaign_id, email_lead_id))
+        """, ((subject or "")[:300], (from_email or "")[:200], campaign_id, email_lead_id))
         return cur.rowcount
+
+
+def note_email_reply_stage(email_lead_id: int) -> bool:
+    """
+    A business that answered an email reads as "Replied" in its pipeline
+    stage, like one that answered on WhatsApp or the phone -- but only when it
+    has no stage yet: a reply never knocks "Meeting booked" back to
+    "Replied". Its own transaction, after the reply's, because this codebase
+    never nests one connection inside another.
+    """
+    with get_db() as conn:
+        row = conn.execute("""
+            SELECT b.id, b.owner_id, b.pipeline_stage FROM email_leads el
+              JOIN businesses b ON b.id = el.business_id WHERE el.id=?
+        """, (email_lead_id,)).fetchone()
+    if not row or row["pipeline_stage"]:
+        return False
+    return bool(set_business_pipeline(row["id"], "replied", channel="email",
+                                      owner_id=row["owner_id"]).get("ok"))
+
+
+def _migrate_email_reply_todo(conn):
+    """Replies detected before Email had a To do have no record of what they
+    were or whether they were dealt with; they start out done rather than
+    filling the new list with history. Guarded by a settings marker."""
+    if conn.execute("SELECT 1 FROM settings WHERE key='_migrated_email_reply_todo'").fetchone():
+        return
+    # The contacts split rebuilds enrollments after the column migrations
+    # have run, on a database old enough to need it; make sure they're here.
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(enrollments)")}
+    for col, ddl in (("replied_at", "TEXT DEFAULT NULL"), ("reply_subject", "TEXT NOT NULL DEFAULT ''"),
+                     ("reply_from", "TEXT NOT NULL DEFAULT ''"), ("reply_done_at", "TEXT DEFAULT NULL")):
+        if col not in have:
+            conn.execute(f"ALTER TABLE enrollments ADD COLUMN {col} {ddl}")
+    conn.execute("UPDATE enrollments SET reply_done_at=datetime('now') "
+                 "WHERE status='replied' AND reply_done_at IS NULL")
+    conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('_migrated_email_reply_todo', '1')")
+
+
+def get_email_replies(owner_id=None, done: bool = False, limit: int = 500) -> list:
+    """
+    Email -> To do: replies waiting on you (or, with done=True, the ones
+    already dealt with), newest first. One row per (campaign, address).
+    """
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        rows = conn.execute(f"""
+            SELECT e.id, e.campaign_id, c.name AS campaign_name, e.replied_at, e.reply_subject,
+                   e.reply_from, e.reply_done_at, e.current_step,
+                   el.id AS email_lead_id, el.email, el.first_name, el.last_name,
+                   b.id AS business_id, b.name AS company, b.phone, b.city, b.pipeline_stage,
+                   (SELECT s.label FROM pipeline_stages s WHERE s.key = b.pipeline_stage) AS pipeline_label
+              FROM enrollments e
+              JOIN campaigns c     ON c.id = e.campaign_id
+              JOIN email_leads el  ON el.id = e.email_lead_id
+              JOIN businesses b    ON b.id = el.business_id
+             WHERE c.owner_id = ? AND e.status = 'replied'
+               AND e.reply_done_at IS {'NOT' if done else ''} NULL
+             ORDER BY e.replied_at IS NULL, e.replied_at DESC, e.id DESC
+             LIMIT ?
+        """, (owner, int(limit))).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_email_replies(owner_id=None) -> int:
+    with get_db() as conn:
+        return conn.execute("""
+            SELECT COUNT(*) FROM enrollments e JOIN campaigns c ON c.id = e.campaign_id
+             WHERE c.owner_id = ? AND e.status = 'replied' AND e.reply_done_at IS NULL
+        """, (_resolve_owner_id(conn, owner_id),)).fetchone()[0]
+
+
+def set_email_reply_done(enrollment_id: int, done: bool = True):
+    """Take a reply off Email -> To do (or put it back)."""
+    with get_db() as conn:
+        value = "datetime('now')" if done else "NULL"
+        conn.execute(f"UPDATE enrollments SET reply_done_at={value} "
+                     "WHERE id=? AND status='replied'", (int(enrollment_id),))
 
 
 def set_enrollment_status(enroll_id, status):
@@ -5130,8 +5232,8 @@ EXPORT_EXTRA_COLUMNS = {
     "email":    ("email_status", "first_name", "last_name", "pipeline_stage", "notes"),
     # message and followup_1..3 are what the lead would be sent now, so the
     # file can go through a chat for new copy and straight back in.
-    "wa":       ("wa_number", "campaign", "wa_status", "pipeline_stage",
-                 "message", "followup_1", "followup_2", "followup_3", "notes"),
+    # followup_1..N are added per download -- see export_leads.
+    "wa":       ("wa_number", "campaign", "wa_status", "pipeline_stage", "message", "notes"),
 }
 
 
@@ -5200,6 +5302,7 @@ def export_leads(kind: str, ids, owner_id=None) -> tuple:
     wa_rows = {}
     if kind == "wa":
         cache = {}
+        followup_cols = WA_MIN_FOLLOWUP_SLOTS
         for k, _ in pairs:
             lead = get_wa_lead(k)
             if not lead:
@@ -5208,14 +5311,21 @@ def export_leads(kind: str, ids, owner_id=None) -> tuple:
             if cid not in cache:
                 cache[cid] = get_wa_campaign(cid) if cid else None
             camp = cache[cid]
+            # Enough follow-ups to cover the lead's own and one pass through
+            # the campaign's list -- everything written for it.
+            n_follow = (own_followup_count(lead.get("draft_followups"))
+                        + len((camp or {}).get("templates", {}).get("followups") or [1]))
+            followup_cols = max(followup_cols, n_follow)
             wa_rows[k] = {
                 "wa_number": lead.get("wa_number") or "",
                 "campaign": (camp or {}).get("name") or "",
                 "wa_status": lead.get("wa_status") or "",
                 "message": wa_message_for(lead, camp, "opener"),
                 **{f"followup_{n + 1}": wa_message_for({**lead, "followup_count": n}, camp, "followup")
-                   for n in range(WA_MAX_LEAD_FOLLOWUPS)},
+                   for n in range(n_follow)},
             }
+        base = EXPORT_BASE_COLUMNS + EXPORT_EXTRA_COLUMNS["wa"][:-1]
+        columns = base + tuple(f"followup_{n + 1}" for n in range(followup_cols)) + ("notes",)
 
     out = []
     for key, bid in pairs:
@@ -5540,7 +5650,15 @@ WA_MAX_ARMS = 4
 # its campaign's follow-up template, which then repeats at the campaign gap:
 # follow-ups are infinite by design, so the personalised ones are a head start
 # on the cadence rather than the whole of it.
-WA_MAX_LEAD_FOLLOWUPS = 3
+# How many follow-ups a lead can bring with it. Not a product limit -- the
+# cadence never stops, and a lead can be chased for years -- just a ceiling
+# against a runaway file. Past it, keys are counted as ignored, not stored.
+WA_MAX_LEAD_FOLLOWUPS = 50
+# The follow-up boxes a lead always shows, so there's somewhere to write one
+# even when it brought none.
+WA_MIN_FOLLOWUP_SLOTS = 3
+# How many follow-ups a campaign's own list can hold.
+WA_MAX_FOLLOWUP_STEPS = 20
 
 # Long enough for any real WhatsApp opener, short enough that a generation
 # which ran away -- a model returning its whole reasoning, or a CSV row that
@@ -5807,47 +5925,77 @@ def _clean_wa_arms(value) -> list:
     return [a for a in arms if isinstance(a, str) and a.strip()][:WA_MAX_ARMS]
 
 
+def _clean_wa_steps(value) -> list:
+    """A campaign's follow-ups: a list of steps, each a list of versions.
+    Empty steps are dropped rather than kept as holes."""
+    if not isinstance(value, list):
+        return []
+    steps = [_clean_wa_arms(s) for s in value]
+    return [s for s in steps if s][:WA_MAX_FOLLOWUP_STEPS]
+
+
 def parse_lead_followups(raw) -> list:
     """
     One lead's bespoke follow-ups, from the JSON in wa_leads.draft_followups.
 
-    Always a list of exactly WA_MAX_LEAD_FOLLOWUPS strings, so callers can
-    index it without bounds checks; an absent follow-up is ''. Unreadable
-    JSON reads as "no bespoke follow-ups" rather than raising: a lead whose
-    copy can't be parsed should quietly fall back to its campaign's template,
-    not break the queue it appears in.
+    As many as the lead brought, and never fewer than WA_MIN_FOLLOWUP_SLOTS,
+    so the usual three boxes are always there to write in; an absent
+    follow-up is ''. Index past the end with own_followup_count, not len.
+    Unreadable JSON reads as "no bespoke follow-ups" rather than raising: a
+    lead whose copy can't be parsed should quietly fall back to its
+    campaign's list, not break the queue it appears in.
     """
-    out = [""] * WA_MAX_LEAD_FOLLOWUPS
+    out = []
     if isinstance(raw, str):
-        if not raw.strip():
-            return out
         try:
-            raw = json.loads(raw)
+            raw = json.loads(raw) if raw.strip() else []
         except (TypeError, ValueError):
-            return out
-    if not isinstance(raw, list):
-        return out
-    for i, value in enumerate(raw[:WA_MAX_LEAD_FOLLOWUPS]):
-        if isinstance(value, str):
-            out[i] = value.strip()
-    return out
+            raw = []
+    if isinstance(raw, list):
+        out = [v.strip() if isinstance(v, str) else "" for v in raw[:WA_MAX_LEAD_FOLLOWUPS]]
+    while len(out) > WA_MIN_FOLLOWUP_SLOTS and not out[-1]:
+        out.pop()
+    return out + [""] * (WA_MIN_FOLLOWUP_SLOTS - len(out))
+
+
+def own_followup_count(followups) -> int:
+    """How many follow-ups a lead carries of its own: up to its last written
+    one, so a gap in the middle still counts as a place in the sequence."""
+    drafts = parse_lead_followups(followups) if not isinstance(followups, list) else followups
+    n = len(drafts)
+    while n and not drafts[n - 1]:
+        n -= 1
+    return n
 
 
 def serialize_lead_followups(followups) -> str:
     """
     Store the other way round: '' when there is nothing bespoke to keep, so
     the common case costs no JSON and `draft_followups != ''` is a usable
-    test for "this lead brought its own follow-ups".
+    test for "this lead brought its own follow-ups". Trailing blanks aren't
+    stored.
     """
     cleaned = parse_lead_followups(followups if isinstance(followups, (list, str)) else [])
-    return json.dumps(cleaned) if any(cleaned) else ""
+    n = own_followup_count(cleaned)
+    return json.dumps(cleaned[:n]) if n else ""
+
+
+def _migrate_wa_followup_counts(conn):
+    """Fill wa_leads.own_followups for leads imported before follow-ups
+    became a sequence. Guarded by a settings marker."""
+    if conn.execute("SELECT 1 FROM settings WHERE key='_migrated_wa_followup_counts'").fetchone():
+        return
+    for r in conn.execute("SELECT id, draft_followups FROM wa_leads WHERE draft_followups != ''").fetchall():
+        conn.execute("UPDATE wa_leads SET own_followups=? WHERE id=?",
+                     (own_followup_count(r["draft_followups"]), r["id"]))
+    conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('_migrated_wa_followup_counts', '1')")
 
 
 # The import keys a hyper-personalised row carries its copy in. Matched
 # exactly, like every other import column -- nothing here lowercases or
 # aliases a header, so the documented spelling is the only one that works.
 WA_DRAFT_KEY = "message"
-WA_FOLLOWUP_KEYS = tuple(f"followup_{i + 1}" for i in range(WA_MAX_LEAD_FOLLOWUPS))
+_WA_FOLLOWUP_KEY_RE = re.compile(r"followup_([1-9][0-9]*)")
 
 
 def row_draft_copy(row: dict) -> tuple:
@@ -5860,6 +6008,7 @@ def row_draft_copy(row: dict) -> tuple:
     campaign's template, which is what an empty slot falls back to.
     """
     rejected = 0
+    rejected_keys = 0
 
     def _one(value):
         nonlocal rejected
@@ -5874,8 +6023,21 @@ def row_draft_copy(row: dict) -> tuple:
         return text
 
     opener = _one(row.get(WA_DRAFT_KEY))
-    followups = [_one(row.get(key)) for key in WA_FOLLOWUP_KEYS]
-    return opener, followups, rejected
+    # followup_1, followup_2, ... -- as many as the row has.
+    numbered = {}
+    for key, value in row.items():
+        m = _WA_FOLLOWUP_KEY_RE.fullmatch(str(key))
+        if not m:
+            continue
+        n = int(m.group(1))
+        if n > WA_MAX_LEAD_FOLLOWUPS:
+            if isinstance(value, str) and value.strip():
+                rejected_keys += 1
+            continue
+        numbered[n] = value
+    last = max([n for n, v in numbered.items() if isinstance(v, str) and v.strip()] or [0])
+    followups = [_one(numbered.get(n)) for n in range(1, max(last, WA_MIN_FOLLOWUP_SLOTS) + 1)]
+    return opener, followups, rejected + rejected_keys
 
 
 def new_draft_report() -> dict:
@@ -5887,7 +6049,8 @@ def new_draft_report() -> dict:
     """
     return {
         "opener": 0,
-        "followups": [0] * WA_MAX_LEAD_FOLLOWUPS,
+        # One count per follow-up position; grows past three as a file does.
+        "followups": [0] * WA_MIN_FOLLOWUP_SLOTS,
         "too_long": 0,
         "kept_edits": 0,
         "no_phone": 0,
@@ -5929,11 +6092,22 @@ def _parse_wa_campaign(row) -> dict:
     if not isinstance(raw, dict):
         raw = {}
     factory = _wa_factory_templates()
+    steps = _clean_wa_steps(raw.get("followups"))
+    if not steps:
+        # Before follow-ups were a list there was one, under "followup".
+        steps = [_clean_wa_arms(raw.get("followup")) or factory["followup"]]
     out["templates"] = {
         # "gap" was the opener's name while openers came in two flavours.
         "opener": _clean_wa_arms(raw.get("opener")) or _clean_wa_arms(raw.get("gap")) or factory["opener"],
-        "followup": _clean_wa_arms(raw.get("followup")) or factory["followup"],
+        # The campaign's follow-ups in order, each with its versions.
+        # "followup" is the first, for anything that still reads one.
+        "followups": steps,
+        "followup": steps[0],
     }
+    try:
+        out["long_followup_days"] = max(0, int(out.get("long_followup_days") or 0))
+    except (TypeError, ValueError):
+        out["long_followup_days"] = 0
     try:
         out["variables"] = _clean_wa_variables(json.loads(out.get("variables") or "{}"))
     except (TypeError, ValueError):
@@ -5955,6 +6129,7 @@ def create_wa_campaign(name: str, owner_id=None, country: str = "", notes: str =
     with get_db() as conn:
         owner = _resolve_owner_id(conn, owner_id)
         templates, followup_days, variables = _wa_factory_templates(), WA_DEFAULT_FOLLOWUP_DAYS, {}
+        long_days = 0
         if copy_from:
             src = conn.execute("SELECT * FROM wa_campaigns WHERE id=? AND owner_id=?",
                                (int(copy_from), owner)).fetchone()
@@ -5963,13 +6138,15 @@ def create_wa_campaign(name: str, owner_id=None, country: str = "", notes: str =
                 templates = parsed["templates"]
                 followup_days = parsed["followup_days"]
                 variables = parsed["variables"]
+                long_days = parsed["long_followup_days"]
+        steps = len(templates.get("followups") or [templates.get("followup")])
         return conn.execute("""
             INSERT INTO wa_campaigns(owner_id, name, notes, country, templates,
-                                     followup_days, variables)
-            VALUES(?,?,?,?,?,?,?)
+                                     followup_days, variables, followup_steps, long_followup_days)
+            VALUES(?,?,?,?,?,?,?,?,?)
         """, (owner, (name or "").strip() or "Untitled campaign", notes or "",
               (country or "").strip().upper(), json.dumps(templates), followup_days,
-              json.dumps(variables))).lastrowid
+              json.dumps(variables), steps, long_days)).lastrowid
 
 
 def get_wa_campaign(cid: int):
@@ -6068,6 +6245,12 @@ def update_wa_campaign(cid: int, opener_from=None, **fields):
             raise ValueError("The follow-up gap has to be a number of days")
     if "variables" in fields:
         updates["variables"] = json.dumps(_clean_wa_variables(fields["variables"]))
+    if "long_followup_days" in fields:
+        try:
+            # 0 turns it off. Up to ten years -- some leads are worth that.
+            updates["long_followup_days"] = max(0, min(3650, int(fields["long_followup_days"] or 0)))
+        except (TypeError, ValueError):
+            raise ValueError("The long-term gap has to be a number of days")
 
     current = get_wa_campaign(cid)
     old_count = len(current["templates"]["opener"]) if current else 1
@@ -6077,16 +6260,29 @@ def update_wa_campaign(cid: int, opener_from=None, **fields):
         if not isinstance(given, dict):
             raise ValueError("templates must be an object")
         merged = dict(current["templates"]) if current else _wa_factory_templates()
+        merged.setdefault("followups", [merged.get("followup") or _wa_factory_templates()["followup"]])
         for kind, value in given.items():
+            if kind == "followups":
+                steps = _clean_wa_steps(value)
+                if not steps:
+                    raise ValueError("A campaign needs at least one follow-up")
+                merged["followups"] = steps
+                continue
             if kind not in WA_TEMPLATE_KINDS:
                 continue
             arms = _clean_wa_arms(value)
             if not arms:
                 label = "opener" if kind == "opener" else "follow-up"
                 raise ValueError(f"The {label} needs at least one version")
-            merged[kind] = arms
+            if kind == "followup":
+                # The older shape: one follow-up, which is the list's first.
+                merged["followups"] = [arms] + list(merged["followups"][1:])
+            else:
+                merged[kind] = arms
+        merged["followup"] = merged["followups"][0]
         new_count = len(merged["opener"])
         updates["templates"] = json.dumps(merged)
+        updates["followup_steps"] = len(merged["followups"])
     if not updates:
         return
     with get_db() as conn:
@@ -6124,8 +6320,14 @@ def _wa_due_clause(days=None):
     """
     if days is not None:
         return "datetime(w.sent_date) <= datetime('now', ?)", [f"-{int(days)} days"]
+    # The long-term gap, when a campaign sets one, takes over once a lead has
+    # had every follow-up written for it: its own, then one pass through the
+    # campaign's list. Before that, and always when it's 0, the usual gap.
     return (f"datetime(w.sent_date) <= datetime('now', '-' || "
-            f"COALESCE(c.followup_days, {int(WA_DEFAULT_FOLLOWUP_DAYS)}) || ' days')"), []
+            f"(CASE WHEN COALESCE(c.long_followup_days, 0) > 0 "
+            f"       AND w.followup_count >= COALESCE(w.own_followups, 0) + COALESCE(c.followup_steps, 1) "
+            f"      THEN c.long_followup_days "
+            f"      ELSE COALESCE(c.followup_days, {int(WA_DEFAULT_FOLLOWUP_DAYS)}) END) || ' days')"), []
 
 
 def get_wa_campaigns(owner_id=None) -> list:
@@ -6533,6 +6735,8 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
                 drafts_report["opener"] += 1
             for i, text in enumerate(followup_drafts):
                 if text:
+                    while len(drafts_report["followups"]) <= i:
+                        drafts_report["followups"].append(0)
                     drafts_report["followups"][i] += 1
             has_draft = bool(opener_draft or any(followup_drafts))
 
@@ -6635,13 +6839,15 @@ def _apply_imported_drafts(conn, wa_lead_id: int, opener: str, followups: list) 
     merged = parse_lead_followups(row["draft_followups"])
     for i, text in enumerate(followups[:WA_MAX_LEAD_FOLLOWUPS]):
         if text:
+            merged += [""] * (i + 1 - len(merged))
             merged[i] = text
     message = opener or (row["draft_message"] or "")
     conn.execute("""
         UPDATE wa_leads SET draft_message=?, message_edited=?, message_source='import',
-               paraphrased=0, draft_followups=?
+               paraphrased=0, draft_followups=?, own_followups=?
          WHERE id=?
-    """, (message, 1 if message.strip() else 0, serialize_lead_followups(merged), wa_lead_id))
+    """, (message, 1 if message.strip() else 0, serialize_lead_followups(merged),
+          own_followup_count(merged), wa_lead_id))
     return True
 
 
@@ -6695,10 +6901,11 @@ def add_businesses_to_wa(business_ids, country: str, owner_id=None, wa_campaign_
 _WA_LEAD_COLUMNS = """
     w.id, w.business_id, w.wa_number, w.country, w.number_type, w.wa_status,
     w.signal_type, w.signal_detail, w.draft_message, w.message_edited,
-    w.draft_followups, w.message_source,
+    w.draft_followups, w.own_followups, w.message_source,
     w.template_variant, w.paraphrased, w.sent_date, w.replied, w.followup_count, w.paused,
     w.moved_to, w.removed_at, w.opened_at, w.no_whatsapp_at, w.notes, w.created_at, w.wa_campaign_id,
     c.name AS campaign_name, c.followup_days AS campaign_followup_days,
+    c.followup_steps AS campaign_followup_steps, c.long_followup_days AS campaign_long_followup_days,
     b.name AS company, b.website, b.address, b.city, b.phone, b.category,
     b.rating, b.review_count, b.do_not_contact, b.source_job_id,
     b.pipeline_stage, b.pipeline_channel, b.pipeline_at, b.next_action_at
@@ -6716,11 +6923,14 @@ def wa_message_for(lead: dict, campaign: dict = None, kind: str = "opener") -> s
     operator edited this lead's message by hand, had AI reword it, or an
     import brought bespoke copy, in which case that text is kept.
 
-    Follow-ups take the lead's own follow-up for the one that is next out
-    (followup_count 0 means the first has yet to go), and fall back to the
-    campaign's follow-up template for any slot that is empty -- including
-    every follow-up past the last bespoke one, since the cadence runs
-    indefinitely and only the first few are ever written by hand.
+    Follow-ups run in order and never stop. The next one out
+    (followup_count 0 means the first has yet to go) is:
+      - the lead's own, if it brought one for that position;
+      - inside the lead's own run, a gap takes the campaign's follow-up for
+        that same position;
+      - after the lead's own run, the campaign's list from the top, and
+        round again when it runs out -- so nobody gets one message on
+        repeat, however long they're followed up.
 
     Either way the text goes through render_wa_message, so a placeholder left
     in bespoke copy fills like it would in a template rather than reaching
@@ -6732,14 +6942,38 @@ def wa_message_for(lead: dict, campaign: dict = None, kind: str = "opener") -> s
             return render_wa_message(lead["draft_message"], lead, variables)
     else:
         drafts = parse_lead_followups(lead.get("draft_followups"))
-        index = int(lead.get("followup_count") or 0)
-        if 0 <= index < len(drafts) and drafts[index]:
+        index = max(0, int(lead.get("followup_count") or 0))
+        if index < len(drafts) and drafts[index]:
             return render_wa_message(drafts[index], lead, variables)
     if not campaign:
         return (lead.get("draft_message") or "") if kind == "opener" else ""
-    arms = campaign["templates"]["followup" if kind == "followup" else "opener"]
+    if kind == "followup":
+        steps = campaign["templates"].get("followups") or [campaign["templates"]["followup"]]
+        own = own_followup_count(drafts)
+        position = index if index < own else index - own
+        arms = steps[position % len(steps)]
+    else:
+        arms = campaign["templates"]["opener"]
     return render_wa_message(arms[_wa_arm_index(lead.get("template_variant"), len(arms))],
                              lead, campaign["variables"])
+
+
+def wa_followup_source(lead: dict, campaign: dict = None, index: int = None) -> dict:
+    """
+    Where follow-up `index` (0-based; default the next one out) comes from,
+    for the page to say so: {"own": bool, "step": n or None, "of": steps}.
+    `step` is the campaign follow-up's number, counting from 1.
+    """
+    drafts = parse_lead_followups(lead.get("draft_followups"))
+    index = int(lead.get("followup_count") or 0) if index is None else int(index)
+    if index < len(drafts) and drafts[index]:
+        return {"own": True, "step": None, "of": 0}
+    steps = len((campaign or {}).get("templates", {}).get("followups") or [1]) if campaign else 0
+    if not steps:
+        return {"own": False, "step": None, "of": 0}
+    own = own_followup_count(drafts)
+    position = index if index < own else index - own
+    return {"own": False, "step": position % steps + 1, "of": steps}
 
 
 def _attach_wa_messages(rows: list, kind: str = "opener") -> list:
@@ -7055,14 +7289,15 @@ def set_wa_followup_draft(wa_lead_id: int, index: int, message: str) -> bool:
         if not row:
             return False
         drafts = parse_lead_followups(row["draft_followups"])
+        drafts += [""] * (index + 1 - len(drafts))
         drafts[index] = (message or "").strip()
         # Marks the lead's copy as the operator's own, the same as editing the
         # opener does. Coarse on purpose: a later import then leaves the whole
         # lead alone rather than replacing an opener that this follow-up was
         # written to follow on from. See _apply_imported_drafts.
         conn.execute(
-            "UPDATE wa_leads SET draft_followups=?, message_source='manual' WHERE id=?",
-            (serialize_lead_followups(drafts), wa_lead_id),
+            "UPDATE wa_leads SET draft_followups=?, own_followups=?, message_source='manual' WHERE id=?",
+            (serialize_lead_followups(drafts), own_followup_count(drafts), wa_lead_id),
         )
     return True
 
@@ -8034,6 +8269,7 @@ def get_dashboard(owner_id=None, since=None) -> dict:
             "wa_sent_today": whatsapp["sent_today"],
             "calls_due": calling["due"],
             "calls_new": calling["uncalled"],
+            "email_replies": count_email_replies(owner_id=owner),
         },
         "campaigns": campaigns,
     }

@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-10-10 (duplicate matching, named imports, CSV downloads, Recently deleted; built, not deployed) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-10-10 (follow-up sequences, Email To do, Get leads, Settings split; built, not deployed) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -62,7 +62,16 @@ fix this file.
   too, which it didn't before. One new column (`pipeline_stages.wants_time`)
   and one guarded migration — no change to `businesses`. Reminders were
   considered and explicitly not built (§5c). All 22 test files pass locally.
-- **Built 2026-10-10, NOT deployed: imports you can find again, and undo**
+- **Built 2026-10-10, NOT deployed: the UI cleanup and follow-up sequences**
+  (§5e). WhatsApp follow-ups are a list that cycles forever (a lead's own
+  first, as many as it brought); Email has a To do for real replies; one
+  **Get leads** page replaces seven ways in; Settings is My settings / Team
+  setup, with Activity log and Database moved inside it for admins. New
+  columns on `wa_campaigns`, `wa_leads` and `enrollments`, two guarded
+  migrations (`_migrate_wa_followup_counts`, `_migrate_email_reply_todo`).
+  24 test files pass; every new screen driven in a browser as admin,
+  non-admin and on a phone.
+- **Deployed 2026-10-10 (`916dabb`): imports you can find again, and undo**
   (§5d). Phone matching that works outside North America (the cause of a
   real double import), every scrape and import named and filterable on
   every Leads tab, "Download CSV only" scrapes, CSV download of selected
@@ -85,7 +94,9 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
-| pending | 10-10 | Country-aware phone matching; named imports + "From" filter everywhere; CSV-only scrapes; CSV download; full-screen tables; Recently deleted | No |
+| pending | 10-10 | Follow-up sequences + long-term gap; Email To do; Get leads page; Settings split; sidebar regrouped | No |
+| `916dabb` | 10-10 | Deploys back up the database first | Yes |
+| `8305454` | 10-10 | Country-aware phone matching; named imports + "From" filter everywhere; CSV-only scrapes; CSV download; full-screen tables; Recently deleted; account passwords no longer sent to campaign owners | Yes |
 | `ac57e66` | 09-27 | The Booked tab: real appointment times, `.ics`, calling wired into the shared stage | Check `gh run list` |
 | `744ad70` | 09-23 | Campaign name as the page heading; fixed the Leads badge undercounting under a filter | Yes |
 | `65ecf8b` | 09-23 | Fixed the email daily cap silently going uncapped across a UTC/local date boundary | Yes |
@@ -314,7 +325,7 @@ python scraper_worker.py --server https://shoutreach.hexiv.co --api-key <key>
 The first successful start saves the server and key to `.worker_config.json`
 next to the script (git-ignored). After that it's just
 `python scraper_worker.py`. The window has to stay open while scraping. Copy
-the key from **Settings → Lead Scraper Worker** while signed in as the person
+the key from **Settings → My settings** while signed in as the person
 whose scrapes that machine should run.
 
 ### The cofounder's laptop — planned, not done
@@ -697,6 +708,69 @@ and got duplicates.
   and fell back to the campaign's A/B templates.
 - `tests/test_lead_batches.py` covers all of it, including both walls.
 
+## 5e. Follow-up sequences, Email To do, and one way in — built 2026-10-10
+
+From the operator going through the app and finding it scattered ("having
+built this myself I myself forget where to find certain options").
+
+- **WhatsApp follow-ups are a sequence that never stops.** The operator was
+  explicit: no "stop after N" — some leads are followed up for years — and
+  one template on repeat makes no sense. `wa_message_for` picks follow-up
+  `followup_count` as: the lead's own for that position; inside the lead's
+  own run, a gap takes the campaign's follow-up at that position; after it,
+  the campaign's list from the top, round and round. `wa_followup_source`
+  says which, for the page.
+  - **A lead can bring any number** (`followup_1`, `followup_2`, … read by
+    `_WA_FOLLOWUP_KEY_RE`); `WA_MAX_LEAD_FOLLOWUPS` (50) is only a runaway
+    ceiling, and `WA_MIN_FOLLOWUP_SLOTS` (3) is how many boxes always show.
+    `parse_lead_followups` is variable-length now — index past the end with
+    `own_followup_count`, not `len`. `wa_leads.own_followups` caches the count.
+  - **The campaign's follow-ups are a list** (`templates.followups`, each step
+    with its A/B versions; `templates.followup` stays as step 1 for anything
+    that reads one, and saving the old shape replaces step 1 only).
+    `wa_campaigns.followup_steps` caches the count; `WA_MAX_FOLLOWUP_STEPS` 20.
+  - **Optional long-term gap** (`wa_campaigns.long_followup_days`, 0 = off,
+    the default): once `followup_count >= own_followups + followup_steps`,
+    `_wa_due_clause` uses it instead of the usual gap. Not a cap.
+  - Every follow-up can be edited per lead (not just the first three).
+    Export writes `followup_1..N` for own + one pass of the campaign's list.
+  - `tests/test_wa_sequence.py`.
+- **Email → To do: real replies.** `mark_enrollment_replied` now records
+  `replied_at`, `reply_subject`, `reply_from` (headers only — bodies are never
+  downloaded) and clears `reply_done_at`; `note_email_reply_stage` sets the
+  business's pipeline stage to `replied` **only if it has none**. Automatic
+  replies never reach this (`sender._is_auto_reply`, unchanged). Done / put
+  back: `POST|DELETE /api/email/replies/<enrollment>/done`. The Dashboard has
+  a tile and the sidebar a count. `_migrate_email_reply_todo` marks replies
+  from before as done, so the list starts empty. **The contacts split
+  rebuilds `enrollments`** — its CREATE in the split now carries the new
+  columns, and the migration adds any that are missing (caught by
+  `test_migrations.py` on a legacy database).
+- **Get leads** (section id still `scraper`): tabs Scrape Google Maps · Import
+  a file or paste · Your imports. The importer (`importLeads` in
+  `scraper.js`) sends to Contacts/Email, Calling (+ optional campaign) or
+  WhatsApp (campaign + country); takes a CSV or JSON file, or a paste —
+  JSON, CSV with a header row, or one business per line (name, phone,
+  website, email). It replaced: Contacts' and Email's import window (the
+  `import_contacts.html` modal is gone), and the CSV / paste / JSON / scrape
+  tabs in WhatsApp's and Calling's "+ Add leads", which now only add leads
+  you already have plus a button into Get leads with the channel, campaign
+  and country preset (`openGetLeads`).
+- **Settings** is My settings (password, scrape worker key, audit links) and,
+  for admins only, Team setup (accounts, sending rules, warmup, AI, Google
+  key, users), Activity log and Database. Non-admins no longer see controls
+  that answer "Forbidden". Activity log and Database left the sidebar; they
+  keep their own sections, with Settings' tabs on top (`openSettingsTab`).
+- **Sidebar:** Dashboard, Contacts · Channels (Email, Calling, WhatsApp) ·
+  Leads (Get leads) · Setup (Settings, Help).
+- **Channel tabs line up:** Email To do · Leads · Campaigns · Unsubscribed;
+  Calling To do · Leads · Campaigns · Script & outcomes; WhatsApp To do ·
+  Leads · Campaigns · Messages (was Templates; tab key still `templates`) ·
+  Booked.
+- **Python 3.11 on the server:** a backslash inside an f-string's `{}` is a
+  syntax error there (fine on 3.12+, which is what's installed locally). One
+  slipped in and was caught before commit; check new f-strings for it.
+
 ## 6. Deploys and operations
 
 - **Server:** GCP e2-micro, Debian 12, app in `~/shoutreach`, gunicorn with
@@ -814,7 +888,7 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-23 files, all passing as of the import work (§5d). `test_rendering.py` once
+24 files, all passing as of §5e. `test_rendering.py` once
 failed with "database is locked" mid-suite and passed on its own and on a
 re-run — watch for it.
 
@@ -871,12 +945,14 @@ importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
-0000. **The import work is built, not pushed** (§5d). Back up first (§6) —
-      `_migrate_phone_keys` rewrites `businesses.phone_normalized` on every
-      row with a phone. After deploy: Contacts → From should list each past
-      scrape with its time; pick the duplicate scrape, Select all, Delete,
-      and check Recently deleted can bring them back. A "Download CSV only"
-      scrape needs no worker update.
+00000. **§5e is built, not pushed.** The deploy backs up on its own now (§6).
+      After it: WhatsApp → Messages shows "Follow-up 1" holding each
+      campaign's old follow-up; Email → To do is empty (older replies start
+      as done); Settings as the cofounder shows only My settings.
+0000. **The import work is live** (§5d, `8305454`, 2026-10-10). Still to do
+      by hand: Contacts → From should list each past scrape with its time;
+      pick the duplicate scrape, Select all, Delete, and check Recently
+      deleted can bring them back.
 000a. **Built with it: non-admins can pick sending accounts, and account
       passwords stopped leaking.** `GET /api/accounts` is admin-only, so an
       email campaign's account picker read "No accounts configured yet" for

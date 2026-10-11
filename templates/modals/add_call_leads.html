@@ -1,7 +1,6 @@
-<!-- Adding leads to a call campaign. Three routes in, matching how contacts get
-     into an email campaign: pick from what you already have, paste a few by
-     hand, or bring a CSV. The first is the common case by a distance, so it
-     opens on that. -->
+<!-- Putting leads you already have on Calling. Anything new -- a file, a
+     paste, a scrape -- comes in through Get leads, which this links to with
+     the campaign already picked. -->
 <div class="modal-overlay" id="modal-add-call-leads">
   <div class="modal" style="max-width:720px">
     <button class="modal-close" onclick="closeModal('modal-add-call-leads')">✕</button>
@@ -13,8 +12,8 @@
 
     <div class="flex gap-2" style="margin:12px 0 16px;flex-wrap:wrap">
       <button class="btn btn-primary btn-sm" id="acl-tab-existing" onclick="setAddLeadsTab('existing')">From contacts</button>
-      <button class="btn btn-ghost btn-sm"   id="acl-tab-manual"   onclick="setAddLeadsTab('manual')">Type them in</button>
-      <button class="btn btn-ghost btn-sm"   id="acl-tab-csv"      onclick="setAddLeadsTab('csv')">Import CSV</button>
+      <button class="btn btn-ghost btn-sm" onclick="callAddFromGetLeads()"
+              title="A CSV or JSON file, a paste, or a Google Maps scrape — on the Get leads page">Import a file, paste or scrape →</button>
     </div>
 
     <!-- 1. Pick from the database -->
@@ -51,32 +50,6 @@
       </div>
       <div class="form-hint" style="margin-top:8px">
         Leads with no phone number are skipped, and you're told how many.
-      </div>
-    </div>
-
-    <!-- 2. Type a few in -->
-    <div id="acl-pane-manual" style="display:none">
-      <div class="form-group">
-        <label>One business per line</label>
-        <textarea id="acl-manual" style="min-height:180px"
-                  placeholder="Paradise Dental, 709-555-0123&#10;Kenmount Physio, 709-555-0456, kenmountphysio.ca"></textarea>
-        <div class="form-hint">
-          Comma-separated: <span class="mono">business name, phone, website</span> — the
-          phone and website are optional, but without a phone it won't reach the call queue.
-        </div>
-      </div>
-    </div>
-
-    <!-- 3. CSV -->
-    <div id="acl-pane-csv" style="display:none">
-      <div class="form-group">
-        <label>CSV file</label>
-        <input type="file" id="acl-csv" accept=".csv" />
-        <div class="form-hint">
-          Uses the same importer as Contacts, so the usual columns work —
-          <span class="mono">company, phone, website, email, address</span>. Everything
-          imported lands in Contacts; the ones with a phone number go on Calling.
-        </div>
       </div>
     </div>
 

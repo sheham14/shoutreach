@@ -144,7 +144,7 @@ Follow this schedule strictly:
 
 ## Building Your First Campaign
 
-### 0. Get Leads — the Lead Scraper
+### 0. Get leads — scrape or import
 
 Scrapes Google Maps for a niche in a city. Each scrape sends its leads to one
 place:
@@ -186,7 +186,7 @@ playwright install chromium        # separate step — pip does not fetch the br
 ```
 
 **First run**, give it the server URL and key once — get the key from
-**Settings → Lead Scraper Worker → Copy**, signed in as the person whose
+**Settings → My settings → Your scrape worker key → Copy**, signed in as the person whose
 scrapes this machine should run:
 
 ```bash
@@ -227,7 +227,7 @@ export SHOUTREACH_URL=https://your-shoutreach-host
 export SHOUTREACH_API_KEY=your-key-here
 ```
 
-Then open **Lead Scraper** in the web UI. The banner turns green when the worker
+Then open **Get leads** in the web UI. The banner turns green when the worker
 connects. Enter a niche and city, press Start, and Chrome opens on your machine
 while progress streams back to the page — Google Maps scrolling included, not
 just the email-scraping step. If a CAPTCHA appears, solve it in that Chrome
@@ -274,7 +274,7 @@ python gmaps_email_scraper.py --niche "HVAC" --city "Calgary Canada" --max 40
 ---
 
 ### 1. Import Contacts
-Go to **Email → Import CSV** (or Contacts → Import CSV)
+Go to **Get leads → Import a file or paste** (Email and Contacts' **⬆ Import** buttons open it too)
 
 CSV format:
 ```csv
@@ -531,7 +531,7 @@ send, follow-ups due and reply rate.
 
 **The flow.** Leads come in through **+ Add leads** into a campaign: pick from
 businesses you already have, paste JSON, paste or upload a CSV, or jump to the
-Lead Scraper already set to WhatsApp. Each one lands **ready to send**, with its
+Get leads page already set to WhatsApp. Each one lands **ready to send**, with its
 message already written. The **To do** tab is the work, with the lead you're on
 beside the list and a count of what you've sent today:
 
@@ -608,11 +608,15 @@ message — researched one at a time, in a chat, then brought here in one go —
 they do in a CSV. **Copy the format** in that tab puts the whole spec on your
 clipboard to paste into the chat writing your copy.
 
-- **Anything you leave out falls back to the campaign's template**, per message.
-  A batch where only some leads got a third follow-up is fine.
-- **After `followup_3` the campaign's follow-up template takes over**, and keeps
-  going at your campaign's gap — follow-ups never stop on their own, so the
-  template is still what carries a lead who never replies.
+- **Write as many follow-ups as you like** — `followup_4`, `followup_5` and on
+  are read too.
+- **Anything you leave out falls back to the campaign's follow-up for that
+  position.** A batch where only some leads got a third follow-up is fine.
+- **After a lead's own follow-ups, the campaign's list takes over** (Messages →
+  Follow-ups: Follow-up 1, 2, 3…), and when the list runs out it starts again
+  from Follow-up 1 — follow-ups never stop on their own, and nobody gets the
+  same message twice in a row. An optional **long-term gap** (campaign
+  Settings) slows the cadence once a lead has had everything written for it.
 - **Placeholders still work inside your own copy**, so `{{business_name}}` and
   `{{city|your area}}` fill in as they would in a template.
 - **The import tells you what arrived**, message by message — *142 leads · 138
@@ -628,7 +632,7 @@ clipboard to paste into the chat writing your copy.
   are reported apart from the version reply rates — they were never sent that
   version's words, so counting them under it would measure nothing.
 
-The same `message` and `followup_1…3` columns work in a CSV, but a message
+The same `message` and `followup_1`, `followup_2`… columns work in a CSV, but a message
 running to several paragraphs is safer as JSON: one stray quote in a CSV shifts
 a column and the wrong lead gets the wrong message.
 
@@ -639,7 +643,7 @@ ad pixels, email provider, SSL, and how old the site and domain are, plus how
 its Google rating compares with your other leads nearby. Below that are
 one-click links — Meta Ad Library, Google Ads Transparency, the Maps listing
 and competitors, what ChatGPT and Perplexity recommend, BuiltWith and more.
-Add your own links in **Settings → Lead audit**; an admin can add a free Google
+Add your own links in **Settings → My settings → Your audit links**; an admin can add a free Google
 API key there to lift PageSpeed's limit.
 
 ---
@@ -824,7 +828,7 @@ rather than the one already stored.
 
 ---
 
-**Lead Scraper says "No worker connected":**
+**Get leads says "No worker connected":**
 1. The worker is not running — start `python scraper_worker.py` on your machine
 2. The saved (or env var) URL points somewhere else, or the API key is stale
    (rotating your key in Settings disconnects your worker — run

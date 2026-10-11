@@ -3,8 +3,10 @@ function showSection(name) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
   document.getElementById('section-' + name)?.classList.add('active');
-  // A campaign's own page is still part of Email as far as the sidebar goes.
-  const navName = name === 'campaign-detail' ? 'email' : name;
+  // A campaign's own page is still part of Email as far as the sidebar goes,
+  // and Activity log and Database are opened from Settings.
+  const navName = name === 'campaign-detail' ? 'email'
+    : (name === 'logs' || name === 'database') ? 'settings' : name;
   document.querySelector(`nav a[data-section="${navName}"]`)?.classList.add('active');
   toggleSidebar(false); // a tap that navigates should close the drawer behind it
 
@@ -14,7 +16,7 @@ function showSection(name) {
   if (name === 'calling')    loadCalling();
   if (name === 'whatsapp')   loadWhatsApp();
   if (name === 'logs')       loadLogs();
-  if (name === 'settings')   { loadSettings(); loadAccounts(); loadUsers(); }
+  if (name === 'settings')   loadSettingsPage();
   if (name === 'scraper')    loadScraper();
   if (name === 'database')   loadDbTables();
 }

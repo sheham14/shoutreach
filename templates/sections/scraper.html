@@ -1,11 +1,24 @@
+<!-- Get leads: the one way in. Scrape Google Maps, or bring a CSV / JSON /
+     paste -- into Contacts or straight onto a channel -- and every import
+     listed underneath, named and dated. Each channel's "+ Add leads" keeps
+     adding leads you already have and sends you here for anything new.
+     (The section id is still "scraper": links and the worker banner use it.) -->
 <div class="section" id="section-scraper">
   <div class="page-header">
     <div>
-      <div class="page-title">Lead Scraper</div>
-      <div class="page-sub">Google Maps → leads for Email, Calling or WhatsApp</div>
+      <div class="page-title">Get leads</div>
+      <div class="page-sub">Scrape Google Maps or import a file — into Contacts, or straight onto a channel</div>
     </div>
   </div>
 
+  <div class="tabs" data-tab-group="getleads">
+    <button class="tab active" data-tab="scrape" onclick="setTab('getleads','scrape')">Scrape Google Maps</button>
+    <button class="tab" data-tab="import" onclick="setTab('getleads','import')">Import a file or paste</button>
+    <button class="tab" data-tab="history" onclick="setTab('getleads','history')">Your imports <span class="count">0</span></button>
+  </div>
+
+  <!-- ── Scrape ─────────────────────────────────────────────────────────── -->
+  <div class="tab-pane active" data-pane-group="getleads" data-pane="scrape">
   <div id="sc-worker-banner" class="warning-box" style="margin-bottom:24px">
     <div style="display:flex;align-items:center;gap:10px">
       <span id="sc-worker-dot" style="width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none"></span>
@@ -22,10 +35,10 @@
       <div class="mono" style="margin-top:6px;padding:8px 10px;background:var(--bg3);border-radius:6px;font-size:11px;line-height:1.7">
         <span style="color:var(--muted)"># PowerShell</span><br>
         $env:SHOUTREACH_URL = "<span id="sc-worker-url">…</span>"<br>
-        $env:SHOUTREACH_API_KEY = "&lt;from Settings&gt;"<br>
+        $env:SHOUTREACH_API_KEY = "&lt;from Settings → My settings&gt;"<br>
         <span style="color:var(--muted)">:: cmd.exe — no quotes</span><br>
         set SHOUTREACH_URL=<span id="sc-worker-url-cmd">…</span><br>
-        set SHOUTREACH_API_KEY=&lt;from Settings&gt;<br>
+        set SHOUTREACH_API_KEY=&lt;from Settings → My settings&gt;<br>
         <br>
         python scraper_worker.py
       </div>
@@ -119,9 +132,74 @@
     </div>
   </div>
 
-  <!-- Every past scrape and import, so a whole batch can be sent to a channel
-       in one go -- including one scraped for another channel, or before a
-       campaign existed -- and every "download a CSV" scrape, to download. -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Live Log</div>
+      <button class="btn btn-ghost btn-sm" onclick="loadScraper()">↻ Refresh</button>
+    </div>
+    <div id="sc-log-feed" style="max-height:320px;overflow-y:auto;font-family:var(--mono);font-size:12px">
+      <div class="empty-state"><p>Start a scrape to see live output here.</p></div>
+    </div>
+  </div>
+  </div>
+
+  <!-- ── Import ─────────────────────────────────────────────────────────── -->
+  <div class="tab-pane" data-pane-group="getleads" data-pane="import">
+    <div class="card" style="padding:24px;max-width:880px">
+      <div class="card-title" style="margin-bottom:4px">Import leads</div>
+      <p class="text-muted text-small" style="margin-bottom:18px;line-height:1.6">A CSV or JSON file, or paste. A business you
+        already have is matched, not added twice, and each import is listed under <b>Your imports</b>, named and
+        dated, so you can find it, download it or delete it in one go later.</p>
+
+      <div class="form-group">
+        <label>Send them to</label>
+        <select id="gl-dest" onchange="getLeadsDestChanged()">
+          <option value="contacts">Contacts (and Email, for rows with an address)</option>
+          <option value="calling">Calling</option>
+          <option value="whatsapp">WhatsApp</option>
+        </select>
+        <div class="form-hint" id="gl-dest-hint"></div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group" id="gl-campaign-group" style="display:none">
+          <label id="gl-campaign-label">Campaign</label>
+          <div id="gl-campaign-wrap"></div>
+          <div class="form-hint" id="gl-campaign-hint"></div>
+        </div>
+        <div class="form-group" id="gl-country-group" style="display:none">
+          <label>Country the numbers are in</label>
+          <div id="gl-country-wrap"></div>
+          <div class="form-hint">Turns "050 123 4567" into the form a WhatsApp link needs.</div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>A file</label>
+        <input type="file" id="gl-file" accept=".csv,.json,text/csv,application/json" />
+        <div class="form-hint">CSV with a header row, or JSON. A CSV downloaded from ShoutReach goes straight back in.</div>
+      </div>
+      <div class="form-group">
+        <label>…or paste</label>
+        <textarea id="gl-paste" class="soft-input mono" rows="8" style="font-size:12px"
+                  placeholder='JSON:   [{"company": "Pearl Dental", "phone": "050 123 4567", "message": "Hi…", "followup_1": "…"}]
+CSV with a header row:   company,phone,website,email
+Or one business per line:   Pearl Dental, 050 123 4567, pearldental.ae'></textarea>
+        <div class="form-hint" style="line-height:1.6">For WhatsApp, <span class="mono">message</span> and
+          <span class="mono">followup_1</span>, <span class="mono">followup_2</span>, … give each lead its own copy —
+          <a style="color:var(--blue);cursor:pointer" onclick="copyWaJsonSpec()">copy the format</a> for a chat to write it.
+          Lines without a header are read as: name, phone, website, email. A line that's only an email address
+          is just that.</div>
+      </div>
+      <div class="flex gap-2 items-center">
+        <button class="btn btn-primary" id="gl-submit" onclick="importLeads()">Import</button>
+        <span class="text-muted text-small" id="gl-status"></span>
+      </div>
+      <div id="gl-result" style="display:none;margin-top:16px" class="notice"></div>
+    </div>
+  </div>
+
+  <!-- ── Your imports ───────────────────────────────────────────────────── -->
+  <div class="tab-pane" data-pane-group="getleads" data-pane="history">
   <div class="card" style="margin-bottom:24px">
     <div class="card-header">
       <div>
@@ -137,14 +215,5 @@
       </table>
     </div>
   </div>
-
-  <div class="card">
-    <div class="card-header">
-      <div class="card-title">Live Log</div>
-      <button class="btn btn-ghost btn-sm" onclick="loadScraper()">↻ Refresh</button>
-    </div>
-    <div id="sc-log-feed" style="max-height:320px;overflow-y:auto;font-family:var(--mono);font-size:12px">
-      <div class="empty-state"><p>Start a scrape to see live output here.</p></div>
-    </div>
   </div>
 </div>

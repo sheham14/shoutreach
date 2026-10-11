@@ -8,14 +8,16 @@ let contactEditId = null;
 let _emailSources = [];
 
 onTab('email', name => {
+  if (name === 'todo') loadEmailReplies();
   if (name === 'campaigns') loadCampaigns();
   if (name === 'leads') loadEmailLeads();
   if (name === 'suppressed') { loadUnsubscribed(); loadInvalidMx(); }
 });
 
 async function loadEmail() {
-  const tab = currentTab('email', 'campaigns');
+  const tab = currentTab('email', 'todo');
   setTab('email', tab);
+  if (tab !== 'todo') _refreshEmailReplyCount();
   // Counts for the tabs that aren't open, so they say what's behind them.
   if (tab !== 'campaigns') {
     const campaigns = await api('/api/campaigns') || [];
@@ -25,6 +27,71 @@ async function loadEmail() {
     const page = await api('/api/contacts?per_page=1');
     if (page && page.total !== undefined) setTabCount('email', 'leads', page.total);
   }
+}
+
+// ── To do: replies ───────────────────────────────────────────────────────────
+
+function openEmailTodo() {
+  showSection('email');
+  setTimeout(() => setTab('email', 'todo'), 0);
+}
+
+let _emailReplies = [];
+
+async function _refreshEmailReplyCount() {
+  const rows = await api('/api/email/replies');
+  setTabCount('email', 'todo', Array.isArray(rows) ? rows.length : 0, true);
+}
+
+async function loadEmailReplies() {
+  const done = document.getElementById('er-done')?.checked;
+  const rows = await api(`/api/email/replies${done ? '?done=1' : ''}`);
+  const box = document.getElementById('er-body');
+  if (!Array.isArray(rows)) { box.innerHTML = `<div class="empty-state"><p>${esc((rows && rows.error) || 'Could not load replies')}</p></div>`; return; }
+  _emailReplies = rows;
+  if (!done) setTabCount('email', 'todo', rows.length, true);
+  if (!rows.length) {
+    box.innerHTML = `<div class="empty-state"><p>${done ? 'Nothing marked done yet.'
+      : 'No replies waiting. When someone writes back to a campaign, they show up here.'}</p></div>`;
+    return;
+  }
+  box.innerHTML = `<div class="table-wrap"><table class="lead-table m-table"><thead><tr>
+      <th>Business</th><th>Reply</th><th>Campaign</th><th>When</th><th></th></tr></thead><tbody>
+    ${rows.map(r => {
+      const who = [r.first_name, r.last_name].filter(Boolean).join(' ');
+      const action = done
+        ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();emailReplyDone(${r.id}, false)">Put back</button>`
+        : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();emailReplyDone(${r.id}, true)">Done</button>`;
+      return `<tr class="clickable" onclick="openEmailReply(${r.id})">
+        <td><span class="biz-name">${esc(r.company || r.email)}</span>
+            <span class="sub mono">${esc(r.reply_from || r.email)}${who ? ` · ${esc(who)}` : ''}</span></td>
+        <td>${r.reply_subject ? esc(r.reply_subject) : '<span class="text-muted">(no subject)</span>'}
+            ${r.pipeline_label ? ` ${pill(r.pipeline_label, 'green')}` : ''}</td>
+        <td>${esc(r.campaign_name || '')}</td>
+        <td class="num">${r.replied_at ? esc(localDateTime(r.replied_at)) : '—'}</td>
+        <td class="nowrap" style="text-align:right">${action}</td>
+        <td class="m-card">${mCard(`<span class="biz-name">${esc(r.company || r.email)}</span>`,
+          esc(r.reply_subject || '(no subject)'),
+          `${r.replied_at ? esc(localDateTime(r.replied_at)) : ''} · ${esc(r.campaign_name || '')}`)}</td>
+        <td class="m-keep">${action}</td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+function openEmailReply(id) {
+  const r = _emailReplies.find(x => x.id === id);
+  if (!r) return;
+  openLeadPanel(r.business_id, {
+    channel: 'email', panelId: 'er-panel', splitId: 'er-split', show: true,
+  });
+}
+
+async function emailReplyDone(id, done) {
+  const res = await api(`/api/email/replies/${id}/done`, done ? 'POST' : 'DELETE');
+  if (!res || res.error) { toast((res && res.error) || 'Could not update it', 'err'); return; }
+  toast(done ? 'Marked done' : 'Back on your To do');
+  setTabCount('email', 'todo', res.waiting, true);
+  loadEmailReplies();
 }
 
 // ── Leads table ──────────────────────────────────────────────────────────────
@@ -236,79 +303,9 @@ function exportInvalidMx() {
 
 // ── Import ────────────────────────────────────────────────────────────────────
 
-function openImportModal() { openModal('modal-import'); }
-
-async function importContacts() {
-  const fileInput = document.getElementById('import-file');
-  const paste     = document.getElementById('import-paste').value.trim();
-
-  if (fileInput.files.length) {
-    const form = new FormData();
-    form.append('file', fileInput.files[0]);
-    // Raw fetch (FormData sets its own Content-Type with boundary), but the
-    // CSRF middleware requires the X-CSRF-Token header on every non-GET.
-    const csrf = await _getCsrfToken();
-    const res  = await fetch('/api/contacts/import', {
-      method: 'POST', credentials: 'same-origin',
-      headers: { 'X-CSRF-Token': csrf }, body: form,
-    });
-    if (res.status === 401) { window.location.href = '/login'; return; }
-    const first = await res.json();
-    // A CSV held-back conflict is re-submitted as JSON rows, not a re-upload
-    // -- the flagged rows are already sitting in the response.
-    const final = await confirmChannelConflicts(first, () =>
-      api('/api/contacts/import', 'POST', {
-        rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
-        batch_id: first.batch_id || null, source: fileInput.files[0].name, channel: 'email',
-      })
-    );
-    reportImport(mergeImportResults(first, final));
-    return;
-  }
-
-  if (paste) {
-    const rows = paste.split('\n').map(line => ({ email: line.trim() })).filter(r => r.email);
-    const first = await api('/api/contacts/import', 'POST', { rows, source: 'Paste', channel: 'email' });
-    const final = await confirmChannelConflicts(first, () =>
-      api('/api/contacts/import', 'POST', {
-        rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
-        batch_id: first.batch_id || null, source: 'Paste', channel: 'email',
-      })
-    );
-    reportImport(mergeImportResults(first, final));
-    return;
-  }
-
-  toast('Select a file or paste emails', 'err');
-}
-
-// confirmChannelConflicts returns the SAME object back when the operator
-// declines, or a fresh response from the confirmed resend when they accept --
-// that reference difference is how much this needs to know to combine the
-// two calls' counts into one honest total instead of reporting only the last.
-function mergeImportResults(first, final) {
-  if (final === first) return first;
-  return {
-    inserted:   (first.inserted || 0) + (final.inserted || 0),
-    invalid_mx: (first.invalid_mx || 0) + (final.invalid_mx || 0),
-    conflicts:  [],
-    // Only the first call runs the cross-owner check; the resend is the
-    // operator confirming rows they have already been told about.
-    overlaps:   first.overlaps || [],
-  };
-}
-
-function reportImport(data) {
-  if (!data || data.error) { toast((data && data.error) || 'Import failed', 'err'); return; }
-  const inv = data.invalid_mx ? ` (${data.invalid_mx} with an invalid domain — see Unsubscribed & bad addresses)` : '';
-  const held = data.conflicts && data.conflicts.length
-    ? ` — ${data.conflicts.length} skipped (already on another channel)` : '';
-  toast(`Imported ${data.inserted} ✓${inv}${held}`);
-  closeModal('modal-import');
-  if (document.getElementById('section-contacts').classList.contains('active')) loadContacts();
-  else loadEmail();
-  notifyCrossOwnerOverlap(data);
-}
+// Importing a file or paste happens on Get leads now, one importer for every
+// channel. "Import" on this page opens it aimed at Contacts / Email.
+function openImportModal() { openGetLeads({ dest: 'contacts' }); }
 
 // ── Add / edit an address ────────────────────────────────────────────────────
 

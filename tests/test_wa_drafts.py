@@ -288,8 +288,13 @@ def test_http_import(db, client, token, camp):
     check("the slot is saved", s == 200 and body["followups"][1] == "Edited second", str(body))
     check("the lead now counts as the operator's own", body["message_source"] == "manual")
     s, body = api(client, token, "put", f"/api/wa/leads/{lead['id']}/followup/9",
+                  json={"message": "Tenth"})
+    check("a follow-up past the third can be written for a lead", s == 200
+          and body["followups"][9] == "Tenth" and len(body["followups"]) == 10, str(body))
+    s, body = api(client, token, "put", f"/api/wa/leads/{lead['id']}/followup/{db.WA_MAX_LEAD_FOLLOWUPS}",
                   json={"message": "nope"})
-    check("a slot that doesn't exist is a 404, not a silent no-op", s == 404, str(body))
+    check("a slot past the ceiling is a 404, not a silent no-op", s == 404, str(body))
+    api(client, token, "put", f"/api/wa/leads/{lead['id']}/followup/9", json={"message": ""})
 
 
 def test_ownership(db, app_mod, work):

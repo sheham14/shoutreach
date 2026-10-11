@@ -31,9 +31,11 @@
          WhatsApp conversations turned into a meeting". Not scoped to the
          campaign filter above, though: a WhatsApp booking from any campaign
          belongs here. -->
-    <button class="tab" data-tab="booked" onclick="setTab('whatsapp','booked')">Booked <span class="count">0</span></button>
     <button class="tab" data-tab="campaigns" onclick="setTab('whatsapp','campaigns')">Campaigns <span class="count">0</span></button>
-    <button class="tab" data-tab="templates" onclick="setTab('whatsapp','templates')">Templates</button>
+    <!-- "Messages", like the copy tab on every channel: the opener and the
+         follow-up list. The tab key stays 'templates'. -->
+    <button class="tab" data-tab="templates" onclick="setTab('whatsapp','templates')">Messages</button>
+    <button class="tab" data-tab="booked" onclick="setTab('whatsapp','booked')">Booked <span class="count">0</span></button>
   </div>
 
   <!-- ── To do ──────────────────────────────────────────────────────────────

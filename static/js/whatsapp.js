@@ -410,20 +410,16 @@ function waFollowupDrafts(l) {
   }
 }
 
-// Which follow-up is next out, and whether this lead has its own wording for
-// it. followup_count is how many have gone, so it indexes the next one.
-// Past the last bespoke slot every follow-up is the template, repeating --
-// the cadence has no end, so only the first few are ever written per lead.
+// Which follow-up is next out, and where its words come from.
+// followup_count is how many have gone, so it indexes the next one. The
+// cadence never ends: past the lead's own follow-ups it cycles through the
+// campaign's list (see waFollowupWhere).
 function _waFollowupNote(l) {
   const i = l.followup_count || 0;
-  const which = `Follow-up ${i + 1}`;
-  if (i >= WA_MAX_LEAD_FOLLOWUPS) {
-    return `${which} — past your written follow-ups, so it's the campaign template from here on.`;
-  }
-  if (waFollowupDrafts(l)[i]) {
-    return `${which} of ${WA_MAX_LEAD_FOLLOWUPS} — your own wording. Clear the box to put it back on the template.`;
-  }
-  return `${which} of ${WA_MAX_LEAD_FOLLOWUPS} — from the campaign template. Edit it and this lead keeps your version.`;
+  const where = waFollowupWhere(l, i);
+  return where.own
+    ? `Follow-up ${i + 1} — this lead's own wording. Clear the box to go back to the campaign's follow-up.`
+    : `Follow-up ${i + 1} — ${where.text}. Edit it and this lead keeps your version.`;
 }
 
 // `show` opens the lead full screen on a phone: a tap on it, as opposed to
@@ -635,12 +631,11 @@ async function _saveWaMessage(id, message, panelId) {
 // than into draft_message, which is the opener's -- a lead on follow-up two
 // still has an opener, and it isn't this.
 //
-// Past the bespoke slots the box is showing the campaign's template, which is
-// shared copy: saving it here would quietly turn a template edit into a
-// per-lead one, so it isn't offered.
+// Any follow-up in the sequence can be given this lead's own wording; it
+// replaces the campaign's for that one position only.
 function saveWaFollowup(id, index, message) {
   if (index >= WA_MAX_LEAD_FOLLOWUPS) {
-    toast('Past your written follow-ups — edit the campaign template instead', 'err');
+    toast('That far into the sequence, edit the campaign\'s follow-ups instead', 'err');
     return Promise.resolve();
   }
   _waSaving = _waSaving.then(() => _saveWaFollowup(id, index, message)).catch(() => {});
@@ -652,8 +647,10 @@ async function _saveWaFollowup(id, index, message) {
   if (!res || res.error) { toast((res && res.error) || 'Could not save the follow-up', 'err'); return; }
   const l = _waQueue.find(x => x.id === id);
   if (!l) return;
+  const own = (res.followups || []).reduce((n, t, i) => (t ? i + 1 : n), 0);
   Object.assign(l, {
     draft_followups: JSON.stringify(res.followups || []),
+    own_followups: own,
     followup_draft: res.followup_message,
     message_source: res.message_source,
   });
@@ -1073,7 +1070,7 @@ async function renderWaCampaigns() {
   }
   tbody.innerHTML = _waCampaigns.map(c => {
     const actions = `
-        <button class="btn btn-ghost btn-sm" onclick="openWaTemplates(${c.id})">Templates</button>
+        <button class="btn btn-ghost btn-sm" onclick="openWaTemplates(${c.id})">Messages</button>
         <button class="btn btn-ghost btn-sm" onclick="openWhatsAppCampaign(${c.id})">Leads</button>
         <button class="btn btn-ghost btn-sm" onclick="openWaCampaignSettings(${c.id})">Settings</button>
         <div class="row-menu">
@@ -1129,8 +1126,14 @@ async function openWaCampaignSettings(id) {
                style="max-width:90px" value="${esc(c.followup_days)}" />
         <span class="text-muted text-small">days, until they reply or you pause</span>
       </div>
+      <label class="field-label">Long-term gap (optional)</label>
+      <div class="flex items-center gap-2">
+        <input id="wcs-longgap" type="number" min="0" max="3650" class="soft-input"
+               style="max-width:90px" value="${esc(c.long_followup_days || 0)}" />
+        <span class="text-muted text-small">days, once a lead has had every follow-up written for it. 0 = off.</span>
+      </div>
       <div class="form-hint" style="margin-top:8px">Follow-ups never stop on their own.
-        The messages themselves are under <b>Templates</b>.</div>`,
+        The messages themselves are under <b>Messages</b>.</div>`,
     confirm: 'Save',
     collect: () => {
       const name = document.getElementById('wcs-name').value.trim();
@@ -1139,7 +1142,8 @@ async function openWaCampaignSettings(id) {
       if (!country) { toast('Pick a country from the list', 'err'); return null; }
       const gap = parseInt(document.getElementById('wcs-gap').value, 10);
       if (!gap || gap < 1) { toast('Follow up every how many days?', 'err'); return null; }
-      return { name, country, followup_days: gap };
+      const longGap = Math.max(0, parseInt(document.getElementById('wcs-longgap').value, 10) || 0);
+      return { name, country, followup_days: gap, long_followup_days: longGap };
     },
   });
   if (!values) return;
@@ -1205,10 +1209,24 @@ async function deleteWaCampaign(id) {
 
 const WA_ARM_LABELS = ['A', 'B', 'C', 'D'];
 
-const WA_TEMPLATE_KINDS = [
-  ['opener',   'Opening message', 'The first message every lead in this campaign gets. With more than one version, leads take turns: A, B, A, B…'],
-  ['followup', 'Follow-up', 'Sent every few days until they reply or you pause. A lead gets the follow-up with the same letter as its opening message.'],
-];
+const WA_OPENER_HINT = 'The first message every lead in this campaign gets. With more than one version, leads take turns: A, B, A, B…';
+const WA_MAX_FOLLOWUP_STEPS = 20;   // mirrors db.WA_MAX_FOLLOWUP_STEPS
+
+// Template "kinds" in the editor: 'opener', or 'fu0', 'fu1'… for each of the
+// campaign's follow-ups in order.
+function _waKinds() {
+  return ['opener', ...(_waEdit.templates.followups || [[]]).map((_, s) => `fu${s}`)];
+}
+
+function _waArms(kind) {
+  if (kind === 'opener') return _waEdit.templates.opener || [''];
+  return (_waEdit.templates.followups || [])[+kind.slice(2)] || [''];
+}
+
+function _waSetArms(kind, arms) {
+  if (kind === 'opener') _waEdit.templates.opener = arms;
+  else _waEdit.templates.followups[+kind.slice(2)] = arms;
+}
 
 const WA_SAMPLE_LEAD = { company: 'Pearl Dental Clinic', city: 'Dubai', category: 'Dentist', rating: 4.8,
                          review_count: 126, website: 'https://pearldental.ae' };
@@ -1229,6 +1247,9 @@ async function renderWaTemplateEditor(id) {
   const c = await api(`/api/wa/campaigns/${id}`);
   if (!c || c.error) { toast('Could not load that campaign', 'err'); return; }
   _waEdit = JSON.parse(JSON.stringify(c));
+  if (!Array.isArray(_waEdit.templates.followups) || !_waEdit.templates.followups.length) {
+    _waEdit.templates.followups = [_waEdit.templates.followup || ['']];
+  }
   // Which saved version each opener box came from, so deleting B tells the
   // server to re-deal B's unsent leads instead of quietly handing them C's text.
   _waEdit.openerFrom = (c.templates.opener || []).map((_, i) => WA_ARM_LABELS[i]);
@@ -1243,10 +1264,10 @@ function _readWaTemplateEditor() {
   if (val('wt-name')) _waEdit.name = val('wt-name').value;
   if (val('wt-country')) _waEdit.country = countryValue('wt-country') || _waEdit.country;
   if (val('wt-followup')) _waEdit.followup_days = parseInt(val('wt-followup').value, 10) || 1;
+  if (val('wt-longgap')) _waEdit.long_followup_days = Math.max(0, parseInt(val('wt-longgap').value, 10) || 0);
   if (val('wt-notes')) _waEdit.notes = val('wt-notes').value;
-  WA_TEMPLATE_KINDS.forEach(([kind]) => {
-    _waEdit.templates[kind] = (_waEdit.templates[kind] || ['']).map(
-      (arm, i) => val(`wt-${kind}-${i}`)?.value ?? arm);
+  _waKinds().forEach(kind => {
+    _waSetArms(kind, _waArms(kind).map((arm, i) => val(`wt-${kind}-${i}`)?.value ?? arm));
   });
   _readWaVariablesOnly();
 }
@@ -1296,13 +1317,16 @@ function _drawWaTemplateEditor() {
   }).join('') + Object.keys(c.variables || {}).map(k =>
     `<button type="button" title="Your variable" onclick="insertWaPlaceholder('${escj(k)}')">{{${esc(k)}}}</button>`).join('');
 
-  const kinds = WA_TEMPLATE_KINDS.map(([kind, label, hint]) => {
-    const arms = (c.templates[kind] && c.templates[kind].length) ? c.templates[kind] : [''];
+  const steps = c.templates.followups;
+  const kindBlock = (kind, title, hint, tools = '') => {
+    const arms = _waArms(kind).length ? _waArms(kind) : [''];
     const testing = arms.length > 1;
     const retired = arms.some(a => /\{\{\s*signal_detail/.test(a));
-    return `<div style="margin-top:22px">
-      <div class="card-title">${esc(label)}</div>
-      <div class="text-muted text-small" style="margin:2px 0 8px">${esc(hint)}</div>
+    return `<div style="margin-top:${kind === 'opener' || kind === 'fu0' ? 22 : 16}px">
+      <div class="flex items-center" style="gap:8px">
+        <div class="card-title">${esc(title)}</div>${tools}
+      </div>
+      ${hint ? `<div class="text-muted text-small" style="margin:2px 0 8px">${esc(hint)}</div>` : '<div style="height:6px"></div>'}
       ${retired ? `<div class="text-small" style="color:var(--amber);margin-bottom:8px">{{signal_detail}} came from the old
         booking check, which is gone — it's empty for every new lead. Take it out.</div>` : ''}
       ${arms.map((arm, i) => `
@@ -1312,13 +1336,29 @@ function _drawWaTemplateEditor() {
             <span class="text-muted text-small">${kind === 'opener' ? esc(_waStatsLine(WA_ARM_LABELS[i])) : ''}</span>
             <button class="btn btn-ghost btn-sm ml-auto" onclick="removeWaArm('${kind}', ${i})">Remove</button>
           </div>` : ''}
-          <textarea id="wt-${kind}-${i}" class="soft-input" style="min-height:${kind === 'followup' ? 70 : 100}px"
+          <textarea id="wt-${kind}-${i}" class="soft-input" style="min-height:${kind === 'opener' ? 100 : 70}px"
                     onfocus="_waLastFocus=this" oninput="updateWaTemplatePreview('${kind}', ${i})">${esc(arm)}</textarea>
           <div class="box" id="wt-${kind}-${i}-preview" style="margin-top:6px;font-size:12.5px;background:transparent"></div>
         </div>`).join('')}
       <button class="btn btn-ghost btn-sm" onclick="addWaArm('${kind}')">${testing ? '+ Add another version' : '+ Test a second version'}</button>
     </div>`;
-  }).join('');
+  };
+  const kinds = kindBlock('opener', 'Opening message', WA_OPENER_HINT)
+    + `<div style="margin-top:26px;padding-top:18px;border-top:1px solid var(--border)">
+        <div class="card-title">Follow-ups</div>
+        <div class="text-muted text-small" style="margin-top:2px;line-height:1.6">Sent in this order, one every
+          ${esc(c.followup_days)} day${c.followup_days === 1 ? '' : 's'}, until they reply or you pause — they never stop on
+          their own. A lead that came with its own follow-ups gets those first, then these. After the last one it starts
+          again from Follow-up 1, so nobody gets the same message twice in a row. Each version goes to the leads whose
+          opening message had the same letter.</div>
+      </div>`
+    + steps.map((_, s) => kindBlock(`fu${s}`, `Follow-up ${s + 1}`, '',
+        `<span class="ml-auto"></span>
+         ${s > 0 ? `<button class="btn btn-ghost btn-sm" title="Move up" onclick="moveWaFollowupStep(${s}, -1)">↑</button>` : ''}
+         ${s < steps.length - 1 ? `<button class="btn btn-ghost btn-sm" title="Move down" onclick="moveWaFollowupStep(${s}, 1)">↓</button>` : ''}
+         ${steps.length > 1 ? `<button class="btn btn-ghost btn-sm" onclick="removeWaFollowupStep(${s})">Remove follow-up</button>` : ''}`)).join('')
+    + (steps.length < WA_MAX_FOLLOWUP_STEPS
+        ? `<button class="btn btn-ghost" style="margin-top:6px" onclick="addWaFollowupStep()">+ Add follow-up ${steps.length + 1}</button>` : '');
 
   const untested = _waStatsLine('-');
 
@@ -1343,6 +1383,11 @@ function _drawWaTemplateEditor() {
           <div class="flex items-center gap-2"><input id="wt-followup" type="number" min="1" max="365" class="soft-input"
             style="max-width:90px" value="${esc(c.followup_days)}" /> <span class="text-muted text-small">days, until they reply or you pause</span></div></div>
       </div>
+      <div style="margin-top:10px"><span class="field-label">Long-term gap (optional)</span>
+        <div class="flex items-center gap-2" style="flex-wrap:wrap"><input id="wt-longgap" type="number" min="0" max="3650" class="soft-input"
+          style="max-width:90px" value="${esc(c.long_followup_days || 0)}" />
+          <span class="text-muted text-small">days between follow-ups once a lead has had every one written for it
+            (its own, then this list once). 0 keeps the gap above forever.</span></div></div>
 
       <span class="field-label">Placeholders — click to insert where you're typing</span>
       <div class="placeholder-list">${fieldButtons}</div>
@@ -1396,7 +1441,7 @@ function _readWaVariablesOnly() {
 }
 
 function _refreshAllWaPreviews() {
-  WA_TEMPLATE_KINDS.forEach(([kind]) => (_waEdit.templates[kind] || ['']).forEach((_, i) => updateWaTemplatePreview(kind, i)));
+  _waKinds().forEach(kind => _waArms(kind).forEach((_, i) => updateWaTemplatePreview(kind, i)));
 }
 
 function addWaVariable(key = '', value = '', focus = true) {
@@ -1420,41 +1465,82 @@ function insertWaPlaceholder(key) {
 function addWaArm(kind) {
   _readWaTemplateEditor();
   const max = _waEdit.max_arms || 4;
-  if ((_waEdit.templates[kind] || []).length >= max) { toast(`${max} versions is the limit`, 'err'); return; }
-  _waEdit.templates[kind] = [...(_waEdit.templates[kind] || []), ''];
+  if (_waArms(kind).length >= max) { toast(`${max} versions is the limit`, 'err'); return; }
+  _waSetArms(kind, [..._waArms(kind), '']);
   if (kind === 'opener') _waEdit.openerFrom.push(null);
   _drawWaTemplateEditor();
 }
 
-function removeWaArm(kind, idx) {
+async function removeWaArm(kind, idx) {
   _readWaTemplateEditor();
-  const arms = [...(_waEdit.templates[kind] || [])];
+  const arms = [..._waArms(kind)];
   if (arms.length <= 1) return;
-  if (!confirm(`Remove version ${WA_ARM_LABELS[idx]}? Messages already sent with it keep their results; `
-             + 'leads still waiting to be sent move to another version when you save.')) return;
+  const ok = await chooseDialog({
+    title: `Remove version ${WA_ARM_LABELS[idx]}?`,
+    body: '<p class="text-small" style="line-height:1.6">Messages already sent with it keep their results; '
+        + 'leads still waiting to be sent move to another version when you save.</p>',
+    confirm: 'Remove', danger: true,
+  });
+  if (!ok) return;
   arms.splice(idx, 1);
-  _waEdit.templates[kind] = arms;
+  _waSetArms(kind, arms);
   if (kind === 'opener') _waEdit.openerFrom.splice(idx, 1);
+  _drawWaTemplateEditor();
+}
+
+function addWaFollowupStep() {
+  _readWaTemplateEditor();
+  if (_waEdit.templates.followups.length >= WA_MAX_FOLLOWUP_STEPS) return;
+  _waEdit.templates.followups.push(['']);
+  _drawWaTemplateEditor();
+  const s = _waEdit.templates.followups.length - 1;
+  document.getElementById(`wt-fu${s}-0`)?.focus();
+}
+
+async function removeWaFollowupStep(s) {
+  _readWaTemplateEditor();
+  if (_waEdit.templates.followups.length <= 1) return;
+  const ok = await chooseDialog({
+    title: `Remove follow-up ${s + 1}?`,
+    body: '<p class="text-small" style="line-height:1.6">The ones after it move up. Messages already sent aren\'t '
+        + 'affected. Nothing changes until you save.</p>',
+    confirm: 'Remove', danger: true,
+  });
+  if (!ok) return;
+  _waEdit.templates.followups.splice(s, 1);
+  _drawWaTemplateEditor();
+}
+
+function moveWaFollowupStep(s, dir) {
+  _readWaTemplateEditor();
+  const steps = _waEdit.templates.followups;
+  const t = s + dir;
+  if (t < 0 || t >= steps.length) return;
+  [steps[s], steps[t]] = [steps[t], steps[s]];
   _drawWaTemplateEditor();
 }
 
 async function saveWaTemplates() {
   _readWaTemplateEditor();
-  const templates = {};
   const openerFrom = [];
-  for (const [kind, label] of WA_TEMPLATE_KINDS) {
-    const arms = [];
-    (_waEdit.templates[kind] || []).forEach((a, i) => {
-      if (!(a || '').trim()) return;
-      arms.push(a.trim());
-      if (kind === 'opener') openerFrom.push(_waEdit.openerFrom[i] ?? null);
-    });
-    if (!arms.length) { toast(`"${label}" needs at least one message`, 'err'); return; }
-    templates[kind] = arms;
+  const opener = [];
+  _waArms('opener').forEach((a, i) => {
+    if (!(a || '').trim()) return;
+    opener.push(a.trim());
+    openerFrom.push(_waEdit.openerFrom[i] ?? null);
+  });
+  if (!opener.length) { toast('The opening message needs at least one version', 'err'); return; }
+  const followups = [];
+  for (let s = 0; s < _waEdit.templates.followups.length; s++) {
+    const arms = _waArms(`fu${s}`).map(a => (a || '').trim()).filter(Boolean);
+    if (!arms.length) { toast(`Follow-up ${s + 1} is empty — write it or remove it`, 'err'); return; }
+    followups.push(arms);
   }
   const res = await api(`/api/wa/campaigns/${_waEdit.id}`, 'PATCH', {
     name: _waEdit.name, country: _waEdit.country, followup_days: _waEdit.followup_days,
-    notes: _waEdit.notes, templates, variables: _waEdit.variables, opener_from: openerFrom,
+    long_followup_days: _waEdit.long_followup_days || 0,
+    notes: _waEdit.notes, templates: { opener, followups }, variables: _waEdit.variables,
+    opener_from: openerFrom,
   });
   if (!res || res.error) { toast((res && res.error) || 'Could not save', 'err'); return; }
   toast('Saved ✓ — waiting leads use it now');
@@ -1499,7 +1585,7 @@ function _waAddCampaignChanged() {
 
 function setWaAddTab(tab) {
   _waAddTab = tab;
-  ['existing', 'json', 'import'].forEach(t => {
+  ['existing'].forEach(t => {
     const btn = document.getElementById(`wa-add-tab-${t}`);
     if (btn) {
       btn.classList.toggle('btn-primary', t === tab);
@@ -1531,11 +1617,14 @@ const WA_JSON_SPEC = `Return a JSON array. One object per business, using exactl
   }
 ]
 
+Write as many follow-ups as suit the lead: followup_4, followup_5 and so on
+are read too. After a lead's own follow-ups, the campaign's list takes over.
+
 Rules:
 - Keys exactly as spelled above, lowercase. Anything else is ignored.
 - company and phone are required. Every other key is optional -- leave one
   out and that message falls back to the campaign's template.
-- Write all four messages together so the follow-ups build on the opener
+- Write all the messages together so the follow-ups build on the opener
   rather than repeating it.
 - Plain text only. No markdown, no emoji-only lines, no placeholders in
   curly braces unless you mean them to be filled in.
@@ -1619,8 +1708,6 @@ async function submitWaAdd() {
   if (!country) { toast('Pick the country from the list', 'err'); return; }
   const campaignId = await resolveCampaignSelect('wa-add-campaign', '/api/wa/campaigns', { country });
   if (!campaignId) { if (campaignId === '') toast('Pick the campaign these leads go into', 'err'); return; }
-  if (_waAddTab === 'import') return importWaLeads(campaignId, country);
-  if (_waAddTab === 'json') return importWaJson(campaignId, country);
 
   const body = { business_ids: [..._waAddSelected], country, wa_campaign_id: campaignId };
   const first = await api('/api/wa/add-existing', 'POST', body);
@@ -1644,6 +1731,14 @@ function _afterWaAdd() {
 
 // Opens the Scraper already aimed at WhatsApp and this campaign, so what it
 // finds lands here and nowhere else.
+// "Import a file, paste or scrape" from the Add leads window: Get leads,
+// aimed at WhatsApp and the campaign and country picked here.
+function waAddFromGetLeads() {
+  const sel = document.getElementById('wa-add-campaign');
+  openGetLeads({ dest: 'whatsapp', campaign: sel && sel.value !== '__new' ? sel.value : '',
+                 country: countryValue('wa-import-country') || '' });
+}
+
 function scrapeForWhatsApp() {
   const country = countryValue('wa-import-country') || 'AE';
   const sel = document.getElementById('wa-add-campaign');
@@ -1651,92 +1746,6 @@ function scrapeForWhatsApp() {
   closeModal('modal-import-wa');
   window._scraperPreset = { destination: 'whatsapp', country, campaign_id };
   showSection('scraper');
-}
-
-async function importWaLeads(campaignId, country) {
-  const fileInput = document.getElementById('wa-import-file');
-  const paste = document.getElementById('wa-import-paste').value.trim();
-
-  if (fileInput.files.length) {
-    const form = new FormData();
-    form.append('file', fileInput.files[0]);
-    form.append('country', country);
-    form.append('wa_campaign_id', campaignId);
-    const csrf = await _getCsrfToken();
-    const res = await fetch('/api/wa/import', {
-      method: 'POST', credentials: 'same-origin',
-      headers: { 'X-CSRF-Token': csrf }, body: form,
-    });
-    if (res.status === 401) { window.location.href = '/login'; return; }
-    const first = await res.json();
-    await _finishWaImport(first, country, campaignId, fileInput.files[0].name);
-    return;
-  }
-
-  if (paste) {
-    const rows = paste.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
-      const [company, phone, website] = line.split(',').map(x => (x || '').trim());
-      return { company, phone: phone || '', website: website || '' };
-    }).filter(r => r.company);
-    if (!rows.length) { toast('Nothing to import — one business per line', 'err'); return; }
-    const first = await api('/api/wa/import', 'POST',
-      { rows, country, wa_campaign_id: campaignId, source: 'Paste' });
-    await _finishWaImport(first, country, campaignId, 'Paste');
-    return;
-  }
-
-  toast('Select a file or paste some businesses', 'err');
-}
-
-// Leads that arrive with their own copy. Parsed here rather than posted raw
-// so a malformed paste is a message about the paste, not a 400 from the
-// server -- and so a bare array and {"rows": [...]} both reach the API in the
-// one shape it needs alongside the country and campaign.
-async function importWaJson(campaignId, country) {
-  const raw = (document.getElementById('wa-import-json').value || '').trim();
-  if (!raw) { toast('Paste the JSON first', 'err'); return; }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (e) {
-    toast(`That isn't valid JSON — ${e.message}`, 'err');
-    return;
-  }
-  const rows = Array.isArray(parsed) ? parsed : parsed && parsed.rows;
-  if (!Array.isArray(rows) || !rows.length) {
-    toast('Expected an array of rows, or {"rows": [...]}', 'err');
-    return;
-  }
-  if (rows.some(r => !r || typeof r !== 'object' || Array.isArray(r))) {
-    toast('Every row must be an object with named keys like "company"', 'err');
-    return;
-  }
-  const usable = rows.filter(r => (r.company || r.name || '').toString().trim()
-                                || (r.phone || '').toString().trim());
-  if (!usable.length) { toast('No row had a company or a phone number', 'err'); return; }
-
-  const first = await api('/api/wa/import', 'POST',
-    { rows: usable, country, wa_campaign_id: campaignId, source: 'JSON' });
-  await _finishWaImport(first, country, campaignId, 'JSON');
-}
-
-// The confirmed half of an import names the batch the first half started, so
-// one import stays one entry under "From".
-async function _finishWaImport(first, country, campaignId, source = '') {
-  if (!first || first.error) { toast((first && first.error) || 'Import failed', 'err'); return; }
-  const final = await confirmChannelConflicts(first, () =>
-    api('/api/wa/import', 'POST', {
-      rows: first.conflicts.map(c => c.row), country, wa_campaign_id: campaignId, confirm_conflicts: true,
-      batch_id: first.batch_id || null, source,
-    })
-  );
-  const inserted = (first.inserted || 0) + (final !== first ? (final.inserted || 0) : 0);
-  toast(`Imported ${inserted} lead${inserted === 1 ? '' : 's'} ✓ — ready to send`
-        + describeWaDrafts(_mergeWaDrafts(first, final)));
-  closeModal('modal-import-wa');
-  _afterWaAdd();
-  notifyCrossOwnerOverlap(first);
 }
 
 // Held-back conflicts come back as a second import, so the two reports are
@@ -1749,7 +1758,9 @@ function _mergeWaDrafts(first, final) {
   if (!b) return a;
   return {
     opener: a.opener + b.opener,
-    followups: (a.followups || []).map((n, i) => n + ((b.followups || [])[i] || 0)),
+    // Either half can run to more follow-up positions than the other.
+    followups: Array.from({ length: Math.max((a.followups || []).length, (b.followups || []).length) },
+                          (_, i) => ((a.followups || [])[i] || 0) + ((b.followups || [])[i] || 0)),
     too_long: a.too_long + b.too_long,
     kept_edits: a.kept_edits + b.kept_edits,
     no_phone: a.no_phone + b.no_phone,

@@ -372,8 +372,9 @@ def test_not_on_whatsapp(db, client, token, camp):
 def test_campaigns_and_leads_table(db, client, token, camp):
     print("\n12. CAMPAIGNS: OWN COPY, FALLBACKS, SEPARATE FOLLOW-UP GAPS")
     s, c = api(client, token, "get", f"/api/wa/campaigns/{camp}")
-    check("a campaign has one opener and one follow-up",
-          set(c["templates"]) == {"opener", "followup"}, str(list(c["templates"])))
+    check("a campaign has an opener and a list of follow-ups, the first also as 'followup'",
+          set(c["templates"]) == {"opener", "followup", "followups"}
+          and c["templates"]["followups"][0] == c["templates"]["followup"], str(list(c["templates"])))
     check("the fields a template can use come from the listing",
           [f["key"] for f in c["fields"]][:3] == ["business_name", "city", "category"], str(c["fields"]))
     s, body = api(client, token, "patch", f"/api/wa/campaigns/{camp}", json={"templates": {"opener": []}})
