@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-10-28 (meetings on Zoho Calendar, built on branch `zoho-calendar`, not deployed) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-10-29 (meetings on Zoho Calendar deployed as `fa6ca7f`; Zoho Console setup still to do) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -62,14 +62,16 @@ fix this file.
   too, which it didn't before. One new column (`pipeline_stages.wants_time`)
   and one guarded migration — no change to `businesses`. Reminders were
   considered and explicitly not built (§5c). All 22 test files pass locally.
-- **Built 2026-10-28 on branch `zoho-calendar`, NOT deployed: booked meetings
-  on Zoho Calendar** (§5f). Setting a lead to Meeting booked puts it on the
+- **Deployed 2026-10-29 02:11 UTC (`fa6ca7f`; backed up by the deploy):
+  booked meetings on Zoho Calendar** (§5f). Setting a lead to Meeting booked puts it on the
   operator's Zoho Calendar (a shared one by default), with a Zoho Meeting
   room or their own link, and, if a box is ticked, an invite to the client
   from their own Zoho address. Two new tables (`zoho_connections`,
   `meetings`), no change to any existing column, no migration. Tested
   against a fake Zoho only: **nothing has talked to real Zoho yet** — the
-  API Console registration is the operator's last step (§9).
+  API Console registration is the operator's next step (§9). Until then the
+  feature is dormant: bookings save as before and the panel says "not on a
+  calendar".
 - **Deployed 2026-10-11 16:41 UTC (`3ea7efd`): the UI cleanup and follow-up sequences**
   (§5e). WhatsApp follow-ups are a list that cycles forever (a lead's own
   first, as many as it brought); Email has a To do for real replies; one
@@ -102,7 +104,7 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
-| branch `zoho-calendar` | 10-28 | Meetings on Zoho Calendar: connect per operator, shared calendar, invites, Zoho Meeting or own link, cancel | **No** |
+| `fa6ca7f` | 10-29 | Meetings on Zoho Calendar: connect per operator, shared calendar, invites, Zoho Meeting or own link, cancel | Yes (Zoho not yet connected) |
 | `3ea7efd` | 10-11 | Follow-up sequences + long-term gap; Email To do; Get leads page; Settings split; sidebar regrouped | Yes |
 | `916dabb` | 10-10 | Deploys back up the database first | Yes |
 | `8305454` | 10-10 | Country-aware phone matching; named imports + "From" filter everywhere; CSV-only scrapes; CSV download; full-screen tables; Recently deleted; account passwords no longer sent to campaign owners | Yes |
@@ -780,7 +782,7 @@ built this myself I myself forget where to find certain options").
   syntax error there (fine on 3.12+, which is what's installed locally). One
   slipped in and was caught before commit; check new f-strings for it.
 
-## 5f. Meetings on Zoho Calendar — built 2026-10-28, not deployed
+## 5f. Meetings on Zoho Calendar — live 2026-10-29 (`fa6ca7f`), Zoho not yet connected
 
 Asked for by the operator: the Book step should reach a real calendar, and
 send the client an invite. Zoho because both operators' work email is Zoho
@@ -1036,10 +1038,10 @@ importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
-000000. **Meetings on Zoho Calendar (§5f) are on branch `zoho-calendar`,
-       not deployed.** To finish, in order:
-       1. Merge and push (asks first, as always). No migration beyond two
-          new tables; `tzdata` is a new line in `requirements.txt`.
+000000. **Meetings on Zoho Calendar (§5f) are live** (`fa6ca7f`,
+       2026-10-29; backed up by the deploy) **but not connected to Zoho
+       yet.** To finish, in order:
+       1. ~~Merge and push.~~ Done 2026-10-29.
        2. In Zoho's Saudi API Console (`api-console.zoho.sa`), signed in
           as the operator: Add Client → **Server-based Applications**.
           Homepage `https://shoutreach.hexiv.co`; Authorized Redirect URI
