@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-10-11 (follow-up sequences, Email To do, Get leads, Settings split; deployed) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-10-28 (meetings on Zoho Calendar, built on branch `zoho-calendar`, not deployed) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -62,6 +62,14 @@ fix this file.
   too, which it didn't before. One new column (`pipeline_stages.wants_time`)
   and one guarded migration — no change to `businesses`. Reminders were
   considered and explicitly not built (§5c). All 22 test files pass locally.
+- **Built 2026-10-28 on branch `zoho-calendar`, NOT deployed: booked meetings
+  on Zoho Calendar** (§5f). Setting a lead to Meeting booked puts it on the
+  operator's Zoho Calendar (a shared one by default), with a Zoho Meeting
+  room or their own link, and, if a box is ticked, an invite to the client
+  from their own Zoho address. Two new tables (`zoho_connections`,
+  `meetings`), no change to any existing column, no migration. Tested
+  against a fake Zoho only: **nothing has talked to real Zoho yet** — the
+  API Console registration is the operator's last step (§9).
 - **Deployed 2026-10-11 16:41 UTC (`3ea7efd`): the UI cleanup and follow-up sequences**
   (§5e). WhatsApp follow-ups are a list that cycles forever (a lead's own
   first, as many as it brought); Email has a To do for real replies; one
@@ -94,6 +102,7 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
+| branch `zoho-calendar` | 10-28 | Meetings on Zoho Calendar: connect per operator, shared calendar, invites, Zoho Meeting or own link, cancel | **No** |
 | `3ea7efd` | 10-11 | Follow-up sequences + long-term gap; Email To do; Get leads page; Settings split; sidebar regrouped | Yes |
 | `916dabb` | 10-10 | Deploys back up the database first | Yes |
 | `8305454` | 10-10 | Country-aware phone matching; named imports + "From" filter everywhere; CSV-only scrapes; CSV download; full-screen tables; Recently deleted; account passwords no longer sent to campaign owners | Yes |
@@ -771,6 +780,88 @@ built this myself I myself forget where to find certain options").
   syntax error there (fine on 3.12+, which is what's installed locally). One
   slipped in and was caught before commit; check new f-strings for it.
 
+## 5f. Meetings on Zoho Calendar — built 2026-10-28, not deployed
+
+Asked for by the operator: the Book step should reach a real calendar, and
+send the client an invite. Zoho because both operators' work email is Zoho
+(an invite from the company address, not a Gmail one); Zoho Meeting for the
+room because free Google Meet cuts 3+ person calls at 60 minutes, with a
+"your own link" box kept for a client who wants Google Meet. Decided in
+conversation, in this order of importance:
+
+- **The client is only emailed when a box says so.** First invite
+  (`send_invite`), an update to a moved meeting (`notify_change`, offered
+  only once they've been invited), a cancellation (Cancel meeting's own
+  box). `event_payload` sets Zoho's `notify_attendee` from exactly that, and
+  puts the client on the event only once invited.
+- **The stage never cancels a meeting.** Changing or clearing the pipeline
+  stage leaves the `meetings` row and the Zoho event alone — the same "a
+  mis-click must not reach a client" rule as clearing a stage not
+  un-replying (§5a). The panel says when a meeting outlives its stage. Only
+  `POST /api/businesses/<id>/meeting/cancel` cancels, with a confirm.
+- **Each operator connects their own Zoho login** (`zoho_connections`, one
+  row per user, tokens never sent to a browser). The invite comes from
+  whoever booked. Where it lands is each person's choice in My settings —
+  both pick the shared calendar; the booking dialog can pick another for one
+  meeting, until that meeting is on a calendar.
+- **This is a deliberate hole in the wall (§3)**, chosen by the operator:
+  they read each other's email and work the same clients. Only the shared
+  *calendar* sees across — titles name the business, nothing else does.
+  The leads themselves stay walled; another person's meeting is a 404.
+- **What the client sees is the title, time and link.** Never the phone
+  number, notes, or "booked via WhatsApp" (the `.ics` download still carries
+  those — it's for the operator's own calendar). The title is rendered once
+  at booking from the operator's template, default
+  `Hexiv × {{business}}: intro call`. Default length 1 hour.
+- **Timezones exist now, but only on the way to Zoho.** `meetings.starts_at`
+  is the wall-clock time as typed, plus `meetings.timezone`; `utc_range`
+  converts at the moment of the API call. `businesses.next_action_at` keeps
+  §5c's no-conversion rule. The timezone comes from the dialog, else the
+  meeting, else My settings, else the browser's (Calling sends it), else UTC.
+- **A booking never waits on Zoho.** Zoho down or refusing: the stage and
+  meeting are saved, `sync_error` holds Zoho's sentence, and the panel and
+  Booked tab show it with Try again. Not connected at all: the meeting is
+  kept here ("Not on a calendar"), and Add to calendar works once connected.
+- **An address typed for an invite** can be saved to the lead
+  (`add_business_email`): as an email lead in **no** campaign, and arriving
+  `unsubscribed`/`bounced` if any operator's copy of it is, so no sequence
+  can mail it. The dialog warns — never blocks — on an unsubscribed or
+  bounced address or a do-not-contact business
+  (`GET /api/meetings/address-check`, across every operator like the rest
+  of suppression, never saying whose list).
+
+**Where it is.** `zoho_calendar.py` is the only thing that talks to Zoho,
+through `_http` (the tests replace it). Booking happens in
+`api_set_business_pipeline` (stage `booked` with a time, `meeting` in the
+body, checked by `clean_meeting_input` *before* anything is saved) and in
+`api_log_call` (a "booked" outcome: calendar, no invite). Routes:
+`/api/businesses/<id>/meeting/{sync,invite,cancel}`, `/api/zoho/{status,
+calendars,prefs,disconnect}`, `/zoho/connect` and `/zoho/callback` (OAuth,
+`state` in the session, refuses an account from another data centre).
+Team setup holds `zoho_region` (default `sa`), `zoho_client_id`,
+`zoho_client_secret` (masked like every `_secret`); per-person defaults are
+`meeting_prefs:<uid>` in settings. The dialog is `meetingFieldsHtml` in
+`lead_panel.js`, the panel box `meetingBoxHtml`, Settings in `settings.js`.
+
+**Not yet proven against real Zoho — check these first (§9):**
+
+- The API host `calendar.zoho.sa`. Zoho documents only `.com`; `.sa`
+  follows the pattern `accounts.zoho.sa` is documented under. If wrong,
+  every call fails with Zoho's error on the meeting, nothing is lost.
+- That an update with `conference: zmeeting` keeps the same room rather
+  than making a new one (an update replaces the whole event, per Zoho).
+- Where the join link sits in Zoho's response (`_find_url` looks for it).
+- Whose name a shared-calendar invite goes out under — the booker's, or
+  the calendar owner's. The operator's preference: his cofounder books most
+  meetings, so the cofounder should own the shared calendar.
+- That `notify_attendee` on DELETE emails the cancellation.
+
+Deleting a lead deletes its meeting row (and Recently deleted brings it
+back) but leaves the event on Zoho — cancel first if it's off. Disconnecting
+leaves events where they are. `tests/test_zoho_calendar.py` (15 sections) is
+the precise statement of all of this; the screens were driven in a browser
+at computer and phone size against the same fake Zoho.
+
 ## 6. Deploys and operations
 
 - **Server:** GCP e2-micro, Debian 12, app in `~/shoutreach`, gunicorn with
@@ -888,7 +979,7 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-24 files, all passing as of §5e. `test_rendering.py` once
+25 files, all passing as of §5f. `test_rendering.py` once
 failed with "database is locked" mid-suite and passed on its own and on a
 re-run — watch for it.
 
@@ -945,6 +1036,27 @@ importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
+000000. **Meetings on Zoho Calendar (§5f) are on branch `zoho-calendar`,
+       not deployed.** To finish, in order:
+       1. Merge and push (asks first, as always). No migration beyond two
+          new tables; `tzdata` is a new line in `requirements.txt`.
+       2. In Zoho's Saudi API Console (`api-console.zoho.sa`), signed in
+          as the operator: Add Client → **Server-based Applications**.
+          Homepage `https://shoutreach.hexiv.co`; Authorized Redirect URI
+          exactly as Settings → Team setup → Zoho Calendar shows it
+          (`https://shoutreach.hexiv.co/zoho/callback`).
+       3. Paste the Client ID and Client Secret into that Team setup card
+          and save. (Never into a chat.)
+       4. In Zoho Calendar, the cofounder creates the shared calendar and
+          shares it with the operator with edit rights.
+       5. Each person: My settings → Connect Zoho Calendar, then pick the
+          shared calendar under "Put my meetings on" and Save.
+       6. Book a test meeting on a lead with your own address as the
+          client's, and check every item in §5f's "Not yet proven" list:
+          it lands on the shared calendar at the right hour, has a Zoho
+          Meeting link, the invite arrives (and from whom), moving it with
+          the box ticked sends an update, and Cancel meeting removes it and
+          sends a cancellation.
 00000. **§5e is live** (`3ea7efd`, 2026-10-11; backed up by the deploy). Still to
       check by hand: WhatsApp → Messages shows "Follow-up 1" holding each
       campaign's old follow-up; Email → To do is empty (older replies start
@@ -1085,6 +1197,8 @@ retired `contacts` table.
   page: `contacts.js` (businesses, "Add all to…"), `email_leads.js` (Email →
   Leads and suppression), `calling.js`, `whatsapp.js`, `dashboard.js`.
 - `audit.py` — the lead audit's automatic checks.
+- `zoho_calendar.py` — the only code that talks to Zoho: OAuth, calendars,
+  and putting a booked meeting on, moving it, inviting, cancelling (§5f).
 - `reset_password.py` — shell password reset.
 - `tests/test_ownership.py`, `tests/test_whatsapp.py`,
   `tests/test_worker_api.py` — the best description of intended behaviour.

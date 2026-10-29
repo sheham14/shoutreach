@@ -37,6 +37,7 @@ import audit
 import db
 import scheduler
 import sender as email_sender
+import zoho_calendar
 
 # The scraper deliberately does NOT run here. It needs a visible Chrome window
 # for CAPTCHA solving, which a headless server cannot provide -- on the GCP VM
@@ -2127,15 +2128,44 @@ def api_set_business_pipeline(bid):
     """
     Move one business along. Setting a stage stops its WhatsApp cadence;
     clearing one deliberately does not restart it (see set_business_pipeline).
+
+    'booked' with a time also books the meeting: `meeting` carries the
+    dialog's calendar choices (timezone, length, link, the client's email and
+    whether to invite them). It's checked before anything is saved, so a bad
+    link refuses the whole save rather than half of it. Any other stage
+    leaves an existing meeting alone -- only Cancel meeting cancels one.
     """
     d = request.json or {}
+    stage = d.get("stage") or ""
+    choices = {}
+    if stage == "booked":
+        try:
+            choices = zoho_calendar.clean_meeting_input(d.get("meeting") or {})
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
     result = db.set_business_pipeline(
-        bid, d.get("stage") or "", channel=d.get("channel") or "",
+        bid, stage, channel=d.get("channel") or "",
         next_action_at=d.get("next_action_at"), owner_id=me(),
     )
     if not result.get("ok"):
         return jsonify(result), 404 if result.get("error") == "Not found" else 400
+    if stage == "booked" and len(result.get("next_action_at") or "") > 10:
+        result.update(_book_meeting(bid, result["next_action_at"], choices))
     return jsonify(result)
+
+
+def _book_meeting(bid, starts_at, choices, fallback_timezone=""):
+    """Record and calendar a booking; what to tell the page about it."""
+    out = {}
+    if choices.get("save_email") and choices.get("invite_email"):
+        ok, err = db.add_business_email(bid, choices["invite_email"], owner_id=me())
+        out["email_saved"] = ok
+        if not ok:
+            out["email_error"] = err
+    meeting = zoho_calendar.book(bid, me(), starts_at, fallback_timezone=fallback_timezone,
+                                 **{k: v for k, v in choices.items() if k != "save_email"})
+    out["meeting"] = zoho_calendar.meeting_view(meeting)
+    return out
 
 
 @app.route("/api/pipeline", methods=["GET"])
@@ -2184,7 +2214,9 @@ def api_business_ics(bid):
                  else datetime.strptime(raw[:10], "%Y-%m-%d"))
     except ValueError:
         return jsonify({"error": "Unreadable scheduled time"}), 400
-    end = start + timedelta(minutes=30)
+    meeting = db.get_meeting(bid)
+    minutes = meeting["minutes"] if meeting and not meeting["cancelled_at"] else 30
+    end = start + timedelta(minutes=minutes)
 
     def _esc(text):
         return (str(text or "").replace("\\", "\\\\").replace(",", "\\,")
@@ -2208,6 +2240,176 @@ def api_business_ics(bid):
     resp.headers["Content-Type"] = "text/calendar; charset=utf-8"
     resp.headers["Content-Disposition"] = f'attachment; filename="meeting-{bid}.ics"'
     return resp
+
+
+# ── API: meetings on Zoho Calendar ────────────────────────────────────────────
+#
+# Each operator connects their own Zoho login; see zoho_calendar.py. The
+# meeting itself is booked by setting a business to 'booked' (above) or by a
+# "Meeting booked" call outcome. These routes are the rest: retry, invite,
+# cancel, and the connection.
+
+@app.route("/api/businesses/<int:bid>/meeting/sync", methods=["POST"])
+@login_required
+@owned("business", "bid")
+def api_meeting_sync(bid):
+    """Put a meeting on the calendar that isn't there yet, or try again after
+    Zoho refused. Never emails the client."""
+    if not db.get_meeting(bid):
+        return jsonify({"ok": False, "error": "There's no meeting booked for this lead"}), 404
+    if not zoho_calendar.status(me())["connected"]:
+        return jsonify({"ok": False, "error": "Connect Zoho Calendar in Settings → My settings first"}), 400
+    m = zoho_calendar.sync_meeting(bid, me())
+    return jsonify({"ok": not m.get("sync_error"), "meeting": zoho_calendar.meeting_view(m),
+                    "error": m.get("sync_error") or None})
+
+
+@app.route("/api/businesses/<int:bid>/meeting/invite", methods=["POST"])
+@login_required
+@owned("business", "bid")
+def api_meeting_invite(bid):
+    d = request.json or {}
+    email = (d.get("email") or "").strip().lower()
+    out = {}
+    try:
+        m = zoho_calendar.invite(bid, me(), email)
+    except (zoho_calendar.ZohoError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if d.get("save_email"):
+        ok, err = db.add_business_email(bid, email, owner_id=me())
+        out = {"email_saved": ok, "email_error": err}
+    return jsonify({"ok": True, "meeting": zoho_calendar.meeting_view(m), **out})
+
+
+@app.route("/api/businesses/<int:bid>/meeting/cancel", methods=["POST"])
+@login_required
+@owned("business", "bid")
+def api_meeting_cancel(bid):
+    """
+    The one way a meeting is cancelled. `notify` emails an invited client a
+    cancellation; `clear_stage` also takes the business off 'Meeting booked'.
+    """
+    d = request.json or {}
+    try:
+        m = zoho_calendar.cancel(bid, me(), notify=bool(d.get("notify")))
+    except zoho_calendar.ZohoError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if d.get("clear_stage") and (db.get_business(bid) or {}).get("pipeline_stage") == "booked":
+        db.set_business_pipeline(bid, "", owner_id=me())
+    return jsonify({"ok": True, "meeting": zoho_calendar.meeting_view(m)})
+
+
+@app.route("/api/meetings/address-check", methods=["GET"])
+@login_required
+def api_meeting_address_check():
+    """
+    A warning, never a refusal, for the address an invite is about to go to.
+    Suppression is checked across every operator on purpose -- an opt-out
+    binds everyone on the shared domain -- but the answer never says whose
+    list it was.
+    """
+    email = (request.args.get("email") or "").strip().lower()
+    warnings = []
+    status = db.address_suppression(email)
+    if status == "unsubscribed":
+        warnings.append("This address unsubscribed from our emails.")
+    elif status == "bounced":
+        warnings.append("Email to this address has bounced before — check it's right.")
+    try:
+        bid = int(request.args.get("business_id") or 0)
+    except ValueError:
+        bid = 0
+    if bid and db.owns("business", bid, me()) and (db.get_business(bid) or {}).get("do_not_contact"):
+        warnings.append("This business is marked do not contact.")
+    return jsonify({"warning": " ".join(warnings)})
+
+
+def _zoho_redirect_uri() -> str:
+    """
+    Where Zoho sends the operator back to. Built from the address they are
+    using right now, so Team setup shows exactly what to paste into Zoho's
+    API Console. nginx talks plain HTTP to the app, so the scheme comes from
+    X-Forwarded-Proto.
+    """
+    root = request.url_root.rstrip("/")
+    if request.headers.get("X-Forwarded-Proto", "").lower() == "https" and root.startswith("http://"):
+        root = "https://" + root[len("http://"):]
+    return root + "/zoho/callback"
+
+
+@app.route("/api/zoho/status", methods=["GET"])
+@login_required
+def api_zoho_status():
+    return jsonify({**zoho_calendar.status(me()), "redirect_uri": _zoho_redirect_uri(),
+                    "regions": zoho_calendar.REGIONS})
+
+
+@app.route("/api/zoho/calendars", methods=["GET"])
+@login_required
+def api_zoho_calendars():
+    try:
+        return jsonify({"ok": True, "calendars": zoho_calendar.list_calendars(me())})
+    except zoho_calendar.ZohoError as exc:
+        return jsonify({"ok": False, "error": str(exc), "calendars": []}), 400
+
+
+@app.route("/api/zoho/prefs", methods=["PUT"])
+@login_required
+def api_zoho_prefs():
+    """My settings → Meetings: the default calendar and meeting defaults."""
+    d = request.json or {}
+    try:
+        prefs = zoho_calendar.clean_prefs(d)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    db.save_meeting_prefs(prefs, owner_id=me())
+    if d.get("calendar_uid") and db.get_zoho_connection(me()):
+        db.save_zoho_connection(me(), calendar_uid=str(d["calendar_uid"])[:200],
+                                calendar_name=str(d.get("calendar_name") or "")[:200])
+    return jsonify({"ok": True, **zoho_calendar.status(me())})
+
+
+@app.route("/api/zoho/disconnect", methods=["POST"])
+@login_required
+def api_zoho_disconnect():
+    zoho_calendar.disconnect(me())
+    return jsonify({"ok": True})
+
+
+@app.route("/zoho/connect", methods=["GET"])
+@login_required
+def zoho_connect():
+    """Off to Zoho to sign in and allow access. `state` ties the answer to
+    this browser session, so nobody can paste their own Zoho account into
+    someone else's."""
+    if not zoho_calendar.is_configured():
+        return redirect("/?zoho=not_configured")
+    state = _secrets.token_urlsafe(24)
+    session["zoho_state"] = state
+    return redirect(zoho_calendar.authorize_url(state, _zoho_redirect_uri()))
+
+
+@app.route("/zoho/callback", methods=["GET"])
+@login_required
+def zoho_callback():
+    expected = session.pop("zoho_state", "")
+    if not expected or not hmac.compare_digest(request.args.get("state", ""), expected):
+        return redirect("/?zoho=failed")
+    if request.args.get("error"):
+        return redirect("/?zoho=denied")
+    # Zoho says which data centre the account lives in. A token from any
+    # other is useless here, so say so instead of failing later.
+    server = request.args.get("accounts-server", "")
+    if server and server.rstrip("/") != zoho_calendar.accounts_host():
+        logging.warning("Zoho account is on %s, install is set to %s", server,
+                        zoho_calendar.accounts_host())
+        return redirect("/?zoho=wrong_region")
+    try:
+        zoho_calendar.finish_connect(me(), request.args.get("code", ""), _zoho_redirect_uri())
+    except zoho_calendar.ZohoError as exc:
+        logging.warning("Zoho connect failed for uid=%s: %s", me(), exc)
+        return redirect("/?zoho=failed")
+    return redirect("/?zoho=connected")
 
 
 @app.route("/api/call-outcomes", methods=["GET"])
@@ -2820,7 +3022,15 @@ def api_log_call():
     db.add_log(f"☎ {label} — {(business or {}).get('name') or business_id}")
     if result["stopped_email"]:
         db.add_log(f"  ↳ email sequence stopped for {(business or {}).get('name') or business_id}")
-    return jsonify({"ok": True, **result})
+    # Booked on the phone: on the calendar too, the same as a booking made
+    # from the lead panel -- but no invite, since nobody typed an address.
+    # That's sent afterwards from the lead's panel. `timezone` is the
+    # browser's, for an operator who hasn't set one in My settings.
+    extra = {}
+    if outcome == "booked" and next_call_at:
+        extra = _book_meeting(business_id, next_call_at, {},
+                              fallback_timezone=d.get("timezone") or "")
+    return jsonify({"ok": True, **result, **extra})
 
 
 @app.route("/api/calls/contact/<int:cid>", methods=["GET"])
@@ -2871,12 +3081,11 @@ def api_save_call_script():
 @owned("business", "cid")
 def api_call_ics(cid):
     """
-    A calendar invite for a booked meeting.
+    A calendar file for a booked call.
 
-    An .ics download rather than a Google Calendar integration: it works with
-    every calendar, needs no OAuth consent screen and no refresh tokens to keep
-    alive, and the in-app queue already covers callbacks. Real sync is only
-    worth building if two-way updates start to matter.
+    A booked meeting also goes on Zoho Calendar when the operator has
+    connected it (zoho_calendar.py, via log_call's booking); this download
+    is for any other calendar, and works with no connection at all.
     """
     contact = db.get_call_lead_view(cid, owner_id=me())
     if not contact or not contact.get("next_call_at"):

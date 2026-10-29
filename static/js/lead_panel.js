@@ -170,11 +170,13 @@ function _pipeInputValue(stored, wantsTime) {
 async function setPipelineStage(businessId, channel, after) {
   const stages = await loadPipelineStages();
   const live = stages.filter(s => !s.archived);
-  const current = await api(`/api/businesses/${businessId}`);
+  const [current, zoho] = await Promise.all([api(`/api/businesses/${businessId}`), loadZohoStatus()]);
+  const calendars = zoho && zoho.connected ? await loadZohoCalendars() : [];
   const now = (current && current.pipeline_stage) || '';
   const nowStage = pipelineStage(now);
-  const values = await chooseDialog({
+  const asked = chooseDialog({
     title: 'Where is this one up to?',
+    width: 560,
     body: `<label class="field-label">Stage</label>
       <select id="pl-stage" class="filter-select" style="width:100%;max-width:100%"
               onchange="_pipeDateToggle()">
@@ -188,6 +190,9 @@ async function setPipelineStage(businessId, channel, after) {
         <input id="pl-date" type="${nowStage && nowStage.wants_time ? 'datetime-local' : 'date'}" class="soft-input"
                value="${esc(_pipeInputValue(current && current.next_action_at, nowStage && nowStage.wants_time))}" />
       </div>
+      <div id="pl-meeting-wrap" style="display:${now === MEETING_STAGE ? 'block' : 'none'}">
+        ${meetingFieldsHtml(current || {}, zoho, calendars)}
+      </div>
       <div class="form-hint" style="margin-top:8px">This is the business, not just this
         channel — it shows the same wherever you open them. Setting a stage stops their
         WhatsApp follow-ups.</div>`,
@@ -195,14 +200,24 @@ async function setPipelineStage(businessId, channel, after) {
     collect: () => {
       const stage = document.getElementById('pl-stage').value;
       const dateEl = document.getElementById('pl-date');
-      return { stage, next_action_at: stage && dateEl ? dateEl.value : null };
+      const out = { stage, next_action_at: stage && dateEl ? dateEl.value : null };
+      if (stage === MEETING_STAGE) {
+        const meeting = collectMeetingFields();
+        if (!meeting) return null;
+        out.meeting = meeting;
+      }
+      return out;
     },
   });
+  const emailInput = document.getElementById('pl-email');
+  if (emailInput && emailInput.value) _meetingEmailChanged(emailInput);
+  const values = await asked;
   if (!values) return false;
   const res = await api(`/api/businesses/${businessId}/pipeline`, 'PUT',
                         { ...values, channel });
   if (!res || res.error) { toast((res && res.error) || 'Could not save that', 'err'); return false; }
-  toast(values.stage ? 'Stage saved' : 'Stage cleared');
+  if (res.meeting) toastMeeting(res);
+  else toast(values.stage ? 'Stage saved' : 'Stage cleared');
   if (after) after(res);
   return true;
 }
@@ -226,6 +241,299 @@ function _pipeDateToggle() {
   const type = wantsTime ? 'datetime-local' : 'date';
   if (input.type !== type) { input.type = type; input.value = ''; }
   if (label) label.textContent = wantsTime ? 'When is it?' : 'When is it due?';
+  const meeting = document.getElementById('pl-meeting-wrap');
+  if (meeting) meeting.style.display = sel.value === MEETING_STAGE ? 'block' : 'none';
+}
+
+// ── Meetings: booked onto Zoho Calendar ──────────────────────────────────────
+//
+// 'booked' is the one stage that's a real meeting, and the only one that goes
+// on a calendar (the same exact key Calling's "Meeting booked" outcome uses).
+// The client hears from us -- an invite from Zoho, from your own address --
+// only when a box saying so is ticked. Changing or clearing the stage never
+// cancels a meeting; only Cancel meeting does, so a mis-click can't email a
+// client a cancellation.
+
+const MEETING_STAGE = 'booked';
+const MEETING_LENGTHS = [15, 30, 45, 60, 90, 120];
+
+let _zohoStatus = null;
+let _zohoCalendars = null;
+
+async function loadZohoStatus(force = false) {
+  if (_zohoStatus && !force) return _zohoStatus;
+  const s = await api('/api/zoho/status');
+  _zohoStatus = s && !s.error ? s : null;
+  return _zohoStatus;
+}
+
+async function loadZohoCalendars(force = false) {
+  if (_zohoCalendars && !force) return _zohoCalendars;
+  const res = await api('/api/zoho/calendars');
+  _zohoCalendars = (res && res.calendars) || [];
+  return _zohoCalendars;
+}
+
+function browserTimezone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (_) { return 'UTC'; }
+}
+
+function timezoneOptionsHtml(selected) {
+  let zones = [];
+  try { zones = Intl.supportedValuesOf('timeZone'); } catch (_) { zones = []; }
+  if (!zones.includes('UTC')) zones = ['UTC', ...zones];
+  if (selected && !zones.includes(selected)) zones = [selected, ...zones];
+  return zones.map(z => `<option value="${esc(z)}" ${z === selected ? 'selected' : ''}>${esc(z.replace(/_/g, ' '))}</option>`).join('');
+}
+
+function meetingLengthOptionsHtml(selected) {
+  const lengths = MEETING_LENGTHS.includes(+selected) ? MEETING_LENGTHS : [...MEETING_LENGTHS, +selected].sort((a, b) => a - b);
+  return lengths.map(n => `<option value="${n}" ${n === +selected ? 'selected' : ''}>${
+    n < 60 ? `${n} minutes` : n === 60 ? '1 hour' : `${n / 60} hours`}</option>`).join('');
+}
+
+// A calendar shared with you read-only can't take a meeting; say so rather
+// than let Zoho refuse it after you've booked.
+function calendarOptionsHtml(calendars, selected) {
+  return calendars.map(c => `<option value="${esc(c.uid)}" data-name="${esc(c.name)}" ${c.uid === selected ? 'selected' : ''}>${
+    esc(c.name)}${/view|free/i.test(c.privilege || '') ? ' (view only)' : ''}</option>`).join('');
+}
+
+// The meeting part of the stage dialog. Prefilled from the meeting already
+// booked, then your own defaults (My settings), then this browser's timezone.
+function meetingFieldsHtml(d, zoho, calendars) {
+  const m = d.meeting && !d.meeting.cancelled_at ? d.meeting : null;
+  const p = (zoho && zoho.prefs) || {};
+  const tz = (m && m.timezone) || p.timezone || browserTimezone();
+  const minutes = (m && m.minutes) || p.minutes || 60;
+  const kind = (m && m.link_kind) || p.link_kind || 'zmeeting';
+  const ownLink = m ? m.own_link : (p.own_link || '');
+  const leadEmails = (d.emails || []).filter(e => e.status !== 'deleted').map(e => e.email);
+  const email = (m && m.invite_email) || leadEmails[0] || '';
+  const connected = zoho && zoho.connected;
+
+  let calendar;
+  if (!connected) {
+    calendar = `<div class="form-hint" style="margin-top:10px">${zoho && zoho.configured
+      ? `Zoho Calendar isn't connected, so this is saved here only.
+         <a style="color:var(--blue);cursor:pointer" onclick="chooseCancel(); openSettingsTab('mine')">Connect it in My settings</a>`
+      : 'Zoho Calendar isn\'t set up yet (an admin adds it in Settings → Team setup), so this is saved here only.'}</div>`;
+  } else if (m && m.event_uid) {
+    calendar = `<div class="text-muted text-small" style="margin-top:10px">On <b>${esc(m.calendar_name || 'your calendar')}</b></div>`;
+  } else {
+    const chosen = (m && m.calendar_uid) || zoho.calendar_uid;
+    calendar = `<label class="field-label">Calendar</label>
+      <select id="pl-cal" class="filter-select" style="width:100%;max-width:100%">${calendarOptionsHtml(calendars, chosen)}</select>`;
+  }
+
+  let invite = '';
+  if (connected && m && m.invited_at) {
+    invite = `<label class="check-line"><input type="checkbox" id="pl-notify" checked />
+      If the time changes, email <b>${esc(m.invite_email)}</b> the new time</label>`;
+  } else if (connected) {
+    // Follows the email box until you tick or untick it yourself: typing the
+    // client's address is almost always so they get the invite.
+    invite = `<label class="check-line"><input type="checkbox" id="pl-invite" ${email ? 'checked' : ''}
+        onchange="this.dataset.touched = '1'" />
+      Email them an invite, from your Zoho address</label>`;
+  }
+
+  return `
+    <div class="flex gap-2" style="flex-wrap:wrap">
+      <div style="flex:2;min-width:180px"><label class="field-label">Timezone</label>
+        <select id="pl-tz" class="filter-select" style="width:100%;max-width:100%">${timezoneOptionsHtml(tz)}</select></div>
+      <div style="flex:1;min-width:120px"><label class="field-label">Length</label>
+        <select id="pl-minutes" class="filter-select" style="width:100%;max-width:100%">${meetingLengthOptionsHtml(minutes)}</select></div>
+    </div>
+    ${calendar}
+    <label class="field-label">Meeting link</label>
+    <select id="pl-link" class="filter-select" style="width:100%;max-width:100%"
+            onchange="document.getElementById('pl-own-link').style.display = this.value === 'own' ? 'block' : 'none'">
+      <option value="zmeeting" ${kind === 'zmeeting' ? 'selected' : ''}>Zoho Meeting — a new room for this meeting</option>
+      <option value="own" ${kind === 'own' ? 'selected' : ''}>My own link (e.g. Google Meet)</option>
+      <option value="none" ${kind === 'none' ? 'selected' : ''}>No link</option>
+    </select>
+    <input id="pl-own-link" class="soft-input" placeholder="https://meet.google.com/…" value="${esc(ownLink)}"
+           style="display:${kind === 'own' ? 'block' : 'none'};margin-top:6px" />
+    <label class="field-label">Client's email</label>
+    <input id="pl-email" class="soft-input" type="email" placeholder="the address they sent you" value="${esc(email)}"
+           data-business="${d.id}" data-known="${esc(JSON.stringify(leadEmails))}"
+           oninput="_meetingEmailChanged(this)" />
+    <div id="pl-email-warn" class="form-hint" style="color:var(--amber)"></div>
+    <label class="check-line" id="pl-save-email-line" style="display:${email && !leadEmails.includes(email) ? 'flex' : 'none'}">
+      <input type="checkbox" id="pl-save-email" ${leadEmails.length ? '' : 'checked'} />
+      Also save it to this lead (it isn't put in any email campaign)</label>
+    ${invite}`;
+}
+
+// Reads the meeting part of the dialog; null (with a toast) if it won't do.
+function collectMeetingFields() {
+  const val = id => (document.getElementById(id) || {}).value || '';
+  const checked = id => !!(document.getElementById(id) || {}).checked;
+  const kind = val('pl-link');
+  const ownLink = val('pl-own-link').trim();
+  const email = val('pl-email').trim();
+  if (kind === 'own' && !/^https?:\/\/\S+$/.test(ownLink)) {
+    toast('Paste the meeting link (starting https://), or pick Zoho Meeting', 'err'); return null;
+  }
+  if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast("That email doesn't look right", 'err'); return null; }
+  if (checked('pl-invite') && !email) { toast("Type the client's email to send them an invite", 'err'); return null; }
+  const cal = document.getElementById('pl-cal');
+  const calOpt = cal && cal.options[cal.selectedIndex];
+  return {
+    timezone: val('pl-tz'), minutes: +val('pl-minutes') || 60,
+    link_kind: kind, own_link: kind === 'own' ? ownLink : '',
+    invite_email: email,
+    save_email: checked('pl-save-email') && document.getElementById('pl-save-email-line').style.display !== 'none',
+    send_invite: checked('pl-invite'), notify_change: checked('pl-notify'),
+    calendar_uid: calOpt ? calOpt.value : '', calendar_name: calOpt ? calOpt.dataset.name : '',
+  };
+}
+
+let _emailCheckTimer = null;
+
+// A warning -- never a block -- when an invite is about to go to an address
+// that unsubscribed or bounced, or a business marked do not contact.
+function _meetingEmailChanged(input, warnId = 'pl-email-warn', saveLineId = 'pl-save-email-line') {
+  const email = input.value.trim().toLowerCase();
+  let known = [];
+  try { known = JSON.parse(input.dataset.known || '[]'); } catch (_) { known = []; }
+  const line = document.getElementById(saveLineId);
+  if (line) line.style.display = email && !known.includes(email) ? 'flex' : 'none';
+  const inviteBox = document.getElementById('pl-invite');
+  if (inviteBox && !inviteBox.dataset.touched && input.id === 'pl-email') inviteBox.checked = !!email;
+  clearTimeout(_emailCheckTimer);
+  _emailCheckTimer = setTimeout(async () => {
+    const warn = document.getElementById(warnId);
+    if (!warn) return;
+    if (!email.includes('@')) { warn.textContent = ''; return; }
+    const res = await api(`/api/meetings/address-check?email=${encodeURIComponent(email)}&business_id=${input.dataset.business || ''}`);
+    warn.textContent = res && res.warning ? `⚠ ${res.warning} You can still send it.` : '';
+  }, 400);
+}
+
+// One toast that says what happened to the meeting, not just the stage.
+function toastMeeting(res) {
+  const m = res.meeting;
+  const saved = res.email_error ? ` (the address wasn't saved: ${res.email_error})` : '';
+  if (m.status === 'failed') { toast(`Booked, but it isn't on your calendar — Zoho said: ${m.sync_error}${saved}`, 'err'); return; }
+  if (m.status === 'on_calendar') {
+    toast((m.invited_at && m.invite_email ? `Booked — on your calendar, and ${m.invite_email} has an invite` : 'Booked — on your calendar') + saved);
+    return;
+  }
+  toast(`Booked${saved}`);
+}
+
+// "Thu 5 Nov, 10:00 · 1 hour", with the timezone when it isn't this browser's.
+function meetingWhenText(m) {
+  const d = new Date(String(m.starts_at || '').replace(' ', 'T'));
+  const when = isNaN(d) ? (m.starts_at || '') : d.toLocaleString([], {
+    weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const length = m.minutes < 60 ? `${m.minutes} min` : m.minutes === 60 ? '1 hour' : `${m.minutes / 60} hours`;
+  const tz = m.timezone && m.timezone !== browserTimezone() ? ` · ${m.timezone.replace(/_/g, ' ')}` : '';
+  return `${when} · ${length}${tz}`;
+}
+
+// The meeting on a lead's panel: when, whether it's on the calendar, the
+// join link, the invite, and the only way to cancel it.
+function meetingBoxHtml(d, opts) {
+  const m = d.meeting;
+  if (!m || m.cancelled_at) return '';
+  const pid = opts.panelId;
+  const zoho = _zohoStatus;
+  const connected = zoho && zoho.connected;
+  const link = (text, call) => `<a style="color:var(--blue);cursor:pointer" onclick="${call}">${text}</a>`;
+  let cal;
+  if (m.sync_error) {
+    cal = `<span style="color:var(--red)">Not on the calendar — Zoho said: ${esc(m.sync_error)}</span>
+      · ${link('Try again', `retryMeetingSync(${d.id}, '${pid}')`)}`;
+  } else if (m.event_uid) {
+    cal = `<span style="color:var(--green)">✓</span> On ${esc(m.calendar_name || 'your calendar')}`;
+  } else if (connected) {
+    cal = `Not on a calendar yet · ${link('Add it to your calendar', `retryMeetingSync(${d.id}, '${pid}')`)}`;
+  } else {
+    cal = `<span class="text-muted">Not on a calendar — ${link('connect Zoho Calendar', "openSettingsTab('mine')")}</span>`;
+  }
+  const invite = m.invited_at
+    ? `Invite sent to ${esc(m.invite_email)} <span class="text-muted">${esc(whenLocal(m.invited_at))}</span>`
+    : (connected && m.event_uid ? link('Send the client an invite…', `sendMeetingInvite(${d.id}, '${pid}')`) : '');
+  const stale = d.pipeline_stage !== MEETING_STAGE
+    ? `<div class="text-muted text-small">The stage isn't "Meeting booked" any more, but the meeting is still on. Cancel it below if it's off.</div>` : '';
+  return `<div class="meeting-box">
+      <div><b>📅 ${esc(meetingWhenText(m))}</b></div>
+      <div>${cal}</div>
+      ${m.join_url ? `<div><a href="${esc(m.join_url)}" target="_blank" rel="noopener" style="color:var(--blue)">Join link ↗</a></div>` : ''}
+      ${invite ? `<div>${invite}</div>` : ''}
+      ${stale}
+      <div>${link('<span style="color:var(--red)">Cancel meeting…</span>', `cancelMeeting(${d.id}, '${pid}')`)}</div>
+    </div>`;
+}
+
+async function retryMeetingSync(businessId, panelId) {
+  const res = await api(`/api/businesses/${businessId}/meeting/sync`, 'POST');
+  if (!res || !res.ok) toast((res && res.error) || "Couldn't reach Zoho", 'err');
+  else toast('On your calendar');
+  _leadChanged(panelId);
+}
+
+async function sendMeetingInvite(businessId, panelId) {
+  const d = await api(`/api/businesses/${businessId}`);
+  if (!d || d.error || !d.meeting) return;
+  const leadEmails = (d.emails || []).filter(e => e.status !== 'deleted').map(e => e.email);
+  const email = d.meeting.invite_email || leadEmails[0] || '';
+  const asked = chooseDialog({
+    title: `Invite ${d.company || 'them'} to the meeting`,
+    body: `<div class="text-small" style="margin-bottom:6px">📅 ${esc(meetingWhenText(d.meeting))}</div>
+      <label class="field-label">Client's email</label>
+      <input id="mi-email" class="soft-input" type="email" value="${esc(email)}" data-business="${d.id}"
+             data-known="${esc(JSON.stringify(leadEmails))}"
+             oninput="_meetingEmailChanged(this, 'mi-email-warn', 'mi-save-line')" />
+      <div id="mi-email-warn" class="form-hint" style="color:var(--amber)"></div>
+      <label class="check-line" id="mi-save-line" style="display:${email && !leadEmails.includes(email) ? 'flex' : 'none'}">
+        <input type="checkbox" id="mi-save" ${leadEmails.length ? '' : 'checked'} />
+        Also save it to this lead (it isn't put in any email campaign)</label>
+      <div class="form-hint">Zoho emails them the invite from your Zoho address.</div>`,
+    confirm: 'Send invite',
+    collect: () => {
+      const v = document.getElementById('mi-email').value.trim();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) { toast("That email doesn't look right", 'err'); return null; }
+      return { email: v, save_email: document.getElementById('mi-save').checked
+               && document.getElementById('mi-save-line').style.display !== 'none' };
+    },
+  });
+  if (email) _meetingEmailChanged(document.getElementById('mi-email'), 'mi-email-warn', 'mi-save-line');
+  const values = await asked;
+  if (!values) return;
+  const res = await api(`/api/businesses/${businessId}/meeting/invite`, 'POST', values);
+  if (!res || !res.ok) { toast((res && res.error) || "Couldn't send the invite", 'err'); return; }
+  toast(`Invite sent to ${values.email}${res.email_error ? ` (the address wasn't saved: ${res.email_error})` : ''}`);
+  _leadChanged(panelId);
+}
+
+async function cancelMeeting(businessId, panelId) {
+  const d = await api(`/api/businesses/${businessId}`);
+  if (!d || d.error || !d.meeting) return;
+  const m = d.meeting;
+  const values = await chooseDialog({
+    title: 'Cancel this meeting?',
+    danger: true,
+    body: `<div class="text-small" style="margin-bottom:10px">${esc(d.company || 'This lead')} · 📅 ${esc(meetingWhenText(m))}</div>
+      ${m.event_uid ? `<div class="text-small">It comes off ${esc(m.calendar_name || 'the calendar')}.</div>` : ''}
+      ${m.invited_at ? `<label class="check-line"><input type="checkbox" id="mc-notify" checked />
+        Email ${esc(m.invite_email)} that it's cancelled</label>` : ''}
+      ${d.pipeline_stage === MEETING_STAGE ? `<label class="check-line"><input type="checkbox" id="mc-clear" checked />
+        Also take them off "Meeting booked"</label>` : ''}`,
+    confirm: 'Cancel meeting',
+    collect: () => ({
+      notify: !!(document.getElementById('mc-notify') || {}).checked,
+      clear_stage: !!(document.getElementById('mc-clear') || {}).checked,
+    }),
+  });
+  if (!values) return;
+  const res = await api(`/api/businesses/${businessId}/meeting/cancel`, 'POST', values);
+  if (!res || !res.ok) { toast((res && res.error) || "Couldn't cancel it", 'err'); return; }
+  toast(values.notify ? `Cancelled — ${m.invite_email} has been told` : 'Meeting cancelled');
+  _leadChanged(panelId);
 }
 
 // Mirrors db.WA_MAX_LEAD_FOLLOWUPS — not a limit anyone should meet, just the
@@ -572,7 +880,7 @@ async function openLeadPanel(businessId, opts) {
   const panel = document.getElementById(opts.panelId);
   if (!panel) return;
   const [d] = await Promise.all([api(`/api/businesses/${businessId}`), loadAuditLinks(),
-                                 loadPipelineStages()]);
+                                 loadPipelineStages(), loadZohoStatus()]);
   if (!d || d.error) { toast((d && d.error) || 'Could not open that lead', 'err'); return; }
   const sameLead = LeadPanel.current[opts.panelId] && LeadPanel.current[opts.panelId].businessId === businessId;
   LeadPanel.current[opts.panelId] = { businessId, opts };
@@ -606,6 +914,7 @@ async function openLeadPanel(businessId, opts) {
     <div class="text-small" style="display:flex;gap:10px;flex-wrap:wrap">${links.join('')}</div>
     ${facts ? `<div class="text-muted text-small" style="margin-top:2px">${facts}</div>` : ''}
     ${pipelineRowHtml(d, opts)}
+    ${meetingBoxHtml(d, opts)}
     ${channelHtml}
     <span class="field-label">Where it is</span>
     ${whereItIsHtml(d)}

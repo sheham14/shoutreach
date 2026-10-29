@@ -608,6 +608,71 @@ def init_db():
                 data         TEXT    NOT NULL,
                 deleted_at   TEXT    NOT NULL DEFAULT (datetime('now'))
             );
+
+            -- An operator's Zoho Calendar connection (zoho_calendar.py). Its
+            -- own table, like worker_keys, so the refresh token never rides
+            -- along in a row loaded or serialised for something else. One per
+            -- operator: each connects their own Zoho login, so a meeting --
+            -- and the invite the client gets -- comes from whoever booked it.
+            CREATE TABLE IF NOT EXISTS zoho_connections (
+                owner_id       INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                -- The Zoho data centre the tokens were issued by ('sa',
+                -- 'com', ...). A token is only good at the one that issued
+                -- it, so changing the install's region means connecting again.
+                region         TEXT    NOT NULL DEFAULT '',
+                zoho_email     TEXT    NOT NULL DEFAULT '',
+                refresh_token  TEXT    NOT NULL DEFAULT '',
+                access_token   TEXT    NOT NULL DEFAULT '',
+                -- Unix seconds.
+                access_expires INTEGER NOT NULL DEFAULT 0,
+                -- Where this operator's bookings go unless one meeting picks
+                -- another. Usually the calendar both operators share.
+                calendar_uid   TEXT    NOT NULL DEFAULT '',
+                calendar_name  TEXT    NOT NULL DEFAULT '',
+                connected_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- The calendar side of a booked meeting. One per business: a
+            -- business has one stage, so at most one meeting at a time.
+            --
+            -- Deliberately not businesses.next_action_at, which moves with
+            -- the stage. This row is what's on someone's calendar and in the
+            -- client's inbox, and changing or clearing the stage must never
+            -- cancel it -- that would email the client a cancellation over a
+            -- mis-click. Only an explicit "Cancel meeting" does.
+            CREATE TABLE IF NOT EXISTS meetings (
+                business_id   INTEGER PRIMARY KEY REFERENCES businesses(id) ON DELETE CASCADE,
+                -- Wall-clock 'YYYY-MM-DD HH:MM:SS' in `timezone`, exactly as
+                -- typed. Converted to UTC only on its way to Zoho.
+                starts_at     TEXT    NOT NULL,
+                timezone      TEXT    NOT NULL DEFAULT '',
+                minutes       INTEGER NOT NULL DEFAULT 60,
+                -- What the client sees as the invite's name, rendered once
+                -- at booking from the operator's title template.
+                title         TEXT    NOT NULL DEFAULT '',
+                -- Who gets the invite: whatever was typed when booking,
+                -- usually an address the lead sent over WhatsApp.
+                invite_email  TEXT    NOT NULL DEFAULT '',
+                -- 'zmeeting' (Zoho makes a room for this meeting), 'own'
+                -- (own_link, e.g. a Google Meet link), or 'none'.
+                link_kind     TEXT    NOT NULL DEFAULT 'zmeeting',
+                own_link      TEXT    NOT NULL DEFAULT '',
+                -- The link the event ended up with, for a Join button.
+                join_url      TEXT    NOT NULL DEFAULT '',
+                calendar_uid  TEXT    NOT NULL DEFAULT '',
+                calendar_name TEXT    NOT NULL DEFAULT '',
+                event_uid     TEXT    NOT NULL DEFAULT '',
+                event_etag    TEXT    NOT NULL DEFAULT '',
+                -- When Zoho last emailed the client about it (the invite, or
+                -- an update). NULL: the client has heard nothing from us.
+                invited_at    TEXT    DEFAULT NULL,
+                synced_at     TEXT    DEFAULT NULL,
+                -- What Zoho said the last time a sync failed; '' once one works.
+                sync_error    TEXT    NOT NULL DEFAULT '',
+                cancelled_at  TEXT    DEFAULT NULL,
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
         """)
 
         # Schema migrations — safe to run repeatedly on existing databases.
@@ -4597,16 +4662,181 @@ def get_pipeline_board(owner_id=None, include_terminal=False, stage=None,
                    COALESCE(s.tone, '')                AS stage_tone,
                    COALESCE(s.is_terminal, 0)          AS stage_terminal,
                    COALESCE(s.wants_time, 0)           AS stage_wants_time,
-                   w.id AS wa_lead_id, w.wa_number, wc.name AS wa_campaign_name
+                   w.id AS wa_lead_id, w.wa_number, wc.name AS wa_campaign_name,
+                   m.business_id IS NOT NULL           AS has_meeting,
+                   m.timezone   AS meeting_timezone,   m.join_url AS meeting_join_url,
+                   m.event_uid  AS meeting_event_uid,  m.sync_error AS meeting_sync_error,
+                   m.invite_email AS meeting_invite_email, m.invited_at AS meeting_invited_at
               FROM businesses b
               LEFT JOIN pipeline_stages s ON s.key = b.pipeline_stage
               LEFT JOIN wa_leads w ON w.business_id = b.id
               LEFT JOIN wa_campaigns wc ON wc.id = w.wa_campaign_id
+              LEFT JOIN meetings m ON m.business_id = b.id AND m.cancelled_at IS NULL
              WHERE {' AND '.join(where)}
              ORDER BY b.next_action_at IS NULL, b.next_action_at ASC, b.pipeline_at DESC
              LIMIT ?
         """, (*params, limit)).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Meetings: the calendar side of a booking ─────────────────────────────────
+#
+# A business on 'booked' with a time gets a `meetings` row, and if its owner
+# has connected Zoho Calendar, an event (zoho_calendar.py does the talking).
+# These are the storage halves; nothing here reaches the network.
+
+MEETING_DEFAULT_TITLE = "Hexiv × {{business}}: intro call"
+MEETING_DEFAULT_MINUTES = 60
+MEETING_LINK_KINDS = ("zmeeting", "own", "none")
+
+_MEETING_COLUMNS = ("starts_at", "timezone", "minutes", "title", "invite_email", "link_kind",
+                    "own_link", "join_url", "calendar_uid", "calendar_name", "event_uid",
+                    "event_etag", "invited_at", "synced_at", "sync_error", "cancelled_at")
+
+
+def _meeting_prefs_key(owner: int) -> str:
+    return f"meeting_prefs:{int(owner)}"
+
+
+def get_meeting_prefs(owner_id=None) -> dict:
+    """This operator's defaults for a new meeting. Per operator: the two book
+    from different timezones and may pitch under different titles."""
+    owner = _owner_or_default(owner_id)
+    try:
+        saved = json.loads(get_settings().get(_meeting_prefs_key(owner)) or "{}")
+    except (TypeError, ValueError):
+        saved = {}
+    if not isinstance(saved, dict):
+        saved = {}
+    kind = saved.get("link_kind")
+    return {
+        "timezone":     str(saved.get("timezone") or ""),
+        "minutes":      int(saved.get("minutes") or MEETING_DEFAULT_MINUTES),
+        "invite_title": str(saved.get("invite_title") or MEETING_DEFAULT_TITLE),
+        "link_kind":    kind if kind in MEETING_LINK_KINDS else "zmeeting",
+        "own_link":     str(saved.get("own_link") or ""),
+    }
+
+
+def save_meeting_prefs(prefs: dict, owner_id=None) -> dict:
+    """Store already-validated preferences (zoho_calendar.clean_prefs)."""
+    owner = _owner_or_default(owner_id)
+    merged = {**get_meeting_prefs(owner), **{k: v for k, v in prefs.items()
+                                             if k in ("timezone", "minutes", "invite_title",
+                                                      "link_kind", "own_link")}}
+    save_settings({_meeting_prefs_key(owner): json.dumps(merged)})
+    return merged
+
+
+def get_zoho_connection(owner_id) -> dict:
+    """This operator's Zoho login, tokens included -- for zoho_calendar.py
+    only. Never send this row to a browser."""
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM zoho_connections WHERE owner_id=?",
+                           (int(owner_id),)).fetchone()
+    return dict(row) if row else None
+
+
+def save_zoho_connection(owner_id, **fields):
+    allowed = {"region", "zoho_email", "refresh_token", "access_token", "access_expires",
+               "calendar_uid", "calendar_name"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    with get_db() as conn:
+        conn.execute("INSERT OR IGNORE INTO zoho_connections(owner_id) VALUES(?)", (int(owner_id),))
+        if "refresh_token" in updates:
+            updates["connected_at"] = datetime.datetime.now(
+                datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        if updates:
+            conn.execute(f"UPDATE zoho_connections SET {', '.join(f'{k}=?' for k in updates)} "
+                         "WHERE owner_id=?", (*updates.values(), int(owner_id)))
+
+
+def delete_zoho_connection(owner_id):
+    with get_db() as conn:
+        conn.execute("DELETE FROM zoho_connections WHERE owner_id=?", (int(owner_id),))
+
+
+def get_meeting(business_id: int):
+    """The meeting row, cancelled or not -- callers decide what a cancelled one
+    means. No owner check: every caller has already established ownership of
+    the business, and the meeting has no owner of its own."""
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM meetings WHERE business_id=?",
+                           (int(business_id),)).fetchone()
+    return dict(row) if row else None
+
+
+def save_meeting(business_id: int, **fields) -> dict:
+    """Create or update the meeting for a business. `starts_at` is required
+    the first time."""
+    updates = {k: v for k, v in fields.items() if k in _MEETING_COLUMNS}
+    with get_db() as conn:
+        exists = conn.execute("SELECT 1 FROM meetings WHERE business_id=?",
+                              (int(business_id),)).fetchone()
+        if not exists:
+            if not updates.get("starts_at"):
+                raise ValueError("A new meeting needs a start time")
+            cols = ["business_id", *updates]
+            conn.execute(f"INSERT INTO meetings({', '.join(cols)}) "
+                         f"VALUES({', '.join('?' * len(cols))})",
+                         (int(business_id), *updates.values()))
+        elif updates:
+            conn.execute(f"UPDATE meetings SET {', '.join(f'{k}=?' for k in updates)}, "
+                         "updated_at=datetime('now') WHERE business_id=?",
+                         (*updates.values(), int(business_id)))
+    return get_meeting(business_id)
+
+
+def address_suppression(email: str) -> str:
+    """
+    'unsubscribed' or 'bounced' if ANY operator's copy of this address says
+    so, else ''. Across every owner on purpose, like unsubscribe_contact: an
+    opt-out binds everyone sending from the shared domain. Says nothing about
+    whose list it was on.
+    """
+    email = (email or "").strip().lower()
+    if not email:
+        return ""
+    with get_db() as conn:
+        rows = {r["status"] for r in conn.execute(
+            "SELECT DISTINCT status FROM email_leads WHERE email=? "
+            "AND status IN ('unsubscribed','bounced')", (email,))}
+    return "unsubscribed" if "unsubscribed" in rows else ("bounced" if rows else "")
+
+
+def add_business_email(business_id: int, email: str, owner_id=None):
+    """
+    Keep an address against a business -- one a lead sent over WhatsApp so
+    they could get an invite, a quote or an audit report. Returns (ok, error).
+
+    It goes in as an email lead, which is where every address lives, but is
+    put in no campaign: being on Email means nothing is sent until someone
+    enrols it. An address another operator's list has unsubscribed or bounced
+    arrives already in that state, so it can never be mailed by a sequence.
+    """
+    email = (email or "").strip().lower()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return False, "That isn't an email address"
+    status = address_suppression(email) or "active"
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        if not conn.execute("SELECT 1 FROM businesses WHERE id=? AND owner_id=?",
+                            (int(business_id), owner)).fetchone():
+            return False, "Not found"
+        existing = conn.execute("SELECT id, business_id, status FROM email_leads "
+                                "WHERE owner_id=? AND email=?", (owner, email)).fetchone()
+        if existing:
+            if existing["business_id"] != int(business_id):
+                return False, "That address is already on another of your leads"
+            if existing["status"] == "deleted":
+                conn.execute("UPDATE email_leads SET status=? WHERE id=?", (status, existing["id"]))
+            return True, None
+        conn.execute("INSERT INTO email_leads(business_id, owner_id, email, status) VALUES(?,?,?,?)",
+                     (int(business_id), owner, email, status))
+        conn.execute("UPDATE businesses SET web_status='has_email' WHERE id=? AND web_status=''",
+                     (int(business_id),))
+        _pick_business_winner(conn, int(business_id))
+    return True, None
 
 
 def create_call_outcome(label, is_terminal=False, stops_email=False,
@@ -7751,6 +7981,11 @@ def get_business_detail(business_id: int, owner_id=None):
             """, (cl["id"],))]
         wa = conn.execute("SELECT id FROM wa_leads WHERE business_id=?", (business_id,)).fetchone()
         out["whatsapp"] = None
+        meeting = conn.execute("SELECT * FROM meetings WHERE business_id=?",
+                               (business_id,)).fetchone()
+        out["meeting"] = dict(meeting) if meeting else None
+        if out["meeting"]:
+            out["meeting"].pop("event_etag", None)
 
         timeline = []
         for r in conn.execute("""

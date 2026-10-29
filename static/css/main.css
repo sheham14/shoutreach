@@ -784,6 +784,16 @@
   }
   .confirm-send .confirm-title { font-weight: 600; font-size: 14px; color: #fff; margin-bottom: 2px; }
 
+  /* A booked meeting on a lead's panel: when, calendar, link, invite. */
+  .meeting-box {
+    margin-top: 10px; padding: 10px 12px; border-radius: 10px; font-size: 12.5px;
+    border: 1px solid rgba(0,232,122,.3); background: rgba(0,232,122,.05);
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  /* A tick box with its sentence beside it, inside a dialog. */
+  .check-line { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; font-size: 13px; cursor: pointer; }
+  .check-line input { width: auto; margin-top: 2px; cursor: pointer; }
+
   /* ── Lead panel: folded sections, the audit ─────────────────────────────── */
   .panel-fold { border-top: 1px solid var(--border); }
   .panel-fold > summary {

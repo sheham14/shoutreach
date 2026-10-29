@@ -10,3 +10,6 @@ requests>=2.31
 dnspython>=2.4
 # Formats any country's local phone numbers for WhatsApp links.
 phonenumbers>=8.13
+# Timezone rules for putting a booked meeting on Zoho Calendar at the right
+# hour (zoneinfo reads these when the OS has none, as on Windows).
+tzdata>=2024.1

@@ -462,7 +462,7 @@ rather than returning to a table between calls.
 |---|---|
 | No answer / Left voicemail | Stays in the queue, attempt count goes up |
 | Callback booked / Interested / Proposal sent | Requires a date, returns to *Due now* then |
-| Meeting booked | Leaves the queue, keeps the meeting time, offers a calendar file |
+| Meeting booked | Leaves the queue, keeps the meeting time, goes on your Zoho Calendar if connected |
 | Not interested / Wrong number / Do not call | Terminal — **and stops any email sequence** |
 
 That last row is the point of keeping both channels in one tool. Saying "not
@@ -510,10 +510,17 @@ while *Do not call* also marks them unsubscribed.
 no reply is still worth ringing; one that already replied or opted out is not.
 The app tells you which and lets you decide.
 
-Booked meetings offer an `.ics` download rather than a calendar integration —
-it works with Google, Outlook and Apple alike, with no OAuth consent screen or
-refresh tokens to keep alive. Callbacks don't need one: the *Due now* queue is
-already where you'll be looking.
+**Booked meetings go on Zoho Calendar.** Once an admin has added the Zoho app
+under **Settings → Team setup → Zoho Calendar**, each person clicks **Connect
+Zoho Calendar** in **My settings** and picks the calendar their meetings go on
+(normally one you share). From then on, setting a lead to **Meeting booked** —
+from its panel, or as a call outcome — puts it on that calendar with a Zoho
+Meeting room or your own link. Tick **Email them an invite** and the client gets
+one from your own Zoho address; they're never emailed otherwise. Changing the
+stage never cancels a meeting: **Cancel meeting** on the lead's panel does, and
+asks whether to tell them. An `.ics` download is still there for any other
+calendar. Callbacks don't go on a calendar: the *Due now* queue is already
+where you'll be looking.
 
 ---
 

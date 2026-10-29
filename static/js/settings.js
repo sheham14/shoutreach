@@ -131,8 +131,129 @@ async function loadSettings() {
   document.getElementById("cfg-google-key").value = s.google_api_key
     ? "●●●●●●●●●●●●"
     : "";
+  document.getElementById("cfg-zoho-client-id").value = s.zoho_client_id || "";
+  document.getElementById("cfg-zoho-client-secret").value = s.zoho_client_secret
+    ? "●●●●●●●●●●●●"
+    : "";
   renderAuditLinks(await loadAuditLinks(true));
+  renderMeetingSettings();
 }
+
+// ── Meetings & Zoho Calendar ─────────────────────────────────────────────────
+//
+// Team setup holds the app Zoho knows us as (admin, once); My settings is
+// each person's own connection and meeting defaults. See zoho_calendar.py.
+
+async function renderMeetingSettings() {
+  const z = await loadZohoStatus(true);
+  if (!z) return;
+  const p = z.prefs || {};
+
+  const region = document.getElementById("cfg-zoho-region");
+  region.innerHTML = Object.entries(z.regions || {}).map(([code, name]) =>
+    `<option value="${esc(code)}" ${code === z.region ? "selected" : ""}>${esc(name)} — zoho.${esc(code)}</option>`).join("");
+  document.getElementById("cfg-zoho-console").textContent = `api-console.zoho.${z.region}`;
+  document.getElementById("cfg-zoho-redirect").value = z.redirect_uri || "";
+
+  const conn = document.getElementById("cfg-zoho-connection");
+  if (!z.configured) {
+    conn.innerHTML = `<span class="text-muted">Zoho Calendar isn't set up on this server yet — an admin adds it under
+      Team setup → Zoho Calendar. Your defaults below are kept until then.</span>`;
+  } else if (z.connected) {
+    conn.innerHTML = `<span style="color:var(--green)">✓ Connected</span>${z.zoho_email ? ` as <b>${esc(z.zoho_email)}</b>` : ""}
+      <button class="btn btn-ghost btn-sm" style="margin-left:10px" onclick="disconnectZoho()">Disconnect</button>`;
+  } else {
+    conn.innerHTML = `${z.needs_reconnect ? '<span style="color:var(--amber)">The Zoho region changed — connect again.</span> ' : ""}
+      <a class="btn btn-primary btn-sm" href="/zoho/connect">Connect Zoho Calendar</a>
+      <span class="text-muted" style="margin-left:8px">You'll sign in to Zoho and come straight back.</span>`;
+  }
+
+  const calGroup = document.getElementById("cfg-zoho-calendar-group");
+  calGroup.style.display = z.connected ? "" : "none";
+  if (z.connected) {
+    const cals = await loadZohoCalendars(true);
+    const sel = document.getElementById("cfg-zoho-calendar");
+    sel.innerHTML = cals.length ? calendarOptionsHtml(cals, z.calendar_uid)
+      : `<option value="">Couldn't list your calendars — try reloading</option>`;
+  }
+
+  document.getElementById("cfg-meeting-tz").innerHTML = timezoneOptionsHtml(p.timezone || browserTimezone());
+  document.getElementById("cfg-meeting-minutes").innerHTML = meetingLengthOptionsHtml(p.minutes || 60);
+  document.getElementById("cfg-meeting-title").value = p.invite_title || "";
+  document.getElementById("cfg-meeting-link").value = p.link_kind || "zmeeting";
+  document.getElementById("cfg-meeting-own").value = p.own_link || "";
+  document.getElementById("cfg-meeting-own-group").style.display = p.link_kind === "own" ? "" : "none";
+}
+
+async function saveMeetingPrefs() {
+  const cal = document.getElementById("cfg-zoho-calendar");
+  const calOpt = cal && cal.value ? cal.options[cal.selectedIndex] : null;
+  const payload = {
+    timezone: document.getElementById("cfg-meeting-tz").value,
+    minutes: +document.getElementById("cfg-meeting-minutes").value,
+    invite_title: document.getElementById("cfg-meeting-title").value.trim(),
+    link_kind: document.getElementById("cfg-meeting-link").value,
+    own_link: document.getElementById("cfg-meeting-own").value.trim(),
+  };
+  if (calOpt && document.getElementById("cfg-zoho-calendar-group").style.display !== "none") {
+    payload.calendar_uid = calOpt.value;
+    payload.calendar_name = calOpt.dataset.name;
+  }
+  if (payload.link_kind === "own" && !payload.own_link) {
+    toast("Paste your own link, or pick Zoho Meeting", "err");
+    return;
+  }
+  const res = await api("/api/zoho/prefs", "PUT", payload);
+  if (!res || res.error) { toast((res && res.error) || "Could not save", "err"); return; }
+  _zohoStatus = null;
+  toast("Meeting settings saved ✓");
+  renderMeetingSettings();
+}
+
+async function disconnectZoho() {
+  if (!confirm("Disconnect Zoho Calendar?\n\nMeetings already on your calendar stay there. New bookings will be saved here only until you connect again.")) return;
+  await api("/api/zoho/disconnect", "POST");
+  _zohoStatus = null; _zohoCalendars = null;
+  toast("Disconnected");
+  renderMeetingSettings();
+}
+
+async function saveZohoSetup() {
+  const secret = document.getElementById("cfg-zoho-client-secret").value.trim();
+  const payload = {
+    zoho_region: document.getElementById("cfg-zoho-region").value,
+    zoho_client_id: document.getElementById("cfg-zoho-client-id").value.trim(),
+  };
+  if (secret && !secret.startsWith("●")) payload.zoho_client_secret = secret;
+  const res = await api("/api/settings", "POST", payload);
+  if (!res || res.error) { toast((res && res.error) || "Could not save", "err"); return; }
+  _zohoStatus = null;
+  toast("Zoho setup saved ✓ — now Connect under My settings");
+  loadSettings();
+}
+
+async function copyZohoRedirect() {
+  const input = document.getElementById("cfg-zoho-redirect");
+  try { await navigator.clipboard.writeText(input.value); toast("Copied"); }
+  catch (_) { input.select(); toast("Select and copy it", "err"); }
+}
+
+// Coming back from Zoho's sign-in page: say how it went, on My settings.
+(function zohoReturn() {
+  const params = new URLSearchParams(window.location.search);
+  const outcome = params.get("zoho");
+  if (!outcome) return;
+  history.replaceState(null, "", window.location.pathname);
+  const messages = {
+    connected: ["Zoho Calendar connected ✓ — check which calendar your meetings go on", "ok"],
+    denied: ["Zoho wasn't given access, so nothing changed", "err"],
+    failed: ["Connecting to Zoho didn't work — try again, or ask an admin to check the Zoho setup", "err"],
+    wrong_region: ["Your Zoho account is in a different data centre — an admin sets it in Team setup → Zoho Calendar", "err"],
+    not_configured: ["Zoho Calendar isn't set up yet — an admin adds it in Team setup", "err"],
+  };
+  const [text, kind] = messages[outcome] || messages.failed;
+  setTimeout(() => { openSettingsTab("mine"); toast(text, kind); }, 0);
+})();
 
 // ── Audit links ───────────────────────────────────────────────────────────────
 

@@ -57,6 +57,52 @@
     </div>
   </div>
 
+  <!-- Each operator connects their own Zoho login, so a booked meeting -- and
+       the invite the client gets -- comes from whoever booked it. -->
+  <div class="card" style="padding:24px;margin-top:24px">
+    <div class="card-title" style="margin-bottom:4px">Meetings &amp; calendar</div>
+    <p class="text-muted text-small" style="margin-bottom:14px">When you set a lead to <b>Meeting booked</b>,
+      it goes on your Zoho Calendar, and if you tick the box, the client gets an invite from your Zoho address.</p>
+    <div id="cfg-zoho-connection" class="text-small" style="margin-bottom:16px">…</div>
+
+    <div class="responsive-grid-2" style="gap:16px">
+      <div class="form-group" id="cfg-zoho-calendar-group" style="display:none">
+        <label>Put my meetings on</label>
+        <select id="cfg-zoho-calendar"></select>
+        <div class="form-hint">Usually the calendar you both share. You can pick another for any one meeting.</div>
+      </div>
+      <div class="form-group">
+        <label>My timezone</label>
+        <select id="cfg-meeting-tz"></select>
+        <div class="form-hint">Meeting times you type are in this timezone unless you pick another when booking.</div>
+      </div>
+      <div class="form-group">
+        <label>Usual meeting length</label>
+        <select id="cfg-meeting-minutes"></select>
+      </div>
+      <div class="form-group">
+        <label>Invite title</label>
+        <input id="cfg-meeting-title" />
+        <div class="form-hint">What the client sees. <span class="mono">{% raw %}{{business}}{% endraw %}</span> becomes their business's name.</div>
+      </div>
+      <div class="form-group">
+        <label>Meeting link</label>
+        <select id="cfg-meeting-link" onchange="document.getElementById('cfg-meeting-own-group').style.display = this.value === 'own' ? '' : 'none'">
+          <option value="zmeeting">Zoho Meeting — a new room for each meeting</option>
+          <option value="own">My own link</option>
+          <option value="none">No link</option>
+        </select>
+        <div class="form-hint">You can change it for any one meeting when booking.</div>
+      </div>
+      <div class="form-group" id="cfg-meeting-own-group" style="display:none">
+        <label>My own link</label>
+        <input id="cfg-meeting-own" placeholder="https://meet.google.com/abc-defg-hij" />
+        <div class="form-hint">A link you reuse, e.g. a Google Meet room made with "Create a meeting for later".</div>
+      </div>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="saveMeetingPrefs()">Save</button>
+  </div>
+
   <div class="card" style="padding:24px;margin-top:24px">
     <div class="card-title" style="margin-bottom:4px">Your audit links</div>
     <p class="text-muted text-small" style="margin-bottom:10px">Tools you check every lead with, one click from any lead's panel.
@@ -221,6 +267,41 @@
         Shared by everyone on this server.</div>
     </div>
     <button class="btn btn-primary" onclick="saveSettings()" style="margin-bottom:22px">Save key</button>
+  </div>
+
+  <!-- The app Zoho knows ShoutReach as. Registered once, in Zoho's API
+       Console; after that, each person connects their own login from My
+       settings. -->
+  <div class="card" style="padding:24px;margin-top:24px">
+    <div class="card-title" style="margin-bottom:4px">Zoho Calendar</div>
+    <p class="text-muted text-small" style="margin-bottom:16px">Lets everyone here put booked meetings on Zoho Calendar
+      and send invites. Set up once: in Zoho's API Console (<span class="mono" id="cfg-zoho-console">api-console.zoho.sa</span>),
+      add a <b>Server-based Application</b>, give it the redirect address below, and paste its Client ID and Client Secret here.
+      Then each person clicks Connect in their own My settings.</p>
+    <div class="responsive-grid-2" style="gap:16px">
+      <div class="form-group">
+        <label>Zoho data centre</label>
+        <select id="cfg-zoho-region" onchange="document.getElementById('cfg-zoho-console').textContent = 'api-console.zoho.' + this.value"></select>
+        <div class="form-hint">Where your Zoho accounts live — the end of the address you log in at (zoho.sa is Saudi Arabia).
+          Changing it means everyone connects again.</div>
+      </div>
+      <div class="form-group">
+        <label>Redirect address — paste this into Zoho</label>
+        <div class="flex gap-2">
+          <input id="cfg-zoho-redirect" readonly class="mono" style="flex:1;font-size:12px" />
+          <button class="btn btn-ghost btn-sm" onclick="copyZohoRedirect()">Copy</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Client ID</label>
+        <input id="cfg-zoho-client-id" autocomplete="off" placeholder="1000.XXXXXXXX" />
+      </div>
+      <div class="form-group">
+        <label>Client Secret</label>
+        <input id="cfg-zoho-client-secret" type="password" autocomplete="off" />
+      </div>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="saveZohoSetup()">Save Zoho setup</button>
   </div>
 
   <div id="settings-users-card" class="card" style="padding:24px;margin-top:24px;display:none">

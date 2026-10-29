@@ -1038,15 +1038,27 @@ function waBookedRowHtml(r) {
   // No "via" tag here — every row on this tab is a WhatsApp booking by
   // construction (the request asked for channel=whatsapp), so the only thing
   // worth naming is which campaign it came from.
+  const tz = r.meeting_timezone && r.meeting_timezone !== browserTimezone()
+    ? ` <span class="text-muted">${esc(r.meeting_timezone.replace(/_/g, ' '))}</span>` : '';
+  // Whether it made it onto Zoho Calendar, and whether the client was invited.
+  let cal = '';
+  if (r.has_meeting) {
+    cal = r.meeting_sync_error ? '<span style="color:var(--red)">⚠ not on calendar</span>'
+      : r.meeting_event_uid ? '<span style="color:var(--green)">✓ on calendar</span>'
+      : '<span class="text-muted">not on a calendar</span>';
+    if (r.meeting_invited_at) cal += ` · invited ${esc(r.meeting_invite_email || '')}`;
+  }
   return `<tr style="cursor:pointer" onclick="openWaBookedLead(${r.business_id})">
       <td>
         <span class="biz-name">${esc(r.company || 'Unnamed business')}</span>
         <span class="sub mono">${esc(r.phone || '')}</span>
       </td>
-      <td class="nowrap"><b>${esc(timeStr)}</b></td>
+      <td class="nowrap"><b>${esc(timeStr)}</b>${tz}
+        ${cal ? `<span class="sub">${cal}</span>` : ''}</td>
       <td class="text-muted text-small">${r.wa_campaign_name ? esc(r.wa_campaign_name) : ''}</td>
       <td class="nowrap" onclick="event.stopPropagation()">
-        <a class="btn btn-ghost btn-sm" href="/api/businesses/${r.business_id}/ics">Add to calendar ↓</a>
+        ${r.meeting_join_url ? `<a class="btn btn-ghost btn-sm" href="${esc(r.meeting_join_url)}" target="_blank" rel="noopener">Join ↗</a>` : ''}
+        <a class="btn btn-ghost btn-sm" href="/api/businesses/${r.business_id}/ics" title="Download for any other calendar">.ics ↓</a>
       </td>
     </tr>`;
 }
