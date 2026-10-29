@@ -56,7 +56,7 @@ fix this file.
   `businesses` and the `pipeline_stages` table, and seeded six built-in
   stages. No backfill, no data changed. **No backup was taken.** `/login`
   returns 200 after it, which is what rules out a failed `init_db`.
-- **Built 2026-09-27, NOT deployed: the Booked tab** (§5c). A meeting booked
+- **Deployed 2026-09-27 04:15 UTC (`ac57e66`): the Booked tab** (§5c). A meeting booked
   from any channel gets its own time-of-day, its own tab in WhatsApp, and an
   `.ics` download; booking over the phone now sets the shared pipeline stage
   too, which it didn't before. One new column (`pipeline_stages.wants_time`)
@@ -108,7 +108,7 @@ fix this file.
 | `3ea7efd` | 10-11 | Follow-up sequences + long-term gap; Email To do; Get leads page; Settings split; sidebar regrouped | Yes |
 | `916dabb` | 10-10 | Deploys back up the database first | Yes |
 | `8305454` | 10-10 | Country-aware phone matching; named imports + "From" filter everywhere; CSV-only scrapes; CSV download; full-screen tables; Recently deleted; account passwords no longer sent to campaign owners | Yes |
-| `ac57e66` | 09-27 | The Booked tab: real appointment times, `.ics`, calling wired into the shared stage | Check `gh run list` |
+| `ac57e66` | 09-27 | The Booked tab: real appointment times, `.ics`, calling wired into the shared stage | Yes |
 | `744ad70` | 09-23 | Campaign name as the page heading; fixed the Leads badge undercounting under a filter | Yes |
 | `65ecf8b` | 09-23 | Fixed the email daily cap silently going uncapped across a UTC/local date boundary | Yes |
 | `60d0896` | 09-23 | Pipeline stages on the business; "messaged" filter; the sent log; campaign Settings | Yes |
@@ -526,7 +526,7 @@ via whatsapp" instead of leaving you to guess.
   letter when there's nothing to say, and lead search covers email and notes.
 - `tests/test_pipeline.py` is the precise statement of all of this.
 
-## 5c. The Booked tab, and a real appointment time — built 2026-09-27
+## 5c. The Booked tab, and a real appointment time — live 2026-09-27 (`ac57e66`)
 
 The cofounder asked for booked leads to have their own tab rather than being
 found through the Leads filter, and specifically flagged that a booking needs
@@ -1081,10 +1081,8 @@ importing runs `init_db()` against `./outreach.db`.
       `set_campaign_smtp_accounts` ignores ids that don't exist instead of
       failing the save. `tests/test_accounts.py` §10.
 
-000. **The Booked tab is built, not pushed** (§5c). Before deploying: back
-     up the live database (§6) — the migration is one new column and one
-     guarded fix, low risk, but nothing about this feature has ever run
-     against production data. Check by hand: WhatsApp → Booked lists a
+000. **The Booked tab is live** (§5c; `ac57e66`, 2026-09-27). No hand check
+     against production data is recorded. Still to check: WhatsApp → Booked lists a
      meeting set from the lead panel, grouped Overdue/Today/Tomorrow/Later;
      the time shown matches what was typed, with no shift (this is the one
      thing most worth watching for — a shift would mean the "no timezone
