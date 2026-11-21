@@ -21,7 +21,7 @@ operator's go-ahead). Nothing is pushed to `master`.
 | 1 Opt-outs permanent | B-1 | done | `9e51276` |
 | 2 Activity log admin-only | B-2 | done (first half) | `a53ccac` |
 | 3 Sessions | B-3 | done | `e541e80` |
-| 4 Sender resilience | B-6, B-23 | not started | |
+| 4 Sender resilience | B-6, B-23 | done | `21bfe79` |
 | 5 Calling → Reopen | B-22 | not started | |
 | 6 Confirm before sending | B-9 | not started | |
 | 7 Visible faults | F-20, F-21/33, F-22, F-25, F-30, F-9, B-10, B-14, B-15 | not started | |
@@ -81,3 +81,22 @@ operator's go-ahead). Nothing is pushed to `master`.
 - Operator note: user mid-turn said "if you have a better suggestion for
   anything feel free to give your feedback" — collect suggestions for the
   hand-back.
+
+### Package 4 — B-6, B-23 — done (`21bfe79`)
+
+- scheduler.py: `_process_campaign` (one campaign, own try), `_one_pass` (body
+  of the loop), `_run_loop` guards each pass, `_heartbeat`/`_last_pass_at`,
+  `ensure_running()`, `status()`. Inter-email pause is `_stop_event.wait`.
+- db.py: `_check_campaign_fields`, `CampaignValueError`, `CAMPAIGN_STATUSES`;
+  `add_log` never raises.
+- app.py: `SHOUTREACH_NO_SCHEDULER`, 400 on bad create/PATCH, dashboard route
+  calls `ensure_running()` and returns `sender`.
+- Dashboard: `#dash-sender` line under the Email card (`_renderSender`).
+- Choice (differs from plan wording): `last_pass_at` is stamped at the start
+  and end of each pass and before each pause, not only at the end — one pass
+  with sends due can take 20+ minutes (10 sends x up to 120 s per campaign),
+  which would otherwise trip the 10-minute warning.
+- `test_email_checking_toggle.py` inspected `_run_loop` source for the reply
+  gate; it now inspects `_run_loop` + `_one_pass`.
+- The two scheduler check scripts plant "lots" in SQL when the save refuses it.
+- Suite: 27 files pass.
