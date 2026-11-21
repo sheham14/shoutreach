@@ -34,6 +34,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ["SHOUTREACH_NO_SCHEDULER"] = "1"  # importing app must never start sending
 
 _failures = []
 

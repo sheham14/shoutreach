@@ -12,6 +12,11 @@ the worker parked on one business for 6+ minutes and could not be interrupted:
   3. The SIGINT handler only set a flag, which replaces Python's default of
      raising KeyboardInterrupt -- the exception that would have broken the
      blocking read. Ctrl-C could not stop a hung scrape at all.
+
+And, since the 2026-11-21 audit, the email sender's own resilience (B-6,
+B-23): one campaign's error must not stop the others, bad campaign values are
+refused when saved, and the background thread must survive anything short of
+stop() -- and be restarted if it dies anyway.
 """
 import http.server
 import os
@@ -326,7 +331,187 @@ def test_captcha_waits_on_the_remote_flag():
           "_install_captcha_bridge" not in src)
 
 
+def test_sender_survives():
+    """Audit B-6 and B-23. Scratch database; send_email is replaced."""
+    print("\n7. THE EMAIL SENDER CAN'T BE STOPPED BY ONE ERROR (B-6, B-23)")
+    import importlib
+    import sqlite3
+    import tempfile
+    work = tempfile.mkdtemp(prefix="sender_resilience_")
+    os.environ["DB_PATH"] = os.path.join(work, "r.db")
+    os.environ["SECRET_KEY"] = "test-secret"
+    os.environ["SHOUTREACH_NO_SCHEDULER"] = "1"
+    import db
+    importlib.reload(db)
+    import sender
+    importlib.reload(sender)
+    import scheduler
+    importlib.reload(scheduler)
+    db.init_db()
+    alice = db.create_user("alice", "test-password-123", is_admin=True)
+    bob = db.create_user("bob", "test-password-123", is_admin=False)
+
+    sent = []
+
+    def fake_send(contact, **kw):
+        sent.append(contact["email"])
+        db.log_send(kw["campaign_id"], contact["email_lead_id"], kw["step_num"], "s",
+                    f"<{len(sent)}@x>")
+        return True, "<id>", None
+    sender.send_email = fake_send
+    sender.is_business_hours = lambda campaign: True
+    scheduler.email_checking_enabled = lambda: False
+
+    def campaign(owner, name, email):
+        db.upsert_businesses([{"company": name, "email": email, "mx_valid": 1}], owner_id=owner)
+        cid = db.create_campaign(name, owner_id=owner, min_delay=0, max_delay=0)
+        db.upsert_step(cid, 1, "Hi", "<p>Hi</p>", 0)
+        with db.get_db() as conn:
+            bids = [r["id"] for r in conn.execute(
+                "SELECT id FROM businesses WHERE owner_id=? AND name=?", (owner, name))]
+            conn.execute("UPDATE campaigns SET status='active' WHERE id=?", (cid,))
+        db.enroll_businesses(cid, bids, owner_id=owner)
+        return cid
+    c_bob = campaign(bob, "Bob campaign", "b@bob-lead.ae")
+    campaign(alice, "Alice campaign", "a@alice-lead.ae")
+    first = db.get_campaigns(all_owners=True)[0]["id"]
+    # Break whichever campaign the loop reaches first, as a value stored
+    # before checks existed would be.
+    with db.get_db() as conn:
+        conn.execute("UPDATE campaigns SET daily_limit='lots' WHERE id=?", (first,))
+    scheduler.process_queue()
+    check("a campaign with a bad stored value doesn't stop the next one",
+          len(sent) == 1, f"sent={sent}")
+    check("the bad campaign is named in the Activity log",
+          any("Scheduler error in campaign" in r["message"] for r in db.get_logs(10)))
+
+    print("   saving bad values is refused")
+    for bad in ({"daily_limit": "lots"}, {"daily_limit": -1}, {"daily_limit": 5000},
+                {"send_start_hour": 25}, {"min_delay_secs": 99999}, {"bounce_pause_pct": 150},
+                {"status": "sending"}, {"min_delay_secs": 200, "max_delay_secs": 100}):
+        try:
+            db.update_campaign(c_bob, **bad)
+            check(f"refused: {bad}", False, "it was stored")
+        except db.CampaignValueError as e:
+            check(f"refused: {bad}", True, str(e))
+    try:
+        db.update_campaign(c_bob, max_delay_secs=10)  # min is 0
+        db.update_campaign(c_bob, daily_limit="40", status="paused")
+        check("good values still save, numbers as text included", True)
+    except db.CampaignValueError as e:
+        check("good values still save, numbers as text included", False, str(e))
+    try:
+        db.create_campaign("Bad", daily_limit="lots", owner_id=alice)
+        check("create_campaign refuses a bad value", False)
+    except db.CampaignValueError:
+        check("create_campaign refuses a bad value", True)
+
+    print("   ...and through the PATCH route")
+    import app as app_mod
+    importlib.reload(app_mod)
+    app_mod.app.config["TESTING"] = True
+    c = app_mod.app.test_client()
+    with c.session_transaction() as sess:
+        sess["user_id"] = bob
+        sess["csrf_token"] = "t"
+    r = c.patch(f"/api/campaigns/{c_bob}", headers={"X-CSRF-Token": "t"}, json={"daily_limit": "lots"})
+    check("PATCH with a bad value answers 400 with a sentence",
+          r.status_code == 400 and "number" in (r.get_json() or {}).get("error", ""),
+          f"{r.status_code} {r.get_json()}")
+    check("and nothing was stored",
+          db.get_campaign(c_bob)["daily_limit"] == 40, str(db.get_campaign(c_bob)["daily_limit"]))
+    r = c.post("/api/campaigns", headers={"X-CSRF-Token": "t"}, json={"name": "x", "daily_limit": "lots"})
+    check("creating one with a bad value answers 400", r.status_code == 400, str(r.status_code))
+    check("the app didn't start the scheduler (SHOUTREACH_NO_SCHEDULER)", not scheduler.is_running())
+
+    print("   the loop survives")
+    calls = {"n": 0}
+    real_pass = scheduler._one_pass
+
+    def exploding_pass():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        scheduler._stop_event.set()
+    scheduler._one_pass = exploding_pass
+    scheduler._stop_event.clear()
+    scheduler._wake_event.set()
+    original_wait = scheduler._wake_event.wait
+    scheduler._wake_event.wait = lambda timeout=None: True
+    t = threading.Thread(target=scheduler._run_loop, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    scheduler._wake_event.wait = original_wait
+    scheduler._one_pass = real_pass
+    check("a pass that raises doesn't end the loop", calls["n"] == 2 and not t.is_alive(),
+          f"passes={calls['n']} alive={t.is_alive()}")
+
+    original_get_db = db.get_db
+
+    def locked():
+        raise sqlite3.OperationalError("database is locked")
+    db.get_db = locked
+    try:
+        db.add_log("this write fails")
+        check("add_log doesn't raise when its write fails", True)
+    except Exception as e:
+        check("add_log doesn't raise when its write fails", False, repr(e))
+    finally:
+        db.get_db = original_get_db
+
+    # The audit's own reproduction: another writer holds the database past
+    # the 10-second busy wait while the loop's error handlers try to log.
+    with db.get_db() as conn:
+        conn.execute("UPDATE campaigns SET daily_limit='lots' WHERE id=?", (c_bob,))
+    scheduler._stop_event.clear()
+    original_busy = db.get_db
+    lock = sqlite3.connect(db.DB_PATH, check_same_thread=False, isolation_level=None)
+    lock.execute("BEGIN IMMEDIATE")
+    t = threading.Thread(target=scheduler._run_loop, daemon=True)
+    started = time.time()
+    t.start()
+    t.join(timeout=13)
+    alive_while_locked = t.is_alive()
+    lock.execute("COMMIT")
+    lock.close()
+    scheduler._stop_event.set()
+    scheduler._wake_event.set()
+    t.join(timeout=15)
+    check("the thread survives a database held locked past the busy wait",
+          alive_while_locked, f"after {time.time() - started:.0f}s")
+
+    print("   the watchdog")
+    scheduler._stop_event.clear()
+    dead = threading.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    scheduler._scheduler_thread = dead
+    started_threads = []
+    real_thread = scheduler.threading.Thread
+
+    class RecordingThread(real_thread):
+        def start(self):
+            started_threads.append(self)  # don't actually run a sender here
+    scheduler.threading.Thread = RecordingThread
+    try:
+        restarted = scheduler.ensure_running()
+    finally:
+        scheduler.threading.Thread = real_thread
+    check("ensure_running restarts a dead thread", restarted and len(started_threads) == 1)
+    scheduler._scheduler_thread = None
+    check("and does nothing when the scheduler was never started", not scheduler.ensure_running())
+
+    print("   the Dashboard says when it last ran")
+    scheduler._heartbeat()
+    r = c.get("/api/dashboard")
+    d = r.get_json() or {}
+    check("/api/dashboard returns sender.alive and sender.last_pass_at",
+          "sender" in d and set(d["sender"]) == {"alive", "last_pass_at"} and d["sender"]["last_pass_at"],
+          str(d.get("sender")))
+
+
 def main():
+    test_sender_survives()
     test_ceilings_are_configured()
     test_incremental_import()
     test_second_interrupt_forces_exit()

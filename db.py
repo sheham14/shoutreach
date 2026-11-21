@@ -1919,9 +1919,67 @@ def get_campaign(cid):
         return dict(row) if row else None
 
 
+CAMPAIGN_STATUSES = ("draft", "active", "paused", "completed")
+
+# (low, high) for each number a campaign stores. The send loop reads these
+# straight into range() and sleep(), so a value outside them -- text, a
+# negative, a week-long pause -- would stop or park sending for everyone
+# (audit B-6).
+_CAMPAIGN_NUMBER_BOUNDS = {
+    "daily_limit":      (0, 2000, "Daily limit"),
+    "send_start_hour":  (0, 24,   "Start hour"),
+    "send_end_hour":    (0, 24,   "End hour"),
+    "min_delay_secs":   (0, 3600, "Shortest pause between emails"),
+    "max_delay_secs":   (0, 3600, "Longest pause between emails"),
+    "bounce_pause_pct": (0, 100,  "Bounce-rate pause"),
+}
+
+
+class CampaignValueError(ValueError):
+    """A campaign setting out of range. The message is for the operator."""
+
+
+def _check_campaign_fields(fields: dict, current: dict = None) -> dict:
+    """
+    Check and normalise what a campaign is about to store. Raises
+    CampaignValueError with a plain sentence. `current` is the stored row,
+    so a change to one delay is checked against the other.
+    """
+    out = dict(fields)
+    for key, (low, high, label) in _CAMPAIGN_NUMBER_BOUNDS.items():
+        if key not in out:
+            continue
+        raw = out[key]
+        try:
+            if isinstance(raw, bool):
+                raise ValueError
+            value = float(raw) if key == "bounce_pause_pct" else int(str(raw).strip())
+        except (TypeError, ValueError):
+            raise CampaignValueError(f"{label} must be a number.")
+        if not (low <= value <= high):
+            raise CampaignValueError(f"{label} must be between {low} and {high}.")
+        out[key] = value
+    if "status" in out and out["status"] not in CAMPAIGN_STATUSES:
+        raise CampaignValueError("That isn't a campaign status.")
+    merged = {**(current or {}), **out}
+    try:
+        lo, hi = int(merged["min_delay_secs"]), int(merged["max_delay_secs"])
+    except (KeyError, TypeError, ValueError):
+        lo = hi = None   # one is missing, or an old bad value the edit is fixing
+    if lo is not None and lo > hi:
+        raise CampaignValueError("The shortest pause between emails can't be longer than the longest.")
+    return out
+
+
 def create_campaign(name, daily_limit=30, start_hour=9, end_hour=17,
                     min_delay=45, max_delay=120, timezone=None, variables='{}',
                     send_days='0,1,2,3,4', owner_id=None):
+    checked = _check_campaign_fields({
+        "daily_limit": daily_limit, "send_start_hour": start_hour, "send_end_hour": end_hour,
+        "min_delay_secs": min_delay, "max_delay_secs": max_delay})
+    daily_limit, start_hour, end_hour = (checked["daily_limit"], checked["send_start_hour"],
+                                         checked["send_end_hour"])
+    min_delay, max_delay = checked["min_delay_secs"], checked["max_delay_secs"]
     with get_db() as conn:
         cur = conn.execute(
             "INSERT INTO campaigns(name,daily_limit,send_start_hour,send_end_hour,"
@@ -1940,8 +1998,10 @@ def update_campaign(cid, **fields):
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return
-    set_clause = ", ".join(f"{k}=?" for k in updates)
     with get_db() as conn:
+        row = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+        updates = _check_campaign_fields(updates, dict(row) if row else None)
+        set_clause = ", ".join(f"{k}=?" for k in updates)
         conn.execute(f"UPDATE campaigns SET {set_clause} WHERE id=?",
                      (*updates.values(), cid))
 
@@ -8699,8 +8759,19 @@ def get_stats(campaign_id=None, owner_id=None):
 # ── Activity Log ──────────────────────────────────────────────────────────────
 
 def add_log(message, level="INFO"):
-    with get_db() as conn:
-        conn.execute("INSERT INTO logs(level,message) VALUES(?,?)", (level, message))
+    """
+    Never raises (audit B-23). The scheduler's own error handlers call this,
+    so a write that fails -- "database is locked", above all -- must not
+    take the thread down with it. The line goes to the process log instead.
+    """
+    try:
+        with get_db() as conn:
+            conn.execute("INSERT INTO logs(level,message) VALUES(?,?)", (level, message))
+    except Exception as exc:
+        try:
+            logger.warning("Activity log write failed (%s); line was: [%s] %s", exc, level, message)
+        except Exception:
+            pass
 
 
 def get_logs(limit=50):

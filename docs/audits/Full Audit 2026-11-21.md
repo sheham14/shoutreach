@@ -152,8 +152,8 @@ Small, self-contained, and worth doing first. Effort: **S** under an hour,
 | 2 | ✅ Activity log readable by non-admins (owner per log line still open) | High | S | B-2 |
 | 3 | ✅ Deleting an account or changing its password doesn't sign it out | High | M | B-3 |
 | 4 | Activating an email campaign sends real email with no confirmation and no count | High | M | B-9 |
-| 5 | One campaign's bad value stops email sending for everyone | Medium | S | B-6 |
-| 6 | The background sender can die silently and never restart | High | S–M | B-23 |
+| 5 | ✅ One campaign's bad value stops email sending for everyone | Medium | S | B-6 |
+| 6 | ✅ The background sender can die silently and never restart | High | S–M | B-23 |
 | 7 | No backup that the repo shows except at deploy, on the same disk — set up a nightly one that leaves the VM | High | S, no code | B-24 |
 | 8 | Calling → "Reopen" answers "not found" | Medium | S | B-22 |
 | 9 | Email → To do shows two "Done" buttons on every row | Medium | S | F-20 |
@@ -946,6 +946,18 @@ parser; cap the decompressed size; one overall time limit. Effort: M.
 **B-6 · One campaign's bad value stops email sending for everyone.
 (Medium · seen)**
 
+> ✅ **RESOLVED** — Plan 1, package 4. `process_queue` hands each campaign
+> to `_process_campaign` inside its own `try`, logging the campaign's name
+> and carrying on. `create_campaign` and `update_campaign` check what they
+> store (`_check_campaign_fields`: daily limit 0–2000, hours 0–24, delays
+> 0–3600 with min ≤ max, bounce pause 0–100, status one of draft / active /
+> paused / completed) and the create and PATCH routes answer 400 with the
+> sentence. The pause between emails is now interruptible by `stop()`.
+> Checked: `tests/test_resilience.py` §7 and
+> `tools/audit/checks/scheduler_shared_loop.py` (saving "lots" is refused;
+> planted in SQL, the other campaign still sends and the log names the bad
+> one).
+
 The send loop walks every operator's campaigns inside a single
 catch-everything block ([scheduler.py:71–206](../../scheduler.py#L71-L206)),
 and campaign settings are stored exactly as received, unchecked
@@ -1125,6 +1137,20 @@ once the daily cap is reached. Deleting rows doesn't shrink the file.
 
 **B-23 · The background sender can die silently and never comes back.
 (High · seen)**
+
+> ✅ **RESOLVED** — Plan 1, package 4. `_run_loop` wraps each pass
+> (`_one_pass`) in `try/except` and only `stop()` ends it; `add_log` never
+> raises (a failed write goes to the process log). `scheduler.ensure_running()`
+> restarts a thread that was started and has died; `/api/dashboard` calls it,
+> and returns `sender: {alive, last_pass_at}`. The Dashboard's Email card
+> says "Email sender last ran N minutes ago", in amber when the thread is down
+> or nothing has run for ten minutes (the time is stamped at the start and end
+> of each pass and before each pause, so a long send pass doesn't look dead).
+> `SHOUTREACH_NO_SCHEDULER=1` keeps `app.py` from starting it, for tests.
+> Checked: `tests/test_resilience.py` §7 (a pass that raises, `add_log`
+> failing, a database held locked for 13 s, the watchdog) and
+> `tools/audit/checks/scheduler_thread_death.py` (thread alive after 16 s
+> locked and after release).
 
 One background thread sends email, checks for replies and bounces, and
 empties Recently deleted. Its loop has no safety net of its own

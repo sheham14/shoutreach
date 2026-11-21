@@ -875,6 +875,13 @@ at computer and phone size against the same fake Zoho.
 - **Server:** GCP e2-micro, Debian 12, app in `~/shoutreach`, gunicorn with
   `--workers 1` (the scheduler runs in-process — never raise this), nginx, the
   systemd unit `shoutreach`, SQLite `outreach.db`.
+- **The email sender can't die quietly any more** (audit B-6, B-23): one
+  campaign's error is logged and the next campaign still runs; a pass that
+  raises doesn't end the thread; `add_log` never raises; opening the
+  Dashboard restarts a dead thread (`scheduler.ensure_running`), and its
+  Email card says when the sender last ran, in amber past ten minutes.
+  Campaign settings are range-checked on save. `SHOUTREACH_NO_SCHEDULER=1`
+  stops `app.py` starting the scheduler — set it in tests.
 - **Deploying = pushing to `master`.** GitHub Actions SSHes in and runs
   `git pull`, `pip install -r requirements.txt` and
   `sudo systemctl restart shoutreach`. `init_db()` runs on restart, so

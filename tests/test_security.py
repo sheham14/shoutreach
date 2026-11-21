@@ -27,6 +27,7 @@ def boot(work):
     os.environ["DB_PATH"] = os.path.join(work, "sec.db")
     os.environ["SECRET_KEY"] = "test-secret"
     os.environ["SHOUTREACH_INSECURE_COOKIES"] = "1"
+    os.environ["SHOUTREACH_NO_SCHEDULER"] = "1"
     import db
     importlib.reload(db)
     import app as app_mod

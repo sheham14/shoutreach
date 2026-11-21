@@ -60,7 +60,12 @@ with db.get_db() as conn:
     conn.execute("UPDATE enrollments SET status='queued', current_step=1, next_send_at=NULL")
     conn.execute("DELETE FROM logs")
 sent.clear()
-db.update_campaign(c_bob, daily_limit="lots")
+try:
+    db.update_campaign(c_bob, daily_limit="lots")
+except ValueError as e:  # refused at save since Plan 1 package 4; plant it as an old row would hold it
+    print("saving daily_limit='lots' is refused:", e)
+    with db.get_db() as conn:
+        conn.execute("UPDATE campaigns SET daily_limit='lots' WHERE id=?", (c_bob,))
 print("\n-- Bob's campaign now has daily_limit='lots'")
 scheduler.process_queue()
 print("sent:", sent)

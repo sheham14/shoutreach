@@ -76,8 +76,10 @@ app.config.update(
 
 # Start the background scheduler once, at process boot. Doing this in a
 # before_request hook (the old way) added overhead per request and allowed
-# duplicate threads under request races.
-scheduler.start()
+# duplicate threads under request races. SHOUTREACH_NO_SCHEDULER=1 leaves it
+# off -- for tests, which must never send.
+if os.environ.get("SHOUTREACH_NO_SCHEDULER") != "1":
+    scheduler.start()
 
 
 # ── First-run setup token ────────────────────────────────────────────────────
@@ -1269,17 +1271,20 @@ def api_get_campaigns():
 @login_required
 def api_create_campaign():
     d = request.json or {}
-    cid = db.create_campaign(
-        owner_id    = me(),
-        name        = d.get("name", "New Campaign"),
-        daily_limit = int(d.get("daily_limit", 30)),
-        start_hour  = int(d.get("send_start_hour", 9)),
-        end_hour    = int(d.get("send_end_hour", 17)),
-        min_delay   = int(d.get("min_delay_secs", 45)),
-        max_delay   = int(d.get("max_delay_secs", 120)),
-        timezone    = d.get("timezone") or None,
-        variables   = json.dumps(d.get("variables") or {}),
-    )
+    try:
+        cid = db.create_campaign(
+            owner_id    = me(),
+            name        = d.get("name", "New Campaign"),
+            daily_limit = d.get("daily_limit", 30),
+            start_hour  = d.get("send_start_hour", 9),
+            end_hour    = d.get("send_end_hour", 17),
+            min_delay   = d.get("min_delay_secs", 45),
+            max_delay   = d.get("max_delay_secs", 120),
+            timezone    = d.get("timezone") or None,
+            variables   = json.dumps(d.get("variables") or {}),
+        )
+    except db.CampaignValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
     return jsonify({"ok": True, "id": cid})
 
 
@@ -1454,7 +1459,12 @@ def api_update_campaign(cid):
     if "variables" in d and isinstance(d["variables"], dict):
         d = dict(d)
         d["variables"] = json.dumps(d["variables"])
-    db.update_campaign(cid, **d)
+    try:
+        db.update_campaign(cid, **d)
+    except db.CampaignValueError as e:
+        # Checked before storing (audit B-6): a bad value used to be saved
+        # as sent and stop the send loop for every campaign after it.
+        return jsonify({"ok": False, "error": str(e)}), 400
     return jsonify({"ok": True})
 
 
@@ -2622,7 +2632,12 @@ def api_enroll_businesses():
 @app.route("/api/dashboard", methods=["GET"])
 @login_required
 def api_dashboard():
-    return jsonify(db.get_dashboard(owner_id=me(), since=request.args.get("since") or None))
+    # The watchdog (audit B-23): a dead sender thread is restarted here,
+    # since this is the page everyone opens first.
+    scheduler.ensure_running()
+    data = db.get_dashboard(owner_id=me(), since=request.args.get("since") or None)
+    data["sender"] = scheduler.status()
+    return jsonify(data)
 
 
 # ── API: Lead lists (one per import) ──────────────────────────────────────────

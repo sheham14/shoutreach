@@ -39,6 +39,16 @@ _scheduler_lock = threading.Lock()
 _stop_event = threading.Event()
 _wake_event = threading.Event()
 _run_now_reply_check = False  # set by request_run_now(include_reply_check=True)
+# When the loop was last seen working (UTC, "YYYY-MM-DD HH:MM:SS"), for the
+# Dashboard's "Email sender last ran ..." line: stamped at the start and end
+# of every pass and before each pause between emails, since one pass with
+# sends due can run longer than the Dashboard's ten-minute warning.
+_last_pass_at = None
+
+
+def _heartbeat():
+    global _last_pass_at
+    _last_pass_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def email_checking_enabled() -> bool:
@@ -82,128 +92,143 @@ def process_queue():
             return
 
         for campaign in campaigns:
-            if campaign["status"] != "active":
-                continue
-
-            cid = campaign["id"]
-
-            # ── Business hours gate ──────────────────────────────────────────
-            if not email_sender.is_business_hours(campaign):
-                continue
-
-            # ── Per-campaign daily cap ───────────────────────────────────────
-            today_campaign_count = _get_campaign_today_count(cid)
-            if today_campaign_count >= campaign["daily_limit"]:
-                continue
-
-            # ── Bounce rate circuit-breaker ──────────────────────────────────
-            # Volume-gated: see db.bounce_breaker_should_pause. A rate over a
-            # handful of sends is noise, and pausing on it looks like the
-            # campaign stopping for no reason.
-            should_pause, bounce_rate, sends_so_far = db.bounce_breaker_should_pause(
-                cid, campaign["bounce_pause_pct"]
-            )
-            if should_pause:
-                db.update_campaign(cid, status="paused")
-                db.add_log(
-                    f"⛔ Campaign '{campaign['name']}' AUTO-PAUSED — "
-                    f"bounce rate {bounce_rate:.1f}% exceeded threshold "
-                    f"{campaign['bounce_pause_pct']}% over {sends_so_far} sends",
-                    "ERROR"
-                )
-                continue
-
-            # ── Find due contacts ────────────────────────────────────────────
-            remaining = campaign["daily_limit"] - today_campaign_count
-            due = db.get_due_enrollments(cid, limit=min(remaining, 10))
-
-            if not due:
-                continue
-
-            raw_steps = db.get_steps(cid)
-            for s in raw_steps:
-                s["variants"] = db.get_step_variants(s["id"])
-            steps = {s["step_num"]: s for s in raw_steps}
-            if not steps:
-                continue
-
-            for enrollment in due:
-                # Re-check cap inside loop (other threads could have sent)
-                if _get_campaign_today_count(cid) >= campaign["daily_limit"]:
-                    break
-
-                step_num = enrollment["current_step"]
-                step = steps.get(step_num)
-                if not step:
-                    db.complete_enrollment(enrollment["enroll_id"])
-                    continue
-
-                # ── Already delivered? ───────────────────────────────────────
-                # A restart between the SMTP handoff and advance_enrollment
-                # leaves the enrollment queued on a step the contact already
-                # received. Recover by advancing rather than sending again --
-                # the send is recorded, so the sequence just resumes.
-                if db.has_sent_step(cid, enrollment["email_lead_id"], step_num):
-                    db.add_log(
-                        f"↷ Step {step_num} was already sent to {enrollment['email']} — "
-                        f"advancing without re-sending",
-                        "WARN",
-                    )
-                    _advance_after_step(db, campaign, steps, enrollment, step_num)
-                    continue
-
-                # ── Send the email ───────────────────────────────────────────
-                contact = dict(enrollment)
-                contact["email_lead_id"] = enrollment["email_lead_id"]
-
-                # Pick subject/body: use variant if the enrollment has one
-                subject_tpl = step["subject"]
-                body_tpl    = step["body_html"]
-                variant_label = enrollment.get("variant_label")
-                if variant_label and step.get("variants"):
-                    v = next((x for x in step["variants"] if x["label"] == variant_label), None)
-                    if v:
-                        subject_tpl = v["subject"]
-                        body_tpl    = v["body_html"]
-
-                # Round-robin through campaign's assigned accounts (falls back
-                # to global settings inside send_email when account is None)
-                account = db.get_next_account_for_campaign(cid)
-
-                # Parse campaign-level template variables
-                try:
-                    campaign_vars = json.loads(campaign.get("variables") or "{}")
-                except Exception:
-                    campaign_vars = {}
-
-                success, msg_id, err = email_sender.send_email(
-                    contact=contact,
-                    subject_tpl=subject_tpl,
-                    body_tpl=body_tpl,
-                    campaign_id=cid,
-                    step_num=step_num,
-                    settings=settings,
-                    account=account,
-                    campaign_vars=campaign_vars,
-                )
-
-                if success:
-                    _advance_after_step(db, campaign, steps, enrollment, step_num)
-
-                elif err == "bounce":
-                    pass  # already handled in sender.send_email
-
-                # ── Random inter-email delay ─────────────────────────────────
-                delay = random.randint(
-                    campaign["min_delay_secs"],
-                    campaign["max_delay_secs"]
-                )
-                logger.debug(f"Sleeping {delay}s before next send...")
-                time.sleep(delay)
+            # One campaign's fault must not stop the others (audit B-6):
+            # the loop used to sit inside one try, so an error here ended
+            # the pass for every campaign after it, every pass.
+            try:
+                _process_campaign(campaign, settings)
+            except Exception as e:
+                db.add_log(f"Scheduler error in campaign '{campaign.get('name')}': {e}", "ERROR")
+                logger.exception("process_queue error in campaign %s", campaign.get("id"))
 
     except Exception as e:
         db.add_log(f"Scheduler error: {e}", "ERROR")
         logger.exception("process_queue error")
+
+
+def _process_campaign(campaign, settings):
+    """One campaign's share of a pass: every gate, then its due sends."""
+    if campaign["status"] != "active":
+        return
+
+    cid = campaign["id"]
+
+    # ── Business hours gate ──────────────────────────────────────────
+    if not email_sender.is_business_hours(campaign):
+        return
+
+    # ── Per-campaign daily cap ───────────────────────────────────────
+    today_campaign_count = _get_campaign_today_count(cid)
+    if today_campaign_count >= campaign["daily_limit"]:
+        return
+
+    # ── Bounce rate circuit-breaker ──────────────────────────────────
+    # Volume-gated: see db.bounce_breaker_should_pause. A rate over a
+    # handful of sends is noise, and pausing on it looks like the
+    # campaign stopping for no reason.
+    should_pause, bounce_rate, sends_so_far = db.bounce_breaker_should_pause(
+        cid, campaign["bounce_pause_pct"]
+    )
+    if should_pause:
+        db.update_campaign(cid, status="paused")
+        db.add_log(
+            f"⛔ Campaign '{campaign['name']}' AUTO-PAUSED — "
+            f"bounce rate {bounce_rate:.1f}% exceeded threshold "
+            f"{campaign['bounce_pause_pct']}% over {sends_so_far} sends",
+            "ERROR"
+        )
+        return
+
+    # ── Find due contacts ────────────────────────────────────────────
+    remaining = campaign["daily_limit"] - today_campaign_count
+    due = db.get_due_enrollments(cid, limit=min(remaining, 10))
+
+    if not due:
+        return
+
+    raw_steps = db.get_steps(cid)
+    for s in raw_steps:
+        s["variants"] = db.get_step_variants(s["id"])
+    steps = {s["step_num"]: s for s in raw_steps}
+    if not steps:
+        return
+
+    for enrollment in due:
+        # Re-check cap inside loop (other threads could have sent)
+        if _get_campaign_today_count(cid) >= campaign["daily_limit"]:
+            break
+
+        step_num = enrollment["current_step"]
+        step = steps.get(step_num)
+        if not step:
+            db.complete_enrollment(enrollment["enroll_id"])
+            continue
+
+        # ── Already delivered? ───────────────────────────────────────
+        # A restart between the SMTP handoff and advance_enrollment
+        # leaves the enrollment queued on a step the contact already
+        # received. Recover by advancing rather than sending again --
+        # the send is recorded, so the sequence just resumes.
+        if db.has_sent_step(cid, enrollment["email_lead_id"], step_num):
+            db.add_log(
+                f"↷ Step {step_num} was already sent to {enrollment['email']} — "
+                f"advancing without re-sending",
+                "WARN",
+            )
+            _advance_after_step(db, campaign, steps, enrollment, step_num)
+            continue
+
+        # ── Send the email ───────────────────────────────────────────
+        contact = dict(enrollment)
+        contact["email_lead_id"] = enrollment["email_lead_id"]
+
+        # Pick subject/body: use variant if the enrollment has one
+        subject_tpl = step["subject"]
+        body_tpl    = step["body_html"]
+        variant_label = enrollment.get("variant_label")
+        if variant_label and step.get("variants"):
+            v = next((x for x in step["variants"] if x["label"] == variant_label), None)
+            if v:
+                subject_tpl = v["subject"]
+                body_tpl    = v["body_html"]
+
+        # Round-robin through campaign's assigned accounts (falls back
+        # to global settings inside send_email when account is None)
+        account = db.get_next_account_for_campaign(cid)
+
+        # Parse campaign-level template variables
+        try:
+            campaign_vars = json.loads(campaign.get("variables") or "{}")
+        except Exception:
+            campaign_vars = {}
+
+        success, msg_id, err = email_sender.send_email(
+            contact=contact,
+            subject_tpl=subject_tpl,
+            body_tpl=body_tpl,
+            campaign_id=cid,
+            step_num=step_num,
+            settings=settings,
+            account=account,
+            campaign_vars=campaign_vars,
+        )
+
+        if success:
+            _advance_after_step(db, campaign, steps, enrollment, step_num)
+
+        elif err == "bounce":
+            pass  # already handled in sender.send_email
+
+        # ── Random inter-email delay ─────────────────────────────────
+        delay = random.randint(
+            campaign["min_delay_secs"],
+            campaign["max_delay_secs"]
+        )
+        logger.debug(f"Sleeping {delay}s before next send...")
+        # Interruptible, so stop() doesn't wait out a long pause.
+        _heartbeat()
+        if _stop_event.wait(timeout=delay):
+            return
 
 
 def _advance_after_step(db, campaign, steps, enrollment, step_num):
@@ -295,34 +320,50 @@ def _run_loop():
     - Checks replies every 5 minutes
     - Prunes old log rows once a day
     """
-    global _run_now_reply_check
-    last_reply_check = 0
-    last_log_prune   = 0
-
     while not _stop_event.is_set():
-        process_queue()
-
-        do_reply_check = _run_now_reply_check
-        _run_now_reply_check = False
-        now = time.time()
-        # Off by default only if the operator has explicitly turned it off --
-        # every existing install keeps checking unless someone opts out. A
-        # manual "Check for replies & send" click (do_reply_check) always
-        # runs regardless: turning off the automatic poll is not the same as
-        # saying "never, not even when I ask for it".
-        if do_reply_check or (email_checking_enabled() and now - last_reply_check > 300):  # 5 minutes
-            run_reply_check()
-            run_bounce_check()
-            last_reply_check = now
-
-        if now - last_log_prune > 86400:  # 24 hours
-            run_log_prune()
-            run_trash_purge()
-            last_log_prune = now
-
+        # Nothing but stop() may end this loop (audit B-23). The jobs catch
+        # their own errors, but their handlers write the Activity log, and a
+        # write that hit "database is locked" used to escape and end the
+        # thread for good, with nothing to restart it.
+        try:
+            _one_pass()
+        except Exception:
+            logger.exception("Scheduler pass failed; carrying on")
         # Sleep up to 60s, but wake immediately on request_run_now() or stop().
         _wake_event.wait(timeout=60)
         _wake_event.clear()
+
+
+_last_reply_check = 0
+_last_log_prune = 0
+
+
+def _one_pass():
+    """One pass of the loop: sends, then the reply and bounce checks when
+    due, then the daily clean-up."""
+    global _run_now_reply_check, _last_reply_check, _last_log_prune
+    _heartbeat()
+    process_queue()
+
+    do_reply_check = _run_now_reply_check
+    _run_now_reply_check = False
+    now = time.time()
+    # Off by default only if the operator has explicitly turned it off --
+    # every existing install keeps checking unless someone opts out. A
+    # manual "Check for replies & send" click (do_reply_check) always
+    # runs regardless: turning off the automatic poll is not the same as
+    # saying "never, not even when I ask for it".
+    if do_reply_check or (email_checking_enabled() and now - _last_reply_check > 300):  # 5 minutes
+        run_reply_check()
+        run_bounce_check()
+        _last_reply_check = now
+
+    if now - _last_log_prune > 86400:  # 24 hours
+        run_log_prune()
+        run_trash_purge()
+        _last_log_prune = now
+
+    _heartbeat()
 
 
 def start():
@@ -358,3 +399,31 @@ def stop(timeout: float = 10.0):
 
 def is_running():
     return _scheduler_thread is not None and _scheduler_thread.is_alive()
+
+
+def ensure_running() -> bool:
+    """
+    The watchdog: restart the thread if it was started and has since died.
+    Cheap enough to call on every Dashboard load. Does nothing if the
+    scheduler was never started (tests, SHOUTREACH_NO_SCHEDULER) or was
+    stopped on purpose. Returns True if it restarted the thread.
+    """
+    global _scheduler_thread
+    with _scheduler_lock:
+        t = _scheduler_thread
+        if t is None or t.is_alive() or _stop_event.is_set():
+            return False
+        _wake_event.clear()
+        _scheduler_thread = threading.Thread(
+            target=_run_loop, daemon=True, name="shoutreach-scheduler"
+        )
+        _scheduler_thread.start()
+    logger.warning("Scheduler thread had died; restarted")
+    db.add_log("⚡ Email sender had stopped and was restarted", "WARN")
+    return True
+
+
+def status() -> dict:
+    """For the Dashboard: is the sender alive, and when did it last finish
+    a pass (UTC)."""
+    return {"alive": is_running(), "last_pass_at": _last_pass_at}
