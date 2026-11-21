@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="Hexiv">
+  <!-- The Hexiv hexagon: teal outline, with the right-hand point replaced by
+       the white arm of the wordmark's X. Redrawn by eye from
+       hexiv-mark.png on 2026-11-21; proportions approximate. -->
+  <path fill="#00A3AD" d="M20.35 8.1 17.3 2.82H6.7L1.4 12l5.3 9.18h10.6l3.05-5.28h-2.2l-1.95 3.38H7.8L3.59 12 7.8 4.72h8.4l1.95 3.38z"/>
+  <path fill="#FFFFFF" d="M20.64 8.6 22.6 12l-1.96 3.4h-2.2L20.41 12l-1.97-3.4z"/>
+</svg>

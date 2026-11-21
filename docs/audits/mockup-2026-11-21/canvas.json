@@ -1,0 +1,30 @@
+{
+  "v": 3,
+  "createdOnFiles": {"v": 1, "at": "2026-11-21T23:45:00Z"},
+  "title": "ShoutReach redesign mockup",
+  "launch": {"view": "canvas"},
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {"x": 0, "y": 0, "w": 390, "h": 844, "title": "WhatsApp · To do", "is_interactive": true, "radius": 28},
+    "Lead.dc.html": {"x": 470, "y": 0, "w": 390, "h": 844, "title": "A lead, opened", "is_interactive": true, "radius": 28},
+    "DidItSend.dc.html": {"x": 940, "y": 0, "w": 390, "h": 844, "title": "After opening WhatsApp", "is_interactive": true, "radius": 28},
+    "Today.dc.html": {"x": 1410, "y": 0, "w": 390, "h": 844, "title": "Today", "is_interactive": true, "radius": 28},
+    "Meetings.dc.html": {"x": 1880, "y": 0, "w": 390, "h": 844, "title": "Meetings", "is_interactive": true, "radius": 28},
+    "DesktopWhatsApp.dc.html": {"x": 0, "y": 1270, "w": 1440, "h": 900, "title": "Computer · WhatsApp To do", "expand": "fill"},
+    "DesktopToday.dc.html": {"x": 1520, "y": 1270, "w": 1440, "h": 900, "title": "Computer · Today", "expand": "fill"}
+  },
+  "order": [
+    "Main.dc.html",
+    "Lead.dc.html",
+    "DidItSend.dc.html",
+    "Today.dc.html",
+    "Meetings.dc.html",
+    "DesktopWhatsApp.dc.html",
+    "DesktopToday.dc.html"
+  ],
+  "notes": {
+    "t_phone": {"x": 0, "y": -300, "text": "Phone", "kind": "title1", "maxW": 2270},
+    "t_computer": {"x": 0, "y": 970, "text": "Computer", "kind": "title1", "maxW": 2960}
+  },
+  "designSystems": []
+}

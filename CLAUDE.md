@@ -41,7 +41,9 @@ the redesign was smoke-tested in a real browser.
 - `docs/WhatsApp Module Handover.md` — how the WhatsApp module and the
   `contacts` → `businesses` split were designed. Historical: its booking-gap
   check, review step and "uncommitted" notes are all superseded (Handover §5).
-- `docs/audits/` — security and architecture audits.
-  `Full App Audit 2026-09-09.md` has a status block saying what's still open.
-  It lists unfixed security findings, so keep the repo private.
+- `docs/audits/` — `Full Audit 2026-11-21.md` is the one list to work from:
+  front end (with a proposed redesign and build order), back end, and every
+  item the older audits left open. Its status block says what's done; refer
+  to findings by id (F-12, B-3). It lists unfixed security findings, so keep
+  the repo private. Older audits are in `docs/audits/resolved/`.
 - `README.md` — setup and user-facing overview.

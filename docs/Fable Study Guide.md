@@ -2,7 +2,7 @@
 
 **For:** the developer who built this and wants to explain it fluently in interviews and technical conversations.
 **Assumes:** basic coding knowledge. Every concept is explained from the ground up.
-**Companion file:** [Fable Audit.md](Fable%20Audit.md) — the honest list of flaws and how to fix them.
+**Companion file:** [Fable Audit.md](audits/resolved/Fable%20Audit.md) — the honest list of flaws and how to fix them.
 
 > How to use this: read it top to bottom once to build the mental model, then come back to the "Interview questions" section (near the end) to rehearse. When a term is introduced in **bold**, that's a concept an interviewer might ask you to define. If you can explain the bolded terms in your own words, you're ready.
 
@@ -347,7 +347,7 @@ The unsubscribe link contains the recipient's email. If it were a plain `?email=
 ### Secret masking
 API keys, SMTP passwords, and the signing secret are never sent back to the browser — a helper (`_is_secret_key`) detects secret-shaped setting names and replaces their values with `●●●●●●`. When you save settings, sending the placeholder back means "keep the existing value," so you never accidentally blank out a secret you couldn't see. Admin-only endpoints gate all of this.
 
-> For the *current* state of what's fixed vs still open, read [Fable Audit.md](Fable%20Audit.md). The short version: the big web-security holes (CSRF, XSS, secret leakage, privilege escalation) were closed; the deeper items (encrypting secrets at rest, unverified mail-server TLS certificates, no automated tests) remain.
+> For the *current* state of what's fixed vs still open, read [Fable Audit.md](audits/resolved/Fable%20Audit.md). The short version: the big web-security holes (CSRF, XSS, secret leakage, privilege escalation) were closed; the deeper items (encrypting secrets at rest, unverified mail-server TLS certificates, no automated tests) remain.
 
 ---
 
@@ -491,4 +491,4 @@ Quick definitions to reinforce. If you can teach these, you understand the syste
 
 ---
 
-*This guide describes the system as it stands. For the current, verified list of flaws and their fixes, see [Fable Audit.md](Fable%20Audit.md).*
+*This guide describes the system as it stands. For the current, verified list of flaws and their fixes, see [Fable Audit.md](audits/resolved/Fable%20Audit.md).*

@@ -38,6 +38,8 @@ for f in tests/test_*.py; do python "$f"; done
 
 - `docs/WhatsApp Module Handover.md` — historical design record; superseded
   where Handover §5 says so.
-- `docs/audits/` — security and architecture audits.
-  `Full App Audit 2026-09-09.md` has a status block saying what's still open.
+- `docs/audits/` — `Full Audit 2026-11-21.md` is the one list to work from
+  (front end, back end, and what older audits left open); its status block
+  says what's done. It lists unfixed security findings, so keep the repo
+  private.
 - `README.md` — setup and user-facing overview.

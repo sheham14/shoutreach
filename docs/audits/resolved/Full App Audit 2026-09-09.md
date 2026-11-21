@@ -1,5 +1,12 @@
 # ShoutReach — full application audit
 
+> **Superseded 2026-11-21** by [Full Audit 2026-11-21](../Full%20Audit%202026-11-21.md).
+> Most of this was never actioned. Every open item was re-checked against the
+> code and carried into that document's §7, which is now the only list to work
+> from. One correction: §7 below says `/api/logs` is admin-only. It is not —
+> see B-2 in the new audit. Kept as a record. Line numbers are from September
+> and no longer match the code.
+
 **Date:** 2026-09-09
 **Scope:** security, performance, GCP cost on e2-micro, UX and onboarding, simplification, feature ideas.
 **Status:** untracked working note. Nothing here is committed to git.

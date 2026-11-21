@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WhatsApp To do, computer</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<style>
+body{margin:0}
+a{color:#3cc1d0;text-decoration:none}a:hover{color:#63d3e0}
+button,textarea,select{font:inherit}
+</style>
+</helmet>
+<div style="display: flex; flex-wrap: wrap; min-height: 100vh; background: #0b1519; color: #e7eef0; font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 1.45">
+
+  <aside style="flex: 1 0 220px; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; padding: 14px 12px; background: #101d22; border-right: 1px solid #1e3238">
+    <div style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px; margin-bottom: 8px">
+      <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true" style="flex-shrink: 0"><path d="M20.35 8.1 17.3 2.82H6.7L1.4 12l5.3 9.18h10.6l3.05-5.28h-2.2l-1.95 3.38H7.8L3.59 12 7.8 4.72h8.4l1.95 3.38z" fill="#00A3AD"></path><path d="M20.64 8.6 22.6 12l-1.96 3.4h-2.2L20.41 12l-1.97-3.4z" fill="#ffffff"></path></svg>
+      <span style="font-size: 16px; font-weight: 600">ShoutReach</span>
+    </div>
+    <a href="DesktopToday.dc.html" style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px; border-radius: 8px; color: #a3b8be; font-weight: 500">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"></path></svg>
+      Today
+    </a>
+    <a href="DesktopWhatsApp.dc.html" style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px; border-radius: 8px; color: #a3b8be; font-weight: 500">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1M9.5 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM21 19v-1a4 4 0 0 0-3-3.9M15.5 3.2a3.5 3.5 0 0 1 0 6.6"></path></svg>
+      Contacts
+    </a>
+    <div style="padding: 14px 10px 4px; font-size: 12px; color: #a3b8be">Channels</div>
+    <a href="DesktopWhatsApp.dc.html" style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px; border-radius: 8px; background: #113239; color: #e7eef0; font-weight: 600">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: #3cc1d0"><path d="M21 11.5a8.4 8.4 0 0 1-12.3 7.4L3 21l2.1-5.7A8.4 8.4 0 1 1 21 11.5z"></path></svg>
+      WhatsApp
+      <span style="margin-left: auto; font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums">129</span>
+    </a>
+    <a href="DesktopWhatsApp.dc.html" style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px; border-radius: 8px; color: #a3b8be; font-weight: 500">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"></path></svg>
+      Calling
+      <span style="margin-left: auto; font-size: 13px; color: #e7eef0; font-variant-numeric: tabular-nums">8</span>
+    </a>
+    <a href="DesktopWhatsApp.dc.html" style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px; border-radius: 8px; color: #a3b8be; font-weight: 500">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18v12H3zM3 7l9 6 9-6"></path></svg>
+      Email
+      <span style="margin-left: auto; font-size: 13px; color: #e7eef0; font-variant-numeric: tabular-nums">7</span>
+    </a>
+    <div style="padding: 14px 10px 4px; font-size: 12px; color: #a3b8be">Pipeline</div>
+    <a href="DesktopWhatsApp.dc.html" style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px; border-radius: 8px; color: #a3b8be; font-weight: 500">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16v14H4zM4 10h16M8 3v4M16 3v4"></path></svg>
+      Meetings
+      <span style="margin-left: auto; font-size: 13px; color: #e7eef0; font-variant-numeric: tabular-nums">4</span>
+    </a>
+    <a href="DesktopWhatsApp.dc.html" style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px; border-radius: 8px; color: #a3b8be; font-weight: 500">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M4 20h16"></path></svg>
+      Get leads
+    </a>
+    <div style="margin-top: auto; display: flex; flex-direction: column; gap: 2px; padding-top: 14px">
+      <a href="DesktopWhatsApp.dc.html" style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px; border-radius: 8px; color: #a3b8be; font-weight: 500">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8M14 7a2 2 0 1 0 4 0 2 2 0 0 0-4 0zM8 17a2 2 0 1 0 4 0 2 2 0 0 0-4 0z"></path></svg>
+        Settings
+      </a>
+      <div style="display: flex; align-items: center; height: 44px; padding: 0 10px; font-size: 13px; color: #a3b8be">Signed in as sheham</div>
+    </div>
+  </aside>
+
+  <main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; display: flex; flex-direction: column; gap: 16px; padding: 24px 32px 32px">
+
+    <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap">
+      <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+        <a href="DesktopWhatsApp.dc.html" style="font-size: 13px; font-weight: 500">WhatsApp, all campaigns</a>
+        <h1 style="margin: 0; font-size: 20px; font-weight: 600; line-height: 1.3">Dubai dentists, booking system</h1>
+      </div>
+      <button style="height: 44px; padding: 0 16px; border: 0; border-radius: 8px; background: #15262c; color: #e7eef0; font-weight: 500; cursor: pointer">Add leads</button>
+    </div>
+
+    <nav aria-label="WhatsApp sections" style="display: flex; flex-wrap: wrap; border-bottom: 1px solid #1e3238">
+      <a href="DesktopWhatsApp.dc.html" style="display: flex; align-items: center; gap: 6px; height: 44px; padding: 0 14px; font-weight: 600; color: #e7eef0; border-bottom: 2px solid #3cc1d0">To do <span style="font-weight: 500; color: #a3b8be">129</span></a>
+      <a href="DesktopWhatsApp.dc.html" style="display: flex; align-items: center; gap: 6px; height: 44px; padding: 0 14px; font-weight: 500; color: #a3b8be; border-bottom: 2px solid transparent">Leads <span>188</span></a>
+      <a href="DesktopWhatsApp.dc.html" style="display: flex; align-items: center; gap: 6px; height: 44px; padding: 0 14px; font-weight: 500; color: #a3b8be; border-bottom: 2px solid transparent">Campaigns <span>3</span></a>
+      <a href="DesktopWhatsApp.dc.html" style="display: flex; align-items: center; height: 44px; padding: 0 14px; font-weight: 500; color: #a3b8be; border-bottom: 2px solid transparent">Messages</a>
+    </nav>
+
+    <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap">
+      <div style="display: flex; gap: 3px; padding: 3px; background: #101d22; border-radius: 10px">
+        <button style="height: 44px; padding: 0 18px; border: 0; border-radius: 8px; background: #15262c; color: #e7eef0; font-weight: 600; cursor: pointer">Ready to send 68</button>
+        <button style="height: 44px; padding: 0 18px; border: 0; border-radius: 8px; background: none; color: #a3b8be; font-weight: 500; cursor: pointer">Follow-up due 61</button>
+      </div>
+      <div style="font-size: 13px; color: #a3b8be"><span style="color: #e7eef0; font-weight: 600">58</span> sent today</div>
+    </div>
+
+    <div style="display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px">
+
+      <div style="flex: 999 1 420px; min-width: 0; background: #101d22; border-radius: 12px; overflow-x: auto">
+        <div style="min-width: 520px">
+          <div style="display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1.3fr); gap: 12px; align-items: center; height: 40px; padding: 0 16px; font-size: 13px; color: #a3b8be">
+            <span>Business</span><span>Number</span><span>Area</span><span>Status</span>
+          </div>
+          <div style="display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1.3fr); gap: 12px; align-items: center; height: 44px; padding: 0 16px; border-top: 1px solid #1e3238; background: #113239">
+            <span style="font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Bright Family Dentistry</span>
+            <span style="font-variant-numeric: tabular-nums; white-space: nowrap">+971 55 535 9598</span>
+            <span style="color: #a3b8be; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Al Barsha</span>
+            <span style="color: #a3b8be">New</span>
+          </div>
+          <div style="display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1.3fr); gap: 12px; align-items: center; height: 44px; padding: 0 16px; border-top: 1px solid #1e3238">
+            <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">City Centre Smile Studio</span>
+            <span style="font-variant-numeric: tabular-nums; white-space: nowrap">+971 55 830 2564</span>
+            <span style="color: #a3b8be; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Deira</span>
+            <span style="display: flex; align-items: center; gap: 6px; color: #E0A23B; white-space: nowrap"><span style="width: 6px; height: 6px; border-radius: 50%; background: #E0A23B"></span>Opened 5:57 pm</span>
+          </div>
+          <sc-for list="{{ leads }}" as="lead" hint-placeholder-count="11">
+            <div style="display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1.3fr); gap: 12px; align-items: center; height: 44px; padding: 0 16px; border-top: 1px solid #1e3238">
+              <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{ lead.name }}</span>
+              <span style="font-variant-numeric: tabular-nums; white-space: nowrap">{{ lead.number }}</span>
+              <span style="color: #a3b8be; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{ lead.area }}</span>
+              <span style="color: #a3b8be; white-space: nowrap">{{ lead.status }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="flex: 1 1 380px; max-width: 480px; min-width: 0; box-sizing: border-box; display: flex; flex-direction: column; gap: 16px; padding: 20px; background: #101d22; border-radius: 12px">
+        <div style="display: flex; flex-direction: column; gap: 4px">
+          <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px">
+            <h2 style="margin: 0; font-size: 18px; font-weight: 600; line-height: 1.3">Bright Family Dentistry</h2>
+            <span style="font-size: 13px; color: #a3b8be; white-space: nowrap; font-variant-numeric: tabular-nums">1 of 68</span>
+          </div>
+          <div style="font-size: 13px; color: #a3b8be; font-variant-numeric: tabular-nums">+971 55 535 9598 · Al Barsha, Dubai · rated 4.1 from 769 reviews</div>
+          <a href="DesktopWhatsApp.dc.html" style="font-size: 13px; font-weight: 500">brightfamilydentistry.ae</a>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 6px">
+          <label for="d-stage" style="font-size: 13px; color: #a3b8be">Stage</label>
+          <select id="d-stage" style="height: 44px; padding: 0 12px; background: #15262c; border: 1px solid #5b7880; border-radius: 8px; color: #e7eef0">
+            <option>Not set yet</option>
+            <option>Replied</option>
+            <option>Meeting booked</option>
+            <option>Proposal sent</option>
+            <option>Won</option>
+            <option>Not interested</option>
+          </select>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 6px">
+          <label for="d-message" style="font-size: 13px; color: #a3b8be">Message</label>
+          <textarea id="d-message" style="width: 100%; height: 150px; box-sizing: border-box; resize: vertical; padding: 12px 14px; background: #15262c; border: 1px solid #5b7880; border-radius: 8px; color: #e7eef0; line-height: 1.5">Hi, is this Bright Family Dentistry? I was looking for a dentist near Al Barsha and noticed you can't book online, so patients have to call. I build booking pages for clinics in Dubai. Want me to send a 1 minute video of how it would look for you?</textarea>
+          <div style="font-size: 13px; color: #a3b8be">Written for this lead, so template changes won't touch it. <a href="DesktopWhatsApp.dc.html">Reset to template</a></div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <div style="display: flex; gap: 10px">
+            <button style="flex: 1; height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 8px; background: #3cc1d0; color: #06272c; font-size: 15px; font-weight: 600; cursor: pointer">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-12.3 7.4L3 21l2.1-5.7A8.4 8.4 0 1 1 21 11.5z"></path></svg>
+              Open in WhatsApp
+            </button>
+            <button style="height: 44px; padding: 0 18px; border: 0; border-radius: 8px; background: #15262c; color: #e7eef0; font-weight: 500; cursor: pointer">Skip</button>
+          </div>
+          <div style="font-size: 12px; color: #a3b8be">Keys: Enter opens WhatsApp · S sent · N not on WhatsApp · D didn't send · arrows move</div>
+        </div>
+
+        <div style="display: flex; flex-direction: column">
+          <button style="display: flex; align-items: center; justify-content: space-between; height: 44px; padding: 0; background: none; border: 0; border-top: 1px solid #1e3238; color: #e7eef0; cursor: pointer">
+            Notes
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: #a3b8be"><path d="M9 5l7 7-7 7"></path></svg>
+          </button>
+          <button style="display: flex; align-items: center; justify-content: space-between; height: 44px; padding: 0; background: none; border: 0; border-top: 1px solid #1e3238; color: #e7eef0; cursor: pointer">
+            Website checks
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: #a3b8be"><path d="M9 5l7 7-7 7"></path></svg>
+          </button>
+          <button style="display: flex; align-items: center; justify-content: space-between; height: 44px; padding: 0; background: none; border: 0; border-top: 1px solid #1e3238; color: #e7eef0; cursor: pointer">
+            <span>History <span style="color: #a3b8be">· nothing sent yet</span></span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: #a3b8be"><path d="M9 5l7 7-7 7"></path></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      leads: [
+        { name: 'Vista Dental & Implant Specialists', number: '+971 54 407 8923', area: 'Business Bay', status: 'New' },
+        { name: 'Smile Studio, Downtown Branch', number: '+971 50 645 3051', area: 'Downtown', status: 'New' },
+        { name: 'Skyline Dental Clinic', number: '+971 55 545 7113', area: 'Marina', status: 'New' },
+        { name: 'Wellness Family Dentistry, Deira Branch', number: '+971 52 310 4486', area: 'Deira', status: 'New' },
+        { name: 'Pearl Dental Clinic', number: '+971 50 611 4578', area: 'Jumeirah 1', status: 'New' },
+        { name: 'Emirates Family Dentistry', number: '+971 55 907 4836', area: 'Mirdif', status: 'New' },
+        { name: 'Marina Dental Clinic', number: '+971 56 392 2352', area: 'Marina', status: 'New' },
+        { name: 'Golden Smile Studio', number: '+971 52 475 9182', area: 'JLT', status: 'New' },
+        { name: 'Palm Dental & Orthodontic Centre', number: '+971 54 825 6118', area: 'Al Nahda', status: 'New' },
+        { name: 'Crescent Dental Clinic', number: '+971 50 984 7466', area: 'Al Barsha', status: 'New' },
+        { name: 'Harmony Dental & Implant Specialists', number: '04 339 2045', area: 'JLT', status: 'Landline' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

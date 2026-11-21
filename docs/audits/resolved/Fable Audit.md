@@ -1,5 +1,11 @@
 # Fable Audit — ShoutReach
 
+> **Superseded 2026-11-21** by [Full Audit 2026-11-21](../Full%20Audit%202026-11-21.md).
+> Not every finding here is closed: the six still open (3.3, 3.7–3.10 and the
+> architectural items in §5) were re-checked against the code and carried into
+> that document's §7, which is now the only list to work from. Kept as a
+> record. Line numbers below are from August and no longer match the code.
+
 > **Status (2026-08-05):** 7 of 13 findings resolved in the scraper rework
 > (through `13b032c`). Resolved items are marked inline below with what closed
 > them and how it was verified. The rest stay open and are listed in

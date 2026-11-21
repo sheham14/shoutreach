@@ -1,0 +1,11 @@
+{"device": "desktop", "user": "newbie", "prefix": "n",
+ "steps": [
+  {"name": "dashboard", "do": [["js", "showSection('dashboard')"]]},
+  {"name": "wa-todo", "do": [["js", "showSection('whatsapp'); setTab('whatsapp','todo')"]]},
+  {"name": "wa-leads", "do": [["js", "setTab('whatsapp','leads')"]]},
+  {"name": "wa-messages", "do": [["js", "setTab('whatsapp','templates')"]]},
+  {"name": "calling-todo", "do": [["js", "showSection('calling'); setTab('calling','todo')"]]},
+  {"name": "contacts", "do": [["js", "showSection('contacts')"]]},
+  {"name": "email-campaigns", "do": [["js", "showSection('email'); setTab('email','campaigns')"]]},
+  {"name": "settings", "do": [["js", "showSection('settings')"]], "full": true}
+ ]}

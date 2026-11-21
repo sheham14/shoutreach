@@ -1118,18 +1118,43 @@ importing runs `init_db()` against `./outreach.db`.
 3. Create the cofounder's account and set up his laptop (§4), with the current
    `scraper_worker.py`.
 
-**From the full audit** — `docs/audits/Full App Audit 2026-09-09.md` (kept
-local until the operator committed it in `be439b5`; the repo is private); its
-status block says what's done. The biggest open
-items:
+**From the full audit** — `docs/audits/Full Audit 2026-11-21.md` (the repo is
+private, and has to stay so: it describes unfixed holes). It replaces both
+older audits, whose open items it re-checked and carries in its §7; its
+status block says what's done. Nothing in it has been built yet. It is mostly
+a front-end audit with a proposed redesign (§4, not yet agreed with the
+operator) and a build order (§8). Its fix-now list (§2) is independent of the
+redesign; the biggest items:
 
-- Secrets stored in plaintext: SMTP passwords, AI keys, the Flask `SECRET_KEY`.
-- `/api/calls/queue` performance: `limit=100000` four times, an N+1 loop, and
-  no index on `sends(email_lead_id)`.
-- The bounce scanner downloads whole messages with no cap — an out-of-memory
-  risk on a 1 GB server.
-- No first-run guidance for a new user.
-- Activating a campaign has no confirmation, though it starts real sending.
+- **B-1:** an opt-out is only a status on whichever rows exist at the time.
+  An address that unsubscribed or bounced is sendable again if the other
+  operator imports it later, if its lead is restored from Recently deleted,
+  or if `status` is edited back — each reproduced as far as the send loop's
+  due list. This is a gap in the suppression rule of §3, not a change to it:
+  the fix is a suppressed-addresses table checked on create, on restore and
+  in `get_due_enrollments`.
+- **B-3:** sessions are trusted from the cookie alone, so deleting a user or
+  changing a password doesn't end an open session.
+- **B-6:** the send loop wraps every operator's campaigns in one try/except,
+  so an error in one campaign stops all the campaigns after it.
+- **B-22:** Calling → Reopen 404s: `@owned("call_lead", "cid")` on a route
+  that is sent a business id.
+- **B-23:** `_run_loop` has no outer try, and the jobs' own error handlers
+  call `add_log`; when that write hits "database is locked" the scheduler
+  thread ends and nothing restarts it. Reproduced with an 11-second lock.
+- **B-24:** the only backups are the deploy's own, on the VM's disk.
+- **B-2:** `GET /api/logs` has no admin check; the log holds both operators'
+  recipient addresses and subjects.
+- **B-9:** activating a campaign, and "Enroll All Active", start real sending
+  with no confirmation or count.
+- **B-13:** secrets stored in plaintext — SMTP/IMAP passwords, AI keys, Zoho
+  tokens, the session key — and now also in each deploy's database backup.
+- **B-12:** the bounce scanner downloads whole messages with no cap — an
+  out-of-memory risk on a 1 GB server.
+- **F-23, F-24:** WhatsApp → Booked — the count reads 0 until the tab is
+  opened, and on a phone the meeting time is cut off. Decide these together
+  with `docs/Cal.com Booking Handoff.md`: that plan may replace this Booked
+  list and the Zoho booking behind it.
 
 **Still deliberately deferred** (reasons in the WhatsApp handover §6): renaming
 the `/api/contacts/*` URLs (the worker posts to them), `.xlsx` import, a

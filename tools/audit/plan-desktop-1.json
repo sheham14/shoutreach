@@ -1,0 +1,24 @@
+{
+  "device": "desktop", "user": "sheham", "prefix": "d", "login_shot": true,
+  "steps": [
+    {"name": "dashboard", "do": [["js", "showSection('dashboard')"]]},
+    {"name": "dashboard-full", "do": [], "full": true},
+    {"name": "contacts", "do": [["js", "showSection('contacts')"]]},
+    {"name": "email-todo", "do": [["js", "showSection('email'); setTab('email','todo')"]]},
+    {"name": "email-leads", "do": [["js", "setTab('email','leads')"]]},
+    {"name": "email-campaigns", "do": [["js", "setTab('email','campaigns')"]]},
+    {"name": "email-unsub", "do": [["js", "setTab('email','suppressed')"]]},
+    {"name": "calling-todo", "do": [["js", "showSection('calling'); setTab('calling','todo')"]]},
+    {"name": "calling-leads", "do": [["js", "setTab('calling','leads')"]]},
+    {"name": "calling-campaigns", "do": [["js", "setTab('calling','campaigns')"]]},
+    {"name": "calling-script", "do": [["js", "setTab('calling','script')"]]},
+    {"name": "wa-todo", "do": [["js", "showSection('whatsapp'); setTab('whatsapp','todo')"]]},
+    {"name": "wa-leads", "do": [["js", "setTab('whatsapp','leads')"]]},
+    {"name": "wa-campaigns", "do": [["js", "setTab('whatsapp','campaigns')"]]},
+    {"name": "wa-messages", "do": [["js", "setTab('whatsapp','templates')"]]},
+    {"name": "wa-booked", "do": [["js", "setTab('whatsapp','booked')"]]},
+    {"name": "getleads", "do": [["js", "showSection('scraper')"]]},
+    {"name": "settings", "do": [["js", "showSection('settings')"]]},
+    {"name": "help", "do": [["js", "showSection('help')"]]}
+  ]
+}
