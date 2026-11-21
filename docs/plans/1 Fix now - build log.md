@@ -18,7 +18,7 @@ operator's go-ahead). Nothing is pushed to `master`.
 
 | Package | Finding | State | Commit |
 |---|---|---|---|
-| 1 Opt-outs permanent | B-1 | not started | |
+| 1 Opt-outs permanent | B-1 | done | `9e51276` |
 | 2 Activity log admin-only | B-2 | not started | |
 | 3 Sessions | B-3 | not started | |
 | 4 Sender resilience | B-6, B-23 | not started | |
@@ -32,3 +32,27 @@ operator's go-ahead). Nothing is pushed to `master`.
 
 - Baseline: all 25 test files pass (after installing the worker's packages).
 - No `./outreach.db` exists in the checkout; tests use their own temp DBs.
+
+### Package 1 — B-1 — done (`9e51276`)
+
+- New table `suppressed_addresses(email PK, reason, created_at)`, no owner.
+  Helpers in db.py under `# ── Suppression`: `_record_suppression`,
+  `_suppressed_reason`, `_apply_suppression` (the one helper every call site
+  uses). `unsubscribe_contact`, `mark_bounced`, `increment_soft_bounce` write
+  the table even with no row. Soft-bounce count now reads MAX across copies.
+- Enforced in: `upsert_businesses`, `upsert_wa_leads`, `create_email_lead`,
+  `add_business_email`, `_restore_one`, `update_email_lead` (refuses moving a
+  suppressed address to another status; setting unsubscribed/bounced by hand
+  is recorded; changing the address to a suppressed one applies it), and
+  `get_due_enrollments` (NOT EXISTS backstop).
+- Migration `_migrate_suppressed_addresses`, marker `_migrated_suppressed_addresses`.
+- Choice: unsubscribed rows are never downgraded to bounced by a later bounce
+  (old `mark_bounced` overwrote them). A bounced address can still be set to
+  unsubscribed by hand; nothing else.
+- Choice: `add_business_email` now also marks the business do-not-contact when
+  the address unsubscribed (same as an existing copy would get).
+- Checks: suppression_db, suppression_routes, security_findings S-1a/S-1c all
+  show the address suppressed and off the due list. (suppression_db's bulk
+  delete step calls a function that doesn't exist, `delete_contacts_bulk` —
+  a fault in the check script, not the app.)
+- Suite: 26 files pass.
