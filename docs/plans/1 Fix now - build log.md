@@ -20,7 +20,7 @@ operator's go-ahead). Nothing is pushed to `master`.
 |---|---|---|---|
 | 1 Opt-outs permanent | B-1 | done | `9e51276` |
 | 2 Activity log admin-only | B-2 | done (first half) | `a53ccac` |
-| 3 Sessions | B-3 | not started | |
+| 3 Sessions | B-3 | done | `e541e80` |
 | 4 Sender resilience | B-6, B-23 | not started | |
 | 5 Calling → Reopen | B-22 | not started | |
 | 6 Confirm before sending | B-9 | not started | |
@@ -65,3 +65,19 @@ operator's go-ahead). Nothing is pushed to `master`.
 - Harness: `python tools/audit/serve.py seed` then run `serve.py` in the
   background; a seeded copy is at `/tmp/claude-0/audit-seed.db` (not durable).
   Restart the server after code changes (it imports the app once).
+
+### Package 3 — B-3 — done (`e541e80`)
+
+- `users.session_version` (column loop). Login stores `sv`. `_require_login`
+  loads the user (`g.user`), refuses deleted users or stale `sv` (missing = 0).
+- `is_admin()` and `_current_user()` in app.py; `admin_required`, `me()`,
+  `/api/users/me`, the password route and the two built-in-outcome checks use
+  the row. `session["is_admin"]` is still written, for display only.
+- `change_password(..., end_sessions=True)` returns the new version; the
+  sign-in hash upgrade passes `end_sessions=False` (otherwise a sign-in that
+  re-hashes would sign itself out).
+- Test: `tests/test_sessions.py`. Check: security_findings S-3 now 401.
+- Suite: 27 files pass.
+- Operator note: user mid-turn said "if you have a better suggestion for
+  anything feel free to give your feedback" — collect suggestions for the
+  hand-back.
