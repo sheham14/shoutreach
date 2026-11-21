@@ -3782,6 +3782,44 @@ def get_campaign_contact_report(campaign_id: int):
         return [dict(r) for r in rows]
 
 
+def get_campaign_send_preview(campaign_id: int, owner_id=None) -> dict:
+    """
+    The numbers the "Start sending?" and "Enroll all?" confirmations state
+    (audit B-9). Both are this operator's own, and both count only people the
+    send loop would really email: active, not suppressed, business not do not
+    contact.
+
+      sendable   -- enrolled in this campaign and still queued
+      enrollable -- active addresses "Enroll All Active" would add: not in
+                    this campaign, not a duplicate address, not mid-sequence
+                    in another campaign
+    """
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        sendable = conn.execute("""
+            SELECT COUNT(*) FROM enrollments e
+              JOIN email_leads el ON el.id = e.email_lead_id
+              JOIN businesses  b  ON b.id  = el.business_id
+             WHERE e.campaign_id = ? AND el.owner_id = ?
+               AND e.status = 'queued' AND el.status = 'active'
+               AND b.do_not_contact = 0
+               AND NOT EXISTS (SELECT 1 FROM suppressed_addresses s WHERE s.email = el.email)
+        """, (campaign_id, owner)).fetchone()[0]
+        enrollable = conn.execute("""
+            SELECT COUNT(*) FROM email_leads el
+              JOIN businesses b ON b.id = el.business_id
+             WHERE el.owner_id = ? AND el.status = 'active'
+               AND el.duplicate_of IS NULL AND b.do_not_contact = 0
+               AND NOT EXISTS (SELECT 1 FROM suppressed_addresses s WHERE s.email = el.email)
+               AND NOT EXISTS (SELECT 1 FROM enrollments e
+                                WHERE e.email_lead_id = el.id AND e.campaign_id = ?)
+               AND NOT EXISTS (SELECT 1 FROM enrollments e
+                                WHERE e.email_lead_id = el.id AND e.campaign_id != ?
+                                  AND e.status NOT IN ('completed','replied','unsubscribed','bounced'))
+        """, (owner, campaign_id, campaign_id)).fetchone()[0]
+    return {"sendable": sendable, "enrollable": enrollable}
+
+
 def enroll_contacts_bulk(campaign_id, email_lead_ids, owner_id=None):
     """
     Enroll addresses, skipping any that would produce a duplicate approach.

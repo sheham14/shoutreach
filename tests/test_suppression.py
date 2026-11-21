@@ -269,6 +269,51 @@ def test_no_owner_anywhere(work):
           is not None)
 
 
+def test_send_preview(work):
+    print("\n7. THE 'START SENDING?' COUNTS (B-9) RESPECT OWNER, SUPPRESSION, DO NOT CONTACT")
+    db, path, a, b = fresh(work, "preview.db")
+    db.upsert_businesses([{"email": f"p{i}@clinic{i}.ae", "company": f"Clinic {i}"} for i in range(5)],
+                         owner_id=a)
+    db.upsert_businesses([{"email": "theirs@other.ae", "company": "Other"}], owner_id=b)
+    cid = db.create_campaign("C", owner_id=a)
+    pre = db.get_campaign_send_preview(cid, owner_id=a)
+    check("nothing enrolled: 0 sendable, all 5 enrollable",
+          pre == {"sendable": 0, "enrollable": 5}, str(pre))
+    db.unsubscribe_contact("p0@clinic0.ae")
+    with db.get_db() as conn:
+        conn.execute("UPDATE businesses SET do_not_contact=1 WHERE name='Clinic 1'")
+    pre = db.get_campaign_send_preview(cid, owner_id=a)
+    check("an opt-out and a do-not-contact business aren't counted", pre["enrollable"] == 3, str(pre))
+    ids = [r[0] for r in q(path, "SELECT id FROM email_leads WHERE owner_id=?", (a,))]
+    with db.get_db() as conn:
+        for lid in ids:
+            conn.execute("INSERT INTO enrollments(campaign_id, email_lead_id, status) VALUES(?,?,'queued')",
+                         (cid, lid))
+        # Forced active in SQL, as in section 4: still not counted.
+        conn.execute("UPDATE email_leads SET status='active' WHERE email='p0@clinic0.ae'")
+    pre = db.get_campaign_send_preview(cid, owner_id=a)
+    check("enrolled: only the 3 the send loop would really email are sendable",
+          pre["sendable"] == 3, str(pre))
+    check("and none are left to enroll", pre["enrollable"] == 0, str(pre))
+    cid_b = db.create_campaign("B's", owner_id=b)
+    check("the other operator's figures are their own",
+          db.get_campaign_send_preview(cid_b, owner_id=b) == {"sendable": 0, "enrollable": 1})
+
+    import app as app_mod
+    importlib.reload(app_mod)
+    app_mod.app.config["TESTING"] = True
+    c = app_mod.app.test_client()
+    with c.session_transaction() as sess:
+        sess["user_id"] = a
+        sess["csrf_token"] = "t"
+    r = c.get(f"/api/campaigns/{cid}/send-preview")
+    d = r.get_json() or {}
+    check("the route returns the counts, daily limit and start",
+          r.status_code == 200 and d.get("sendable") == 3 and d.get("daily_limit") == 30
+          and "starts_label" in d and "window_open" in d, str(d))
+    check("another operator's campaign is 404", c.get(f"/api/campaigns/{cid_b}/send-preview").status_code == 404)
+
+
 def main():
     work = tempfile.mkdtemp(prefix="shoutreach_suppress_")
     try:
@@ -278,6 +323,7 @@ def main():
         test_backstop(work)
         test_migration(work)
         test_no_owner_anywhere(work)
+        test_send_preview(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print()

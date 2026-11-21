@@ -151,7 +151,7 @@ Small, self-contained, and worth doing first. Effort: **S** under an hour,
 | 1 | ✅ An opt-out can be undone three ways — the other operator importing the address, Restore, or an edit | High | M | B-1 |
 | 2 | ✅ Activity log readable by non-admins (owner per log line still open) | High | S | B-2 |
 | 3 | ✅ Deleting an account or changing its password doesn't sign it out | High | M | B-3 |
-| 4 | Activating an email campaign sends real email with no confirmation and no count | High | M | B-9 |
+| 4 | ✅ Activating an email campaign sends real email with no confirmation and no count | High | M | B-9 |
 | 5 | ✅ One campaign's bad value stops email sending for everyone | Medium | S | B-6 |
 | 6 | ✅ The background sender can die silently and never restart | High | S–M | B-23 |
 | 7 | No backup that the repo shows except at deploy, on the same disk — set up a nightly one that leaves the VM | High | S, no code | B-24 |
@@ -1027,6 +1027,19 @@ injection was proven or disproven end to end; the worker scripts that run on
 your laptops; the migrations; real Zoho; the live server's own configuration.
 
 **B-9 · Two buttons start real email with no confirmation. (High · read)**
+
+> ✅ **RESOLVED** — Plan 1, package 6. Both buttons now ask first in the
+> app's own dialog, with numbers from a new route,
+> `GET /api/campaigns/<id>/send-preview` (`db.get_campaign_send_preview`):
+> Activate says "This will email **N** people, up to **X** a day, starting
+> **when**" (confirm: Start sending); Enroll All Active says how many
+> addresses it adds, and on an active campaign when they start getting email
+> (confirm: Enroll and send). The counts are the operator's own and leave out
+> suppressed and do-not-contact addresses, and, for Enroll All, anything
+> already in this or another live sequence. Checked:
+> `tests/test_suppression.py` §7, and both dialogs driven in Chromium on the
+> harness ("This will email 21 people, up to 40 a day, starting Mon 23 Nov,
+> 09:00 UTC"; Cancel leaves the campaign as it was).
 
 - **Activate** on a campaign posts straight away
   ([campaigns.js:118–123](../../static/js/campaigns.js#L118-L123)). No "this

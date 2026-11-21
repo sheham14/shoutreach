@@ -1487,6 +1487,33 @@ def api_variable_coverage_global():
     return jsonify(db.get_variable_coverage(None, owner_id=me()))
 
 
+@app.route("/api/campaigns/<int:cid>/send-preview", methods=["GET"])
+@login_required
+@owned("campaign", "cid")
+def api_campaign_send_preview(cid):
+    """
+    What starting this campaign, or enrolling everyone into it, would
+    actually do -- for the confirmation the page shows first (audit B-9):
+    how many people, how many a day, and when the first email goes.
+    """
+    c = db.get_campaign(cid)
+    preview = db.get_campaign_send_preview(cid, owner_id=me())
+    window_open = email_sender.is_business_hours(c)
+    nxt = None if window_open else email_sender.next_send_window(c)
+    tz_name = (c.get("timezone") or "").strip() or "UTC"
+    return jsonify({
+        **preview,
+        "status": c.get("status"),
+        "daily_limit": int(c.get("daily_limit") or 0),
+        "window_open": window_open,
+        # The window's next opening, in the campaign's own timezone.
+        "next_open": nxt.isoformat(timespec="minutes") if nxt else None,
+        "starts_label": ("now" if window_open else
+                         f"{nxt.strftime('%a %d %b, %H:%M')} {tz_name}" if nxt else
+                         "never — the schedule has no send window"),
+    })
+
+
 @app.route("/api/campaigns/<int:cid>/activate", methods=["POST"])
 @login_required
 @owned("campaign", "cid")

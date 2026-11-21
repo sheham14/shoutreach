@@ -421,7 +421,25 @@ async function enrollSelected() {
   openCampaign(currentCampaignId);
 }
 
+// Enroll All Active can start real email on an active campaign, so it asks
+// first, with the number of addresses it would add (audit B-9).
 async function enrollAll() {
+  const p = await api(`/api/campaigns/${currentCampaignId}/send-preview`);
+  if (!p || p.error) { toast((p && p.error) || 'Could not check this campaign', 'err'); return; }
+  if (!p.enrollable) {
+    toast('None of your active addresses can be added — they are already in this or another campaign, or opted out');
+    return;
+  }
+  const n = p.enrollable === 1 ? '1 address' : `${p.enrollable} addresses`;
+  let body = `<p>This adds <b>${n}</b> to this campaign — every active address of yours that
+    isn't already in a sequence or opted out.</p>`;
+  if (p.status === 'active') {
+    body += `<p>This campaign is already sending, so they'll start getting emails
+      <b>${p.window_open ? 'now' : esc(p.starts_label)}</b>, up to <b>${p.daily_limit}</b> a day.</p>`;
+  }
+  const ok = await chooseDialog({ title: `Enroll ${n}?`, body,
+    confirm: p.status === 'active' ? 'Enroll and send' : 'Enroll' });
+  if (!ok) return;
   const res = await api(`/api/campaigns/${currentCampaignId}/contacts`, 'POST', { all: true });
   toast(_enrollResultMessage(res));
   closeModal('modal-enroll');
