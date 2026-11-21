@@ -19,7 +19,7 @@ operator's go-ahead). Nothing is pushed to `master`.
 | Package | Finding | State | Commit |
 |---|---|---|---|
 | 1 Opt-outs permanent | B-1 | done | `9e51276` |
-| 2 Activity log admin-only | B-2 | not started | |
+| 2 Activity log admin-only | B-2 | done (first half) | `a53ccac` |
 | 3 Sessions | B-3 | not started | |
 | 4 Sender resilience | B-6, B-23 | not started | |
 | 5 Calling → Reopen | B-22 | not started | |
@@ -56,3 +56,12 @@ operator's go-ahead). Nothing is pushed to `master`.
   delete step calls a function that doesn't exist, `delete_contacts_bulk` —
   a fault in the check script, not the app.)
 - Suite: 26 files pass.
+
+### Package 2 — B-2 — done (`a53ccac`)
+
+- `@admin_required` on `GET /api/logs`. Test: `tests/test_security.py` §7.
+- `nonadmin_access.py` now prints `GET /api/logs -> 403`.
+- Audit marks B-2 "resolved, first half": owners on log lines still open.
+- Harness: `python tools/audit/serve.py seed` then run `serve.py` in the
+  background; a seeded copy is at `/tmp/claude-0/audit-seed.db` (not durable).
+  Restart the server after code changes (it imports the app once).
