@@ -2014,7 +2014,11 @@ def api_set_enrollment_status(enroll_id):
 # ── API: Logs ─────────────────────────────────────────────────────────────────
 
 @app.route("/api/logs")
+@admin_required
 def api_logs():
+    # Admin only (audit B-2): log lines carry no owner and include both
+    # operators' recipient addresses and subjects. Giving each line an owner,
+    # so each person can read their own, is the rest of B-2 and not done yet.
     return jsonify(db.get_logs(100))
 
 

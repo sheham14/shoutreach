@@ -149,7 +149,7 @@ Small, self-contained, and worth doing first. Effort: **S** under an hour,
 | # | What | Severity | Effort | Detail |
 |---|---|---|---|---|
 | 1 | ✅ An opt-out can be undone three ways — the other operator importing the address, Restore, or an edit | High | M | B-1 |
-| 2 | Activity log readable by non-admins | High | S | B-2 |
+| 2 | ✅ Activity log readable by non-admins (owner per log line still open) | High | S | B-2 |
 | 3 | Deleting an account or changing its password doesn't sign it out | High | M | B-3 |
 | 4 | Activating an email campaign sends real email with no confirmation and no count | High | M | B-9 |
 | 5 | One campaign's bad value stops email sending for everyone | Medium | S | B-6 |
@@ -862,6 +862,13 @@ accepting `status` on the edit route. Add all three paths to
 already exist. Effort: M.
 
 **B-2 · The Activity log can be read by any signed-in user. (High · seen)**
+
+> ✅ **RESOLVED, first half** — Plan 1, package 2. `GET /api/logs` is
+> `@admin_required`. Checked: `tests/test_security.py` §7 (non-admin 403,
+> admin 200, signed out 401) and `tools/audit/checks/nonadmin_access.py`
+> (`GET /api/logs -> 403`). **Still open:** log lines have no owner, so an
+> admin reads the other operator's recipients and subjects there. Giving
+> each line an owner belongs with the Settings redesign.
 
 `GET /api/logs` has no admin check — only clearing the log does
 ([app.py:2016–2018](../../app.py#L2016-L2018)). The tab is hidden for
