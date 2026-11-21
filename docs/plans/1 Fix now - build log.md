@@ -22,7 +22,7 @@ operator's go-ahead). Nothing is pushed to `master`.
 | 2 Activity log admin-only | B-2 | done (first half) | `a53ccac` |
 | 3 Sessions | B-3 | done | `e541e80` |
 | 4 Sender resilience | B-6, B-23 | done | `21bfe79` |
-| 5 Calling → Reopen | B-22 | not started | |
+| 5 Calling → Reopen | B-22 | done | `7b9ea95` |
 | 6 Confirm before sending | B-9 | not started | |
 | 7 Visible faults | F-20, F-21/33, F-22, F-25, F-30, F-9, B-10, B-14, B-15 | not started | |
 
@@ -100,3 +100,10 @@ operator's go-ahead). Nothing is pushed to `master`.
   gate; it now inspects `_run_loop` + `_one_pass`.
 - The two scheduler check scripts plant "lots" in SQL when the save refuses it.
 - Suite: 27 files pass.
+
+### Package 5 — B-22 — done (`7b9ea95`)
+
+- `@owned("business", "cid")` on `api_reopen_call_lead`. No other route used
+  the `call_lead` guard. Test: `tests/test_calling.py` §25 (verified to fail on
+  the old guard). `calling_reopen.py`: 6/6 now 200.
+- Harness restore: `cp /tmp/claude-0/audit-seed.db /tmp/shoutreach-audit/audit.db`.
