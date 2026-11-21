@@ -1208,7 +1208,11 @@ retired `contacts` table.
   laptop worker.
 - `static/js/tables.js` — shared frontend pieces: tabs (`setTab`/`onTab`),
   `createLeadTable` (every leads table), `chooseDialog` (replaces `prompt()`),
-  pills, `fillPlaceholders`. Row ⋯ menus are `position: fixed`, placed by
+  pills, `fillPlaceholders`, and **`fmtWhen(value, kind)`, the one way to
+  show a time** (audit F-33): `'utc'` for database timestamps (converted to
+  the viewer's time), `'wall'` for times a person typed (`next_call_at`,
+  `next_action_at`, `meetings.starts_at`; never converted, §5c). Don't chop
+  raw timestamp strings for display. Row ⋯ menus are `position: fixed`, placed by
   `toggleRowMenu` against the window (opening upward when there's no room
   below) and re-placed on scroll, closing once their button leaves the
   screen: inside a table's `overflow-x: auto` wrapper an absolute menu was

@@ -479,6 +479,13 @@
       box-shadow: 4px 0 24px rgba(0,0,0,.4);
     }
     .sidebar.open { transform: translateX(0); }
+    body.drawer-open .sidebar-toggle { display: none; }
+    /* iPhone Safari zooms the page into any field whose text is under 16px
+       (audit F-30). !important because several fields set their size in an
+       inline style, which would otherwise win. */
+    input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea {
+      font-size: 16px !important;
+    }
     .sidebar-scrim {
       display: none; position: fixed; inset: 0;
       background: rgba(0,0,0,.5); z-index: 99;
@@ -854,7 +861,20 @@
      below sits inside the max-width: 768px block. */
 
   /* The pieces that only exist on a phone. */
-  .lead-table td.m-card, .m-select-bar, .sheet-bar { display: none; }
+  /* A table cell's text on one line, cut with "…"; the full text goes in a
+     title tooltip (audit F-9). */
+  .cell-clip {
+    display: inline-block; max-width: 150px; vertical-align: bottom;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* WhatsApp To do: a long business name wraps rather than pushing the
+     number off the side -- the number is what the row is for. */
+  .wa-queue-table .biz-name { white-space: normal; }
+  .wa-queue-table td, .wa-queue-table th { padding-left: 10px; padding-right: 10px; }
+
+  /* td.m-only: a cell drawn for phones only (a second copy of a row's
+     button, placed after the card); on a computer the row's own cell has it. */
+  .lead-table td.m-card, .lead-table td.m-only, .m-select-bar, .sheet-bar { display: none; }
 
   /* Calling's dialler: the lead card and the script share a wrapper so a
      phone can open them together. On a computer the wrapper steps aside and
@@ -880,6 +900,7 @@
     .m-table tbody td:not(.check):not(.m-card):not(.m-keep):not([colspan]) { display: none; }
     .m-table td.m-card { display: table-cell; width: 100%; padding: 12px 10px; }
     .m-table td.m-keep { width: 1%; white-space: nowrap; padding-left: 4px; }
+    .m-table td.m-only { display: table-cell; }
     .m-card .biz-name { white-space: normal; }
     .m-line {
       display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px;

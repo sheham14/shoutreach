@@ -91,6 +91,10 @@ async function refreshDashboard() {
     ['Sent', e.sent], ['Replies', e.replied, 'green'],
     ['Reply rate', `${e.reply_rate ?? 0}%`, 'green'], ['Sent today', e.today],
   ]);
+  // The shared daily cap, which every operator's campaigns draw on (B-10).
+  const cap = document.getElementById('dash-cap');
+  if (cap) cap.textContent = e.all_accounts_limit
+    ? `Sent today, all accounts: ${e.all_accounts_today ?? 0} of ${e.all_accounts_limit}` : '';
   _renderSender(d.sender);
   const c = d.calling || {};
   document.getElementById('dash-calling').innerHTML = _miniStats([

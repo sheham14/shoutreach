@@ -1,6 +1,26 @@
 let _scraperPoll = null;
 let _lastHeldStatus = null;
 
+// Scraper status polling (audit B-14). Only while Get leads is the page on
+// screen: every 2 s while a scrape is queued or running, every 15 s when
+// idle (so "Worker connected" stays honest), and not at all anywhere else.
+// It used to poll every 3 s for the rest of the session, from any page.
+const _SCRAPER_POLL_BUSY = 2000, _SCRAPER_POLL_IDLE = 15000;
+
+let _scraperPollMs = null;
+
+function _scraperPollEvery(ms) {
+  clearInterval(_scraperPoll);
+  _scraperPoll = setInterval(pollScraperStatus, ms);
+  _scraperPollMs = ms;
+}
+
+function stopScraperPoll() {
+  clearInterval(_scraperPoll);
+  _scraperPoll = null;
+  _scraperPollMs = null;
+}
+
 async function loadScraper() {
   // Arriving from WhatsApp's "Scrape Google Maps" button: aim the form at
   // WhatsApp so what this finds lands there. One-shot, so a later visit from
@@ -24,12 +44,12 @@ async function loadScraper() {
   setTab('getleads', preset ? 'import' : currentTab('getleads', 'scrape'));
   if (preset) await _applyGetLeadsPreset(preset);
   _refreshImportCount();
-  await pollScraperStatus();
   // Keep polling while the section is open so the worker indicator stays
   // honest even when no job is running -- otherwise you only learn the worker
-  // is down by pressing Start and watching nothing happen.
-  clearInterval(_scraperPoll);
-  _scraperPoll = setInterval(pollScraperStatus, 3000);
+  // is down by pressing Start and watching nothing happen. The pace follows
+  // the job (pollScraperStatus), and leaving the page stops it (showSection).
+  _scraperPollEvery(_SCRAPER_POLL_IDLE);
+  await pollScraperStatus();
 }
 
 async function startScraper() {
@@ -60,8 +80,7 @@ async function startScraper() {
 
   document.getElementById('sc-log-feed').innerHTML = '';
   _setScraperUI('running');
-  clearInterval(_scraperPoll);
-  _scraperPoll = setInterval(pollScraperStatus, 2000);
+  _scraperPollEvery(_SCRAPER_POLL_BUSY);
 }
 
 const _SCRAPER_DESTINATIONS = {
@@ -502,6 +521,9 @@ function _renderWorkerBanner(d) {
 }
 
 async function pollScraperStatus() {
+  // Belt to showSection's braces: never poll from another page.
+  if (!document.getElementById('section-scraper')?.classList.contains('active')) { stopScraperPoll(); return; }
+  if (document.hidden) return;   // a background tab: wait until it's looked at
   const d = await api('/api/scraper/status');
   _renderWorkerBanner(d);
 
@@ -556,12 +578,11 @@ async function pollScraperStatus() {
 
   _setScraperUI(d.status || 'idle', d.worker_online);
 
-  // Drop back to the slower idle cadence once the job settles, but never stop
-  // entirely -- the worker indicator has to keep updating.
-  if (['done', 'stopped', 'error', 'idle'].includes(d.status)) {
-    clearInterval(_scraperPoll);
-    _scraperPoll = setInterval(pollScraperStatus, 3000);
-  }
+  // Fast while a job is queued or running, slow once it settles. Never
+  // stopped while this page is open: the worker indicator has to keep updating.
+  const busy = ['queued', 'claimed', 'running', 'captcha'].includes(d.status);
+  const want = busy ? _SCRAPER_POLL_BUSY : _SCRAPER_POLL_IDLE;
+  if (_scraperPoll && _scraperPollMs !== want) _scraperPollEvery(want);
 }
 
 function _setScraperUI(status, workerOnline) {

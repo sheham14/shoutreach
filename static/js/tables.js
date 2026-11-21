@@ -143,26 +143,72 @@ function prettyWaNumber(n) {
   return `+${dial} ${groups.join(' ')}`;
 }
 
-function shortDate(s) {
-  if (!s) return '';
-  const d = String(s).replace('T', ' ');
-  return d.substring(0, 10) === new Date().toISOString().substring(0, 10) ? d.substring(11, 16) : d.substring(0, 10);
+// ── Showing a time ───────────────────────────────────────────────────────────
+//
+// One way of writing a date everywhere (audit F-21, F-33): "Today 3:30 pm",
+// "Tomorrow 11:00 am", "Wed 25 Nov, 10:00 am", "Wed 25 Nov 2025, 10:00 am".
+//
+// `kind` says what the value is, and it matters:
+//   'utc'  -- a database timestamp (sent_at, called_at, created_at,
+//             next_send_at, sent_date, pipeline_at ...). SQLite writes UTC;
+//             it is converted to the viewer's own time.
+//   'wall' -- a time a person typed (next_call_at, next_action_at,
+//             meetings.starts_at). Shown exactly as stored, never converted:
+//             Handover §5c. Only the person who typed it ever reads it.
+// opts.compact: today's time alone ("3:30 pm"), otherwise the date alone.
+// opts.sentence: "today at 3:30 pm" / "on Wed 25 Nov at 10:00 am", for
+//                the middle of a sentence.
+// opts.dateOnly: never the time.
+function _parseWhen(value, kind) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if (!m) return null;
+  const hasTime = m[4] !== undefined;
+  let d;
+  if (kind === 'wall' || !hasTime) {
+    // As typed: the digits are the reader's own wall clock.
+    d = new Date(+m[1], +m[2] - 1, +m[3], hasTime ? +m[4] : 0, hasTime ? +m[5] : 0);
+  } else {
+    const iso = raw.replace(' ', 'T');
+    d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z');
+  }
+  return isNaN(d) ? null : { d, hasTime };
 }
 
-// A database timestamp (UTC, "YYYY-MM-DD HH:MM:SS") in the operator's own
-// timezone, e.g. "10 Oct, 14:32" -- for "Added" and for naming imports, where
-// the time is how you tell two batches from the same day apart.
-function localDateTime(s) {
-  if (!s) return '';
-  const raw = String(s).trim().replace(' ', 'T');
-  const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(raw) ? raw : raw + 'Z');
-  if (isNaN(d)) return String(s);
-  const sameYear = d.getFullYear() === new Date().getFullYear();
-  return d.toLocaleString(undefined, {
-    day: 'numeric', month: 'short', ...(sameYear ? {} : { year: 'numeric' }),
-    hour: '2-digit', minute: '2-digit',
-  });
+function _clock(d) {
+  const h = d.getHours(), mm = String(d.getMinutes()).padStart(2, '0');
+  // A no-break space, so "10:30 am" never splits across two lines.
+  return `${h % 12 || 12}:${mm}\u00a0${h < 12 ? 'am' : 'pm'}`;
 }
+
+function fmtWhen(value, kind = 'utc', opts = {}) {
+  const p = _parseWhen(value, kind);
+  if (!p) return value ? String(value) : '';
+  const { d } = p;
+  const hasTime = p.hasTime && !opts.dateOnly;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const day = new Date(d); day.setHours(0, 0, 0, 0);
+  const diff = Math.round((day - today) / 864e5);
+  const rel = diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : diff === -1 ? 'Yesterday' : '';
+  const sameYear = d.getFullYear() === today.getFullYear();
+  const date = `${d.toLocaleDateString('en-GB', { weekday: 'short' })} ${d.getDate()} ${
+    d.toLocaleDateString('en-GB', { month: 'short' })}${sameYear ? '' : ` ${d.getFullYear()}`}`;
+  if (opts.compact) {
+    if (diff === 0 && hasTime) return _clock(d);
+    return rel || date;
+  }
+  if (opts.sentence) {
+    const on = rel ? rel.toLowerCase() : `on ${date}`;
+    return hasTime ? `${on} at ${_clock(d)}` : on;
+  }
+  if (!hasTime) return rel || date;
+  return rel ? `${rel} ${_clock(d)}` : `${date}, ${_clock(d)}`;
+}
+
+// Kept as names other files already call.
+function shortDate(s) { return fmtWhen(s, 'utc', { compact: true }); }
+function localDateTime(s) { return fmtWhen(s, 'utc'); }
 
 // ── Imports ("From" filter) ──────────────────────────────────────────────────
 //

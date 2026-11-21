@@ -73,7 +73,7 @@ async function loadEmailReplies() {
         <td class="m-card">${mCard(`<span class="biz-name">${esc(r.company || r.email)}</span>`,
           esc(r.reply_subject || '(no subject)'),
           `${r.replied_at ? esc(localDateTime(r.replied_at)) : ''} · ${esc(r.campaign_name || '')}`)}</td>
-        <td class="m-keep">${action}</td>
+        <td class="m-keep m-only">${action}</td>
       </tr>`;
     }).join('')}</tbody></table></div>`;
 }
@@ -249,7 +249,7 @@ async function loadUnsubscribed() {
     <td class="mono" style="font-size:12px">${esc(c.email || '—')}</td>
     <td>${esc([c.first_name, c.last_name].filter(Boolean).join(' ') || '—')}</td>
     <td>${esc(c.company || '—')}</td>
-    <td class="mono text-muted" style="font-size:11px">${(c.created_at || '').substring(0, 10)}</td>
+    <td class="mono text-muted" style="font-size:11px">${esc(fmtWhen(c.created_at, 'utc', { dateOnly: true }))}</td>
   </tr>`).join('');
 }
 
@@ -287,7 +287,7 @@ async function loadInvalidMx() {
     <td class="mono" style="font-size:12px">${esc(c.email || '—')}</td>
     <td>${esc(c.company || '—')}</td>
     <td class="mono text-muted" style="font-size:12px">${esc(c.website || '—')}</td>
-    <td class="mono text-muted" style="font-size:11px">${(c.created_at || '').substring(0, 10)}</td>
+    <td class="mono text-muted" style="font-size:11px">${esc(fmtWhen(c.created_at, 'utc', { dateOnly: true }))}</td>
   </tr>`).join('');
 }
 

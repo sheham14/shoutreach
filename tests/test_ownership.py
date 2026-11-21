@@ -332,6 +332,28 @@ def test_bounce_crosses_the_wall(work):
                            WHERE email='nobody@deadmail.ae' AND status='bounced'""") == 2)
 
 
+def test_sent_today_is_your_own(work):
+    print("\n7b. DASHBOARD 'SENT TODAY' IS THE OPERATOR'S OWN (B-10)")
+    path = os.path.join(work, "senttoday.db")
+    db, a, b = _two_operators(path)
+    for owner, n in ((a, 2), (b, 5)):
+        db.upsert_businesses([{"email": f"s{owner}-{i}@x{owner}.ae", "company": f"S{owner}-{i}"}
+                              for i in range(n)], owner_id=owner)
+        cid = db.create_campaign(f"C{owner}", owner_id=owner)
+        for (lid,) in rows(path, "SELECT id FROM email_leads WHERE owner_id=?", (owner,)):
+            db.log_send(cid, lid, 1, "subject", f"<{owner}-{lid}@x>")
+    sa, sb = db.get_stats(owner_id=a), db.get_stats(owner_id=b)
+    check("A's 'today' counts only A's sends", sa["today"] == 2, str(sa["today"]))
+    check("B's 'today' counts only B's sends", sb["today"] == 5, str(sb["today"]))
+    check("the shared tally is reported separately, as everyone's",
+          sa["all_accounts_today"] == 7 and sb["all_accounts_today"] == 7, str(sa))
+    check("with the shared limit", sa["all_accounts_limit"] == 200, str(sa["all_accounts_limit"]))
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE sends SET sent_at = datetime('now', '-2 days') WHERE id IN "
+                     "(SELECT id FROM sends ORDER BY id LIMIT 1)")
+    check("a send from another day isn't today's", db.get_stats(owner_id=a)["today"] == 1)
+
+
 def test_writes_fail_closed(work):
     print("\n8. A WRITE THAT DOES NOT SAY WHO IT BELONGS TO")
     path = os.path.join(work, "failclosed.db")
@@ -757,6 +779,7 @@ def main():
         test_cross_owner_notice(work)
         test_suppression_crosses_the_wall(work)
         test_bounce_crosses_the_wall(work)
+        test_sent_today_is_your_own(work)
         test_writes_fail_closed(work)
         test_single_operator_needs_no_ceremony(work)
         test_delete_user_guard(work)

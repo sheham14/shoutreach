@@ -8786,10 +8786,25 @@ def get_stats(campaign_id=None, owner_id=None):
         # reply_rate = % of people we emailed who replied (industry-standard definition)
         reply_rate = round(replied / sent_to * 100, 1) if sent_to > 0 else 0
 
+        # "today" is this operator's (or this campaign's) own sends today
+        # (audit B-10); it used to be the shared cap's tally, so a brand-new
+        # account read "Sent today 67". The shared tally and its limit are
+        # returned separately, labelled as everyone's. Compared in SQL, in
+        # UTC like sent_at (Handover §6a).
+        today = conn.execute(
+            f"SELECT COUNT(*) FROM sends {scope} AND DATE(sent_at) = DATE('now')", args
+        ).fetchone()[0]
+        cap = conn.execute("SELECT value FROM settings WHERE key='global_daily_cap'").fetchone()
+        try:
+            cap_limit = int(cap["value"]) if cap and cap["value"] != "" else 200
+        except (TypeError, ValueError):
+            cap_limit = 200
+
         return {
             "total": total, "sent": sent, "replied": replied,
             "bounced": bounced, "completed": completed,
-            "queued": queued, "today": get_today_count(),
+            "queued": queued, "today": today,
+            "all_accounts_today": get_today_count(), "all_accounts_limit": cap_limit,
             "reply_rate": reply_rate,
         }
 

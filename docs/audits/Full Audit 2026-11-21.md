@@ -18,10 +18,10 @@ build it in.
 
 | | |
 |---|---|
-| Fix-now items (§2) | 0 of 19 done |
-| Front-end findings (§3) | 0 of 43 done |
+| Fix-now items (§2) | 16 of 19 done (Plan 1, 2026-11-21). Open: 7 (B-24, backups — the operator's job, no code); 12 and 13 (F-23, F-24 — moved to Plan 2) |
+| Front-end findings (§3) | 7 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 |
 | Design direction (§4) | agreed in mockup form on 2026-11-21 ("the mockups look good"); mark saved as `static/img/hexiv-mark.svg` |
-| Back-end findings (§5–§6) | 0 of 31 done |
+| Back-end findings (§5–§6) | 10 of 31 done: B-1, B-2 (first half: owners on log lines still open), B-3, B-6, B-9, B-10, B-14, B-15, B-22, B-23 |
 
 Convention as in [README.md](README.md): a finding is marked `✅ RESOLVED` in
 place, with the commit and how it was checked.
@@ -156,17 +156,17 @@ Small, self-contained, and worth doing first. Effort: **S** under an hour,
 | 6 | ✅ The background sender can die silently and never restart | High | S–M | B-23 |
 | 7 | No backup that the repo shows except at deploy, on the same disk — set up a nightly one that leaves the VM | High | S, no code | B-24 |
 | 8 | ✅ Calling → "Reopen" answers "not found" | Medium | S | B-22 |
-| 9 | Email → To do shows two "Done" buttons on every row | Medium | S | F-20 |
-| 10 | Calling shows raw timestamps (`2026-11-20T10:30`) | Medium | S | F-21 |
-| 11 | Phone: the menu button covers the logo when the menu is open | Low | S | F-22 |
+| 9 | ✅ Email → To do shows two "Done" buttons on every row | Medium | S | F-20 |
+| 10 | ✅ Calling shows raw timestamps (`2026-11-20T10:30`) | Medium | S | F-21 |
+| 11 | ✅ Phone: the menu button covers the logo when the menu is open | Low | S | F-22 |
 | 12 | WhatsApp: the Booked count reads 0 until you open the tab — *moved to Plan 2: the Booked tab becomes a Meetings page* | Medium | S | F-23 |
 | 13 | WhatsApp → Booked is unreadable on a phone: the meeting time is cut off — *moved to Plan 2* | High | M | F-24 |
-| 14 | Dashboard "Sent today" is the whole install's figure, shown as yours | Low | S | B-10 |
-| 15 | "Check for email replies & send" is shown to non-admins and answers "Forbidden" | Low | S | F-25 |
-| 16 | Typing in any box on an iPhone zooms the page (expected, not seen) | Medium | S | F-30 |
-| 17 | WhatsApp list rows are 100–123 px tall because the campaign name wraps | Medium | S | F-9 |
-| 18 | Get leads keeps asking the server for scraper status every 3 seconds on every screen, for the rest of the session | Medium | S | B-14 |
-| 19 | Opening WhatsApp makes 11 requests, 5 of them repeats | Low | S | B-15 |
+| 14 | ✅ Dashboard "Sent today" is the whole install's figure, shown as yours | Low | S | B-10 |
+| 15 | ✅ "Check for email replies & send" is shown to non-admins and answers "Forbidden" | Low | S | F-25 |
+| 16 | ✅ Typing in any box on an iPhone zooms the page (expected, not seen) | Medium | S | F-30 |
+| 17 | ✅ WhatsApp list rows are 100–123 px tall because the campaign name wraps | Medium | S | F-9 |
+| 18 | ✅ Get leads keeps asking the server for scraper status every 3 seconds on every screen, for the rest of the session | Medium | S | B-14 |
+| 19 | ✅ Opening WhatsApp makes 11 requests, 5 of them repeats | Low | S | B-15 |
 
 Next after these, each a half-day job on its own: B-4 and B-5 (the lead audit
 fetching internal addresses, and stalling on a hostile page), B-11 (failed
@@ -279,6 +279,14 @@ five and a half leads fit, and the Number column shows only "+971". At
 unless a campaign runs two versions. The campaign is the same on almost every
 row, and is already in the heading when one is picked.
 See [desktop-whatsapp-todo.png](evidence-2026-11-21/desktop-whatsapp-todo.png).
+
+> ✅ **RESOLVED** — Plan 1, package 7. No Campaign column when one campaign is picked;
+> otherwise the name is cut with "…" (150 px) with the full name in a
+> tooltip; no Version column unless a lead in the list has a version; the
+> number never breaks (a "landline" pill may drop under it); long business
+> names wrap instead of pushing the number off. Checked in Chromium on the
+> harness: rows 59 px at 1440×900 (were ~100), and at 1280×720 every column
+> fits with the whole number showing (Number was off-screen before).
 
 **F-10 · On a phone, 40% of the screen is used before the first lead.
 (High)** In order: the menu button on a row of its own, the title, the
@@ -395,6 +403,9 @@ See [phone-calling-lead.png](evidence-2026-11-21/phone-calling-lead.png).
 ([calling.js:207](../../static/js/calling.js#L207),
 [511](../../static/js/calling.js#L511)). See F-33 for the wider date problem.
 
+> ✅ **RESOLVED** — Plan 1, package 7. See F-33: Calling's queue, card, history and the
+> panel now read "Yesterday 10:30 am", "Today 3:30 pm".
+
 #### Dashboard
 
 **F-28 · Eighteen numbers, none of them an instruction. (Medium)** Six tiles,
@@ -421,6 +432,10 @@ hidden on a computer, not the phone *button*
 ([main.css:857](../../static/css/main.css#L857)). The heading row is also one
 column short as a result.
 See [desktop-email-todo.png](evidence-2026-11-21/desktop-email-todo.png).
+
+> ✅ **RESOLVED** — Plan 1, package 7. The phone-only copy of the button is a `td.m-only`, hidden
+> at computer widths and shown on a phone. One Done per row; the heading row
+> matches the cells. Checked on the harness at 1440×900 and 390×844.
 
 **F-31 · Email breaks the "tables, not tiles" rule. (Medium)** Email →
 Campaigns is a stack of large cards; WhatsApp → Campaigns is a table. Inside
@@ -466,10 +481,18 @@ button is fixed above the drawer
 reads "☰ utReach".
 See [phone-menu-open.png](evidence-2026-11-21/phone-menu-open.png).
 
+> ✅ **RESOLVED** — Plan 1, package 7. `toggleSidebar` sets `body.drawer-open`, which hides the
+> menu button while the drawer is open; the dimmed area still closes it.
+> Checked at 390×844 (phone walk-through, sidebar-open).
+
 **F-25 · A button that only works for admins is shown to everyone. (Low ·
 fix-now 15)** "Check for email replies & send" sits in everyone's sidebar
 ([sidebar.html:27–29](../../templates/sections/sidebar.html#L27-L29)); for a
 non-admin it answers "Forbidden". Reproduced.
+
+> ✅ **RESOLVED** — Plan 1, package 7. The button starts `hidden` and `app.js` shows it only when
+> `/api/users/me` says admin (which now comes from the database, B-3).
+> Checked: hidden for `cofounder`, shown for `sheham` on the harness.
 
 **F-36 · Page headings jump between sections. (Low)** Settings has no
 subtitle, so its tabs sit 23 px higher than everywhere else. The filter note
@@ -490,6 +513,19 @@ under WhatsApp → Leads ("Filtered — showing only…") touches the card edge.
 Three date helpers exist (`whenLocal`, `shortDate`, `localDateTime`) beside
 about twenty places that just chop the raw string
 (`.substring(0, 16)` / `.substring(0, 10)`).
+
+> ✅ **RESOLVED** — Plan 1, package 7. One helper, `fmtWhen(value, kind, opts)` in `tables.js`:
+> "Today 3:30 pm", "Tomorrow 11:00 am", "Wed 25 Nov, 10:00 am", with the year
+> when it isn't this year. `kind` is `'utc'` for database timestamps
+> (converted to the viewer's time) or `'wall'` for times a person typed
+> (`next_call_at`, `next_action_at`, `meetings.starts_at`; shown exactly as
+> stored, per Handover §5c). `whenLocal`, `shortDate` and `localDateTime`
+> are now one-line callers. Every display chop in calling.js, campaigns.js,
+> whatsapp.js, lead_panel.js, email_leads.js and settings.js goes through it;
+> the three left are CSV values and a date picker's value, which must stay
+> raw. `pipelineOverdue` now compares a typed date with the reader's own
+> today, not UTC's. Checked by running the helper under UTC−3:30 (wall times
+> unshifted, UTC converted) and on the harness.
 
 **F-37 · Words and buttons. (Low)** Button labels mix Title Case and sentence
 case ("+ Add Account" / "+ Add leads", "Save Rules" / "Save key"). Symbols
@@ -529,6 +565,11 @@ fix-now 16)** Safari zooms in when a field's text is smaller than 16 px.
 Every field here is 13–14 px — the message box, search, notes. Not seen
 directly (the test browser is Chromium), but the cause is certain and the fix
 is one line.
+
+> ✅ **RESOLVED** — Plan 1, package 7. In the phone block of `main.css`, text inputs, dropdowns
+> and text areas are 16 px with `!important` (inline sizes would otherwise
+> win), with a comment saying so. Checked: computed size 16 px at 390×844 in
+> Chromium; not checked on a real iPhone.
 
 **F-40 · Keyboard and screen-reader basics. (Low for a two-person tool; cheap
 to fix alongside the rest)** Of 117 form fields, 10 are tied to their label.
@@ -1061,6 +1102,12 @@ shared on purpose; the label isn't. **Fix:** count the operator's own sends
 there, and show the shared cap separately as "67 of 200 today, all accounts".
 Effort: S.
 
+> ✅ **RESOLVED** — Plan 1, package 7. `get_stats` returns `today` as the operator's (or the
+> campaign's) own sends today, compared in SQL in UTC, plus
+> `all_accounts_today` and `all_accounts_limit`. The Email card shows "Sent
+> today N" and beneath it, small, "Sent today, all accounts: 64 of 200".
+> Checked: `tests/test_ownership.py` §7b.
+
 **B-13 · Passwords and keys are stored unencrypted. (Medium · read)** Carried
 from both older audits, and wider now. In plain text in the database: every
 sending account's SMTP and IMAP password, the AI keys, the Zoho client
@@ -1113,10 +1160,24 @@ way to import, so it is opened in most sessions. On a phone this is battery
 and data for nothing. **Fix:** stop the timer on leaving the page; poll only
 while a scrape is running. Effort: S.
 
+> ✅ **RESOLVED** — Plan 1, package 7. `showSection` stops the timer when leaving Get leads, and
+> the poll itself stops if its page isn't on screen and skips a background
+> tab. On Get leads it polls every 2 s while a scrape is queued or running
+> and every 15 s when idle — **not** "only while running": the page's own
+> design keeps the "Worker connected" indicator honest when idle. Checked:
+> 0 scraper requests in 20 s on the Dashboard after visiting Get leads.
+
 **B-15 · Opening WhatsApp asks for the same things several times. (Low ·
 seen)** Eleven requests: the summary three times, the ready list twice, the
 first lead's details twice. **Fix:** fetch once and share the result.
 Effort: S.
+
+> ✅ **RESOLVED** — Plan 1, package 7. Opening WhatsApp now fetches the summary once (with
+> `since`, reused for the To do counts within two seconds) — 7 requests, none
+> repeated, on a computer and a phone, with or without a campaign picked.
+> `tools/audit/measure.py` still reports repeats because it calls
+> `showSection('whatsapp')` and then `setTab('whatsapp','todo')` straight
+> after, which loads the To do tab twice by design; no person does that.
 
 **B-16 · Queries that will slow down as the lead count grows. (Low today ·
 read)** None is a problem at a few thousand leads; each is a short job.

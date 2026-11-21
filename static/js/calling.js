@@ -204,7 +204,7 @@ createLeadTable({
       render: r => (r.do_not_contact ? pill('Do not contact', 'red') + ' ' : '') + callStatusBadge(r.call_status) },
     { key: 'call_attempts', label: 'Attempts', sort: true, cls: 'num', render: r => r.call_attempts || 0 },
     { key: 'next_call_at', label: 'Next call', sort: true, cls: 'num',
-      render: r => esc(r.next_call_at ? r.next_call_at.substring(0, 16) : '') },
+      render: r => esc(fmtWhen(r.next_call_at, 'wall')) },
     { key: 'last_called_at', label: 'Last called', sort: true, cls: 'num',
       render: r => esc(shortDate(r.last_called_at)) },
   ],
@@ -212,7 +212,7 @@ createLeadTable({
     `${r.do_not_contact ? pill('Do not contact', 'red') + ' ' : ''}${callStatusBadge(r.call_status)}${
       (r.campaigns || []).length ? ` ${esc(r.campaigns.map(c => c.name).join(', '))}` : ''}`,
     [r.phone && `<span class="mono">${esc(r.phone)}</span>`,
-     r.next_call_at && `next call ${esc(r.next_call_at.substring(0, 16))}`].filter(Boolean).join(' · ')),
+     r.next_call_at && `next call ${esc(fmtWhen(r.next_call_at, 'wall'))}`].filter(Boolean).join(' · ')),
   onRowClick: r => openLeadPanel(r.id, {
     channel: 'calling', panelId: 'cl-panel', splitId: 'cl-split',
     onClose: () => { LT.cl.currentId = null; LT.cl.render(); },
@@ -508,7 +508,7 @@ function _renderCallTable() {
   }
 
   tbody.innerHTML = _callLeads.map(l => {
-    const due = l.next_call_at ? esc(l.next_call_at.substring(0, 16)) : '—';
+    const due = l.next_call_at ? esc(fmtWhen(l.next_call_at, 'wall')) : '—';
     const over = l.call_attempts >= _attemptLimit;
     return `<tr style="cursor:pointer${_callLead && _callLead.id === l.id ? ';background:rgba(96,165,250,.08)' : ''}"
                 onclick="openCallLead(${l.id}, true)">
@@ -561,7 +561,7 @@ async function openCallLead(id, show = false) {
   const warn = document.getElementById('cq-lead-warning');
   const t = data.touch || {};
   const notes = [];
-  if (t.emails_sent) notes.push(`Emailed ${t.emails_sent}×${t.last_email_at ? ` (last ${esc(t.last_email_at.substring(0,10))})` : ''}`);
+  if (t.emails_sent) notes.push(`Emailed ${t.emails_sent}×${t.last_email_at ? ` (last ${esc(fmtWhen(t.last_email_at, 'utc', { dateOnly: true }))})` : ''}`);
   if (t.closed)      notes.push('already replied or opted out by email — check before dialling');
   if (c.call_attempts >= _attemptLimit) notes.push(`${c.call_attempts} attempts already`);
   if (notes.length) { warn.style.display = 'block'; warn.innerHTML = '⚠ ' + notes.join(' · '); }
@@ -711,7 +711,7 @@ function _renderCallHistory(history) {
     `<div class="text-muted text-small" style="margin-bottom:6px">Previous calls</div>` +
     history.map(h => `
       <div style="padding:6px 0;border-top:1px solid var(--border);font-size:12px">
-        <span class="mono text-muted" style="font-size:11px">${esc((h.called_at || '').substring(0, 16))}</span>
+        <span class="mono text-muted" style="font-size:11px">${esc(fmtWhen(h.called_at, 'utc'))}</span>
         &nbsp;<span class="badge badge-gray">${esc(labels[h.outcome] || h.outcome)}</span>
         ${h.notes ? `<div class="text-muted" style="margin-top:3px;white-space:pre-wrap">${esc(h.notes)}</div>` : ''}
       </div>`).join('');

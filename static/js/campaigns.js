@@ -1154,7 +1154,7 @@ function renderContactReport(rows) {
       ? `<span class="badge badge-blue" style="font-size:11px">${esc(r.variant_label)}</span>`
       : '<span class="text-muted" style="font-size:11px">—</span>';
     const nextSend = r.next_send_at
-      ? r.next_send_at.replace('T', ' ').substring(0, 16)
+      ? fmtWhen(r.next_send_at, 'utc')
       : (r.status === 'completed' ? 'Done' : '—');
     const rowStyle = STATUS_ROW_STYLE[r.status] || '';
     const statusSel = `

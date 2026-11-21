@@ -102,13 +102,10 @@ function openWhatsAppChat(number, message) {
 function utcNow() { return new Date().toISOString().replace('T', ' ').substring(0, 19); }
 
 // A database time (UTC) as the operator reads it: "at 15:42" today, else "on 16 Sep at 15:42".
+// A database timestamp in the middle of a sentence: "today at 3:30 pm",
+// "on Wed 25 Nov at 10:00 am". See fmtWhen in tables.js.
 function whenLocal(ts) {
-  if (!ts) return '';
-  const d = new Date(String(ts).replace(' ', 'T') + 'Z');
-  if (isNaN(d)) return '';
-  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  if (d.toDateString() === new Date().toDateString()) return `at ${time}`;
-  return `on ${d.toLocaleDateString([], { day: 'numeric', month: 'short' })} at ${time}`;
+  return ts ? fmtWhen(ts, 'utc', { sentence: true }) : '';
 }
 
 // ── Pipeline stage ───────────────────────────────────────────────────────────
@@ -140,8 +137,8 @@ function pipelinePill(row) {
   const s = pipelineStage(key);
   const label = s ? s.label : (row.pipeline_label || key);
   const via = row.pipeline_channel ? ` · via ${row.pipeline_channel}` : '';
-  const when = row.pipeline_at ? ` · ${shortDate(row.pipeline_at)}` : '';
-  const due = row.next_action_at ? ` · due ${shortDate(row.next_action_at)}` : '';
+  const when = row.pipeline_at ? ` · ${fmtWhen(row.pipeline_at, 'utc', { compact: true })}` : '';
+  const due = row.next_action_at ? ` · due ${fmtWhen(row.next_action_at, 'wall')}` : '';
   return pill(label, _PIPE_TONE[s && s.tone] || '', `${label}${via}${when}${due}`);
 }
 
@@ -149,7 +146,10 @@ function pipelinePill(row) {
 // exists. Compared by date only: a thing due today isn't late yet.
 function pipelineOverdue(row) {
   if (!row.next_action_at) return false;
-  return String(row.next_action_at).substring(0, 10) < new Date().toISOString().substring(0, 10);
+  // A typed date, so compared with the reader's own today, not UTC's.
+  const t = new Date();
+  const today = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+  return String(row.next_action_at).substring(0, 10) < today;
 }
 
 // A stored value ('YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS') as whichever kind of
@@ -426,9 +426,8 @@ function toastMeeting(res) {
 
 // "Thu 5 Nov, 10:00 · 1 hour", with the timezone when it isn't this browser's.
 function meetingWhenText(m) {
-  const d = new Date(String(m.starts_at || '').replace(' ', 'T'));
-  const when = isNaN(d) ? (m.starts_at || '') : d.toLocaleString([], {
-    weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  // starts_at is the wall-clock time as typed, in m.timezone: never converted.
+  const when = fmtWhen(m.starts_at, 'wall');
   const length = m.minutes < 60 ? `${m.minutes} min` : m.minutes === 60 ? '1 hour' : `${m.minutes / 60} hours`;
   const tz = m.timezone && m.timezone !== browserTimezone() ? ` · ${m.timezone.replace(/_/g, ' ')}` : '';
   return `${when} · ${length}${tz}`;
@@ -720,7 +719,7 @@ function auditResultsHtml(a, ctx) {
   if (age.length) rows.push(`<div class="audit-row"><span class="k">Age</span><div>${esc(age.join(' · '))}</div></div>`);
   if (ctx) rows.push(ratingContextRow(ctx));
   return `<div class="audit-results">${rows.join('')}</div>
-    <div class="text-muted text-small" style="margin-top:6px">Checked ${esc((a.checked_at || '').substring(0, 16))} UTC</div>`;
+    <div class="text-muted text-small" style="margin-top:6px">Checked ${esc(fmtWhen(a.checked_at, 'utc'))}</div>`;
 }
 
 function ratingContextRow(ctx) {
@@ -797,7 +796,7 @@ function historyHtml(d) {
   if (!t.length) return '<div class="text-muted text-small">Nothing sent, called or messaged yet.</div>';
   return `<div class="timeline">${t.slice(0, 40).map(item => `
     <div class="item">
-      <span class="when">${esc((item.at || '').substring(0, 16))}</span>
+      <span class="when">${esc(fmtWhen(item.at, 'utc'))}</span>
       <span class="channel-${item.channel}">●</span> ${esc(item.text)}
       ${item.detail ? `<div class="detail">${esc(item.detail.length > 240 ? item.detail.substring(0, 240) + '…' : item.detail)}</div>` : ''}
     </div>`).join('')}</div>`;
@@ -811,7 +810,7 @@ function whereItIsHtml(d) {
   if (d.call && !d.call.removed_at) {
     const camps = (d.call.campaigns || []).map(c => esc(c.name)).join(', ');
     where.push(`<div>${pill('Calling', 'blue')} ${esc(callOutcomeLabel(d.call.call_status))}${
-      d.call.next_call_at ? ` · next ${esc(d.call.next_call_at.substring(0, 16))}` : ''}${camps ? ` · ${camps}` : ''}</div>`);
+      d.call.next_call_at ? ` · next ${esc(fmtWhen(d.call.next_call_at, 'wall'))}` : ''}${camps ? ` · ${camps}` : ''}</div>`);
   }
   if (d.whatsapp) {
     const w = d.whatsapp;
@@ -1041,7 +1040,7 @@ function _callPanelSection(d) {
   const camps = (c.campaigns || []).map(x => pill(x.name)).join(' ');
   return `<span class="field-label">Calling</span>
     <div class="text-small">${callStatusBadge(c.call_status)} · ${c.call_attempts || 0} attempt${c.call_attempts === 1 ? '' : 's'}
-      ${c.next_call_at ? ` · next call ${esc(c.next_call_at.substring(0, 16))}` : ''}</div>
+      ${c.next_call_at ? ` · next call ${esc(fmtWhen(c.next_call_at, 'wall'))}` : ''}</div>
     ${camps ? `<div style="margin-top:6px">${camps}</div>` : ''}
     <div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px">
       <button class="btn btn-primary btn-sm" onclick="openInDialler(${d.id})">☎ Open in the dialler</button>

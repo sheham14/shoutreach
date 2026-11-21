@@ -109,7 +109,7 @@ async function _waSentLogHtml() {
               <span class="sub mono">${esc(prettyWaNumber(r.wa_number) || '')}</span></td>
           <td>${r.kind === 'followup' ? 'Follow-up' : 'Opening message'}
               ${r.campaign_name ? `<span class="sub">${esc(r.campaign_name)}</span>` : ''}</td>
-          <td class="nowrap">${esc(whenLocal(r.sent_at))}</td>
+          <td class="nowrap">${esc(fmtWhen(r.sent_at, 'utc'))}</td>
           <td>${r.pipeline_stage ? pipelinePill(r)
                 : (r.replied ? pill('Replied', 'green') : '<span class="text-muted">no reply yet</span>')}</td>
         </tr>`).join('')}
@@ -159,11 +159,19 @@ async function loadWhatsApp() {
 // when no stage filter was set, so one click on "marked not on WhatsApp"
 // left it reading 0 with 47 leads sitting behind the filter.
 async function refreshWaTotals() {
-  const s = await api('/api/wa/summary') || {};
+  // Asked with `since`, so that with no campaign picked this one answer also
+  // serves the To do counts (refreshWaCounts) -- opening WhatsApp used to
+  // fetch the same summary two or three times (audit B-15).
+  const s = await api(`/api/wa/summary?${new URLSearchParams({ since: startOfLocalDay() })}`) || {};
   _waNoCampaignCount = s.no_campaign || 0;
   if (s.total !== undefined) setTabCount('whatsapp', 'leads', s.total);
+  _waSummaryUnfiltered = { s, at: Date.now() };
   return s;
 }
+
+// The last unfiltered summary, for one reuse by refreshWaCounts within a
+// moment of being fetched -- never later, when a send may have changed it.
+let _waSummaryUnfiltered = null;
 
 // Says, above the table, that a filter is narrowing it — and offers the way
 // out. Without this an empty Leads tab looks like an empty channel, which is
@@ -272,9 +280,14 @@ function openWhatsAppCampaign(id) {
 // ── To do ────────────────────────────────────────────────────────────────────
 
 async function refreshWaCounts() {
-  const p = new URLSearchParams({ since: startOfLocalDay() });
-  if (_waFilter()) p.set('wa_campaign_id', _waFilter());
-  const s = await api(`/api/wa/summary?${p}`) || {};
+  const cached = _waSummaryUnfiltered;
+  _waSummaryUnfiltered = null;   // used once: anything after this fetches fresh
+  let s = !_waFilter() && cached && Date.now() - cached.at < 2000 ? cached.s : null;
+  if (!s) {
+    const p = new URLSearchParams({ since: startOfLocalDay() });
+    if (_waFilter()) p.set('wa_campaign_id', _waFilter());
+    s = await api(`/api/wa/summary?${p}`) || {};
+  }
   document.getElementById('wa-count-ready').textContent = s.ready_to_send || 0;
   document.getElementById('wa-count-due').textContent = s.due || 0;
   document.getElementById('wa-sent-today').textContent = s.sent_today || 0;
@@ -334,23 +347,32 @@ function _waNumberCell(l) {
 }
 
 function _renderWaQueue() {
-  const heads = _waBucket === 'ready'
-    ? ['Business', 'Campaign', 'Version', 'Number']
-    : ['Business', 'Campaign', 'Last sent', 'Follow-ups'];
+  // Rows stay one line (audit F-9): no Campaign column when one campaign is
+  // picked (it's the heading), the name cut with "…" otherwise; no Version
+  // column unless a lead here has one; the number never wraps.
+  const picked = _waFilter();
+  const showCamp = !picked || picked === 'none';
+  const showVersion = _waBucket === 'ready' && _waQueue.some(l => l.template_variant);
+  const heads = ['Business', ...(showCamp ? ['Campaign'] : []),
+    ...(_waBucket === 'ready' ? [...(showVersion ? ['Version'] : []), 'Number'] : ['Last sent', 'Follow-ups'])];
   document.getElementById('wa-queue-head').innerHTML = `<tr>${heads.map(h => `<th>${h}</th>`).join('')}<th></th></tr>`;
   const tbody = document.getElementById('wa-queue');
   if (!_waQueue.length) {
-    tbody.innerHTML = `<tr><td colspan="5"><div class="empty-state"><p>Nothing here</p></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${heads.length + 1}"><div class="empty-state"><p>Nothing here</p></div></td></tr>`;
     return;
   }
   tbody.innerHTML = _waQueue.map(l => {
     const name = `<span class="biz-name">${esc(l.company || 'Unnamed business')}</span>${
       l.opened_at ? ` ${pill('opened', 'amber', "Opened in WhatsApp — say whether it sent")}` : ''}${
       l.city || l.category ? `<span class="sub">${esc([l.category, l.city].filter(Boolean).join(' · '))}</span>` : ''}`;
-    const camp = l.campaign_name ? esc(l.campaign_name) : pill('No campaign', 'amber');
+    const camp = l.campaign_name
+      ? `<span class="cell-clip" title="${esc(l.campaign_name)}">${esc(l.campaign_name)}</span>`
+      : pill('No campaign', 'amber');
     const cells = _waBucket === 'ready'
-      ? [l.template_variant ? pill(`Version ${l.template_variant}`) : '<span class="text-muted">—</span>',
-         `<span class="mono" style="font-size:12px">${_waNumberCell(l)}</span>`]
+      ? [...(showVersion ? [l.template_variant ? pill(`Version ${l.template_variant}`) : '<span class="text-muted">—</span>'] : []),
+         // The number itself never breaks; a "landline" pill may drop under it.
+         `<span class="mono" style="font-size:12px;white-space:nowrap">${esc(prettyWaNumber(l.wa_number) || 'No number')}</span>${
+           l.number_type === 'landline' ? ` ${pill('landline', '', 'Landlines are less likely to have WhatsApp')}` : ''}`]
       : [`<span class="mono" style="font-size:12px">${esc(shortDate(l.sent_date))}</span>`,
          `<span class="mono">${l.followup_count || 0}</span>`];
     const mobile = mCard(
@@ -359,7 +381,7 @@ function _renderWaQueue() {
         ? `${l.campaign_name ? esc(l.campaign_name) : pill('No campaign', 'amber')} · <span class="mono">${_waNumberCell(l)}</span>`
         : `${l.campaign_name ? esc(l.campaign_name) : pill('No campaign', 'amber')} · sent ${esc(shortDate(l.sent_date))} · ${l.followup_count || 0} follow-up${l.followup_count === 1 ? '' : 's'}`);
     return `<tr class="clickable ${l.id === _waCurrent ? 'current' : ''}" onclick="openWaLead(${l.id}, true)">
-      <td>${name}</td><td>${camp}</td><td>${cells[0]}</td><td class="nowrap">${cells[1]}</td>
+      <td>${name}</td>${showCamp ? `<td>${camp}</td>` : ''}${cells.map(c => `<td>${c}</td>`).join('')}
       <td class="m-card">${mobile}</td>
       <td class="nowrap m-keep" style="text-align:right">${l.wa_number ? `<button class="btn btn-primary btn-sm row-wa"
         onclick="event.stopPropagation();openWaFromRow(${l.id})" title="Open this chat in WhatsApp">WhatsApp ↗</button>` : ''}</td></tr>`;
@@ -444,7 +466,7 @@ async function openWaLead(id, show = false) {
   const context = [
     l.campaign_name ? `Campaign: ${esc(l.campaign_name)}` : '<span style="color:var(--amber)">No campaign — move it into one (⋯) to get its message</span>',
     l.template_variant && `version ${esc(l.template_variant)}`,
-    !ready && `last sent ${esc((l.sent_date || '').substring(0, 16))}`,
+    !ready && `last sent ${esc(fmtWhen(l.sent_date, 'utc'))}`,
     !ready && `${l.followup_count || 0} follow-up${l.followup_count === 1 ? '' : 's'} so far`,
   ].filter(Boolean).join(' · ');
 
@@ -1030,11 +1052,7 @@ async function renderWaBooked() {
 
 function waBookedRowHtml(r) {
   const hasTime = r._d && String(r.next_action_at || '').length > 10;
-  const timeStr = r._d
-    ? r._d.toLocaleString([], hasTime
-        ? { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }
-        : { weekday: 'short', day: 'numeric', month: 'short' })
-    : 'No time set';
+  const timeStr = r._d ? fmtWhen(r.next_action_at, 'wall', { dateOnly: !hasTime }) : 'No time set';
   // No "via" tag here — every row on this tab is a WhatsApp booking by
   // construction (the request asked for channel=whatsapp), so the only thing
   // worth naming is which campaign it came from.
