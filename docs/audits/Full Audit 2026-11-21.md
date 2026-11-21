@@ -148,7 +148,7 @@ Small, self-contained, and worth doing first. Effort: **S** under an hour,
 
 | # | What | Severity | Effort | Detail |
 |---|---|---|---|---|
-| 1 | An opt-out can be undone three ways — the other operator importing the address, Restore, or an edit | High | M | B-1 |
+| 1 | ✅ An opt-out can be undone three ways — the other operator importing the address, Restore, or an edit | High | M | B-1 |
 | 2 | Activity log readable by non-admins | High | S | B-2 |
 | 3 | Deleting an account or changing its password doesn't sign it out | High | M | B-3 |
 | 4 | Activating an email campaign sends real email with no confirmation and no count | High | M | B-9 |
@@ -805,6 +805,22 @@ copy. "Read" means confirmed in the current code without running it.
 
 **B-1 · An opt-out isn't permanent: three ordinary actions make an
 unsubscribed or bounced address sendable again. (High · seen)**
+
+> ✅ **RESOLVED** — Plan 1, package 1 (commit listed in
+> [the build log](../plans/1%20Fix%20now%20-%20build%20log.md)). A new
+> `suppressed_addresses` table (address and reason, no owner) is written by
+> every unsubscribe, hard bounce and soft-bounce threshold, even with no row
+> to mark. `_apply_suppression` makes a copy created later (browser, worker,
+> WhatsApp, typed-in, meeting-invite) or restored from Recently deleted end up
+> exactly as an existing copy would; the edit route refuses to move a
+> suppressed address to any other status; `get_due_enrollments` refuses any
+> address in the table. `_migrate_suppressed_addresses` copied existing
+> opt-outs. Checked: `tests/test_suppression.py` (new),
+> `tests/test_ownership.py` §6, and `tools/audit/checks/suppression_db.py`,
+> `suppression_routes.py` and `security_findings.py` S-1a/S-1c, all of which
+> now end with the address suppressed and off the due list. Bulk delete of
+> addresses is still a hard delete (Fable 3.8), but it no longer forgets a
+> bounce.
 
 The rule (Handover §3, CLAUDE.md) is that an unsubscribe or a bounce binds
 every operator, for good. In the code, an opt-out is only a status on

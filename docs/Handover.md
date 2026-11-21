@@ -264,6 +264,12 @@ visibility into anyone else's leads.
   - `reap_stale_scrape_jobs`.
   - `purge_deleted_leads` — empties Recently deleted after 30 days, from the
     scheduler, for everyone.
+  - `suppressed_addresses` and everything that reads or writes it
+    (`_record_suppression`, `_apply_suppression`, `address_suppression`, the
+    `NOT EXISTS` in `get_due_enrollments`). Every unsubscribe and bounce is
+    remembered there by address alone, even with no row to mark, and any copy
+    of the address created, restored or re-addressed later is made to match
+    (audit B-1). `tests/test_suppression.py`.
 - **Overlap between operators is advisory only** (`find_cross_owner_matches`).
   The import goes ahead; the notice shows business name, channel and date,
   never contact details; nothing is merged. Matching is heuristic

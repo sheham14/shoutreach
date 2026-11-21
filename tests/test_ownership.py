@@ -304,6 +304,19 @@ def test_suppression_crosses_the_wall(work):
     stopped = scalar(path, "SELECT COUNT(*) FROM enrollments WHERE status='unsubscribed'")
     check("both operators' queued sends are stopped", stopped == 2, f"{stopped} of 2")
 
+    # B-1: the other operator importing the address AFTER the opt-out gets a
+    # copy that is already unsubscribed, exactly as if it had existed then.
+    db.upsert_businesses([{"email": "late@optout.ae", "company": "Late Clinic"}], owner_id=a)
+    db.unsubscribe_contact("late@optout.ae")
+    db.upsert_businesses([{"email": "late@optout.ae", "company": "Late Clinic"}], owner_id=b)
+    late = [r[0] for r in rows(path, "SELECT status FROM email_leads WHERE email='late@optout.ae'")]
+    check("a copy imported after the opt-out arrives unsubscribed",
+          late == ["unsubscribed", "unsubscribed"], str(late))
+    check("and the later operator's business is suppressed too",
+          scalar(path, """SELECT do_not_contact FROM businesses b JOIN email_leads el
+                           ON el.business_id = b.id WHERE el.email='late@optout.ae'
+                           AND el.owner_id=?""", (b,)) == 1)
+
 
 def test_bounce_crosses_the_wall(work):
     print("\n7. A DEAD ADDRESS IS DEAD FOR EVERY OPERATOR")
