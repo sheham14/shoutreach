@@ -400,6 +400,15 @@ def test_sender_survives():
         check("good values still save, numbers as text included", True)
     except db.CampaignValueError as e:
         check("good values still save, numbers as text included", False, str(e))
+    with db.get_db() as conn:   # a pair stored before checks existed
+        conn.execute("UPDATE campaigns SET min_delay_secs=300, max_delay_secs=100 WHERE id=?", (c_bob,))
+    try:
+        db.update_campaign(c_bob, status="paused")
+        check("an old bad delay pair doesn't block pausing or activating", True)
+    except db.CampaignValueError as e:
+        check("an old bad delay pair doesn't block pausing or activating", False, str(e))
+    with db.get_db() as conn:
+        conn.execute("UPDATE campaigns SET min_delay_secs=0, max_delay_secs=10 WHERE id=?", (c_bob,))
     try:
         db.create_campaign("Bad", daily_limit="lots", owner_id=alice)
         check("create_campaign refuses a bad value", False)

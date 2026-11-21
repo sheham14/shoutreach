@@ -1961,6 +1961,8 @@ def _check_campaign_fields(fields: dict, current: dict = None) -> dict:
         out[key] = value
     if "status" in out and out["status"] not in CAMPAIGN_STATUSES:
         raise CampaignValueError("That isn't a campaign status.")
+    if "min_delay_secs" not in out and "max_delay_secs" not in out:
+        return out   # an old stored pair is fixed by editing it, not by refusing a pause or a rename
     merged = {**(current or {}), **out}
     try:
         lo, hi = int(merged["min_delay_secs"]), int(merged["max_delay_secs"])
