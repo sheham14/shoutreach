@@ -23,7 +23,7 @@ operator's go-ahead). Nothing is pushed to `master`.
 | 3 Sessions | B-3 | done | `e541e80` |
 | 4 Sender resilience | B-6, B-23 | done | `21bfe79` |
 | 5 Calling → Reopen | B-22 | done | `7b9ea95` |
-| 6 Confirm before sending | B-9 | not started | |
+| 6 Confirm before sending | B-9 | done | `a1344fe` |
 | 7 Visible faults | F-20, F-21/33, F-22, F-25, F-30, F-9, B-10, B-14, B-15 | not started | |
 
 ## Log
@@ -107,3 +107,16 @@ operator's go-ahead). Nothing is pushed to `master`.
   the `call_lead` guard. Test: `tests/test_calling.py` §25 (verified to fail on
   the old guard). `calling_reopen.py`: 6/6 now 200.
 - Harness restore: `cp /tmp/claude-0/audit-seed.db /tmp/shoutreach-audit/audit.db`.
+
+### Package 6 — B-9 — done (`a1344fe`)
+
+- `db.get_campaign_send_preview` → {sendable, enrollable};
+  `GET /api/campaigns/<id>/send-preview` adds status, daily_limit,
+  window_open, next_open, starts_label.
+- `activateCampaign(id, reopen)` and `enrollAll()` confirm via chooseDialog.
+  The detail page's Activate used to call `openCampaign` straight after
+  (before the answer); it now passes `reopen=true` instead.
+- Test: `tests/test_suppression.py` §7. Browser: both dialogs on the harness.
+- Browser script: `/tmp/claude-0/b9.py` (Chromium is at
+  `/opt/pw-browsers/chromium-1243/chrome-linux64/chrome`; call functions that
+  open chooseDialog as `() => { fn(); }` or evaluate waits forever).
