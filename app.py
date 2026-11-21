@@ -209,10 +209,23 @@ def login_required(f):
     return decorated
 
 
+def _current_user():
+    """The signed-in user's row, loaded once per request by _require_login.
+    None for a worker request or a public page."""
+    return getattr(g, "user", None)
+
+
+def is_admin() -> bool:
+    """From the database row on every request, never from the cookie (B-3):
+    demoting someone takes effect on their next click."""
+    user = _current_user()
+    return bool(user and user["is_admin"])
+
+
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not session.get("is_admin"):
+        if not is_admin():
             return jsonify({"error": "Forbidden"}), 403
         return f(*args, **kwargs)
     return decorated
@@ -259,7 +272,8 @@ def worker_auth_required(f):
 
 def me() -> int:
     """The logged-in operator. Every data route scopes to this."""
-    return session["user_id"]
+    user = _current_user()
+    return user["id"] if user else session["user_id"]
 
 
 def require_owned(kind: str, row_id):
@@ -343,10 +357,21 @@ def _require_login():
         return
     if _is_worker_route():
         return          # authenticated by X-API-Key in worker_auth_required
-    if not session.get("user_id"):
+    uid = session.get("user_id")
+    # A signed cookie isn't enough on its own (audit B-3): the account must
+    # still exist, and the cookie must carry the session version the account
+    # is on now -- a password change bumps it, signing out every other
+    # device. A session from before versions existed counts as 0.
+    user = db.get_user_by_id(uid) if uid else None
+    if user and int(session.get("sv", 0) or 0) != int(user.get("session_version") or 0):
+        user = None
+    if not user:
+        session.clear()
         if request.path.startswith("/api/"):
             return jsonify({"error": "Unauthorized"}), 401
         return redirect("/login")
+    g.user = user
+    session["is_admin"] = bool(user["is_admin"])  # display only; never trusted
 
 
 @app.before_request
@@ -479,6 +504,7 @@ def login_submit():
     session["user_id"]    = user["id"]
     session["username"]   = user["username"]
     session["is_admin"]   = bool(user["is_admin"])
+    session["sv"]         = int(user.get("session_version") or 0)
     session["csrf_token"] = _secrets.token_urlsafe(32)
     return redirect("/")
 
@@ -848,9 +874,8 @@ def api_delete_user(uid):
 @app.route("/api/users/<int:uid>/password", methods=["POST"])
 def api_change_password(uid):
     # Admins can change anyone's password; users can only change their own.
-    is_self  = uid == session.get("user_id")
-    is_admin = bool(session.get("is_admin"))
-    if not is_admin and not is_self:
+    is_self  = uid == me()
+    if not is_admin() and not is_self:
         return jsonify({"error": "Forbidden"}), 403
 
     d = request.json or {}
@@ -870,7 +895,10 @@ def api_change_password(uid):
         if not user or not db.verify_user_password(user, current_pass):
             return jsonify({"error": "Current password is incorrect"}), 403
 
-    db.change_password(uid, new_pass)
+    version = db.change_password(uid, new_pass)
+    if is_self:
+        # Signed out everywhere else, but not on the device that changed it.
+        session["sv"] = version
     logging.info("Password changed for uid=%s by uid=%s", uid, session.get("user_id"))
     return jsonify({"ok": True})
 
@@ -880,7 +908,7 @@ def api_me():
     return jsonify({
         "id":       session.get("user_id"),
         "username": session.get("username"),
-        "is_admin": session.get("is_admin"),
+        "is_admin": is_admin(),
         # Whether AI features are switched on (Settings), so the page can
         # leave out buttons that would only answer "AI isn't enabled".
         "ai_enabled": bool(session.get("user_id"))
@@ -2108,7 +2136,7 @@ def api_update_pipeline_stage(key):
     # Built-ins are shared vocabulary, so relabelling one is an admin call;
     # a stage you invented is yours. Same rule as call outcomes.
     existing = db.get_pipeline_stage(key)
-    if existing and existing["is_builtin"] and not session.get("is_admin"):
+    if existing and existing["is_builtin"] and not is_admin():
         return jsonify({"ok": False, "error": "Built-in stages are shared — ask an admin"}), 403
     if not db.update_pipeline_stage(key, owner_id=me(), **(request.json or {})):
         return jsonify({"ok": False, "error": "Nothing to update, or unknown stage"}), 400
@@ -2446,7 +2474,7 @@ def api_update_call_outcome(key):
     # Built-ins are shared vocabulary, so editing one is still an admin call.
     # Your own custom outcomes are yours.
     existing = db.get_call_outcome(key)
-    if existing and existing["is_builtin"] and not session.get("is_admin"):
+    if existing and existing["is_builtin"] and not is_admin():
         return jsonify({"ok": False, "error": "Built-in outcomes are shared — ask an admin"}), 403
     if not db.update_call_outcome(key, owner_id=me(), **(request.json or {})):
         return jsonify({"ok": False, "error": "Nothing to update, or unknown outcome"}), 400

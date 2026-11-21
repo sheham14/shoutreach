@@ -696,6 +696,10 @@ def init_db():
         # across. Adding a column to a new table means editing its CREATE and
         # adding one line here, nothing else.
         for _col_sql in [
+            # Bumped by a password change, so every session signed in before
+            # it stops working (audit B-3). A session carries the version it
+            # was issued with; one with none counts as 0.
+            "ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE sends ADD COLUMN account_id INTEGER",
             "ALTER TABLE enrollments ADD COLUMN variant_label TEXT",
             "ALTER TABLE campaigns ADD COLUMN timezone TEXT DEFAULT NULL",
@@ -8853,12 +8857,21 @@ def delete_user(uid: int) -> tuple:
     return True, None
 
 
-def change_password(uid: int, new_password: str):
+def change_password(uid: int, new_password: str, end_sessions: bool = True) -> int:
+    """
+    Set a password. By default this also signs the account out everywhere,
+    by bumping users.session_version (audit B-3); the caller re-issues the
+    current session if it should survive. Returns the new version.
+    end_sessions=False is only for re-hashing the same password at sign-in.
+    """
     with get_db() as conn:
         conn.execute(
-            "UPDATE users SET password_hash=? WHERE id=?",
-            (_hash_password(new_password), uid),
+            "UPDATE users SET password_hash=?, "
+            "session_version = session_version + ? WHERE id=?",
+            (_hash_password(new_password), 1 if end_sessions else 0, uid),
         )
+        row = conn.execute("SELECT session_version FROM users WHERE id=?", (uid,)).fetchone()
+        return row["session_version"] if row else 0
 
 
 def verify_user_password(user: dict, password: str) -> bool:
@@ -8879,7 +8892,7 @@ def authenticate(username: str, password: str):
         return None
     if _hash_needs_upgrade(stored):
         try:
-            change_password(user["id"], password)
+            change_password(user["id"], password, end_sessions=False)
             logger.info("Upgraded password hash for uid=%s", user["id"])
         except Exception as exc:
             logger.warning("Hash upgrade failed for uid=%s: %s", user["id"], exc)

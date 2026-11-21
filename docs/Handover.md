@@ -896,7 +896,11 @@ at computer and phone size against the same fake Zoho.
   `cp ~/shoutreach/outreach.db ~/outreach.db.bak-$(date +%F)`.
 - **Users:** Settings → Users (admins only). Passwords need 12+ characters. An
   admin can reset someone else's password without knowing it; changing your
-  own needs your current one. If the only admin is locked out, on the VM:
+  own needs your current one. **A password change signs that account out everywhere**
+  (`users.session_version`, checked on every request in `_require_login`);
+  changing your own keeps the device you did it on. Deleting an account ends
+  its sessions on their next request, and admin rights are read from the
+  database each request, never from the cookie (audit B-3). If the only admin is locked out, on the VM:
   `cd ~/shoutreach && source venv/bin/activate && python reset_password.py`.
 - **The first admin** is created from the login page, and only while there
   are no users at all, using a setup token printed to the server log at boot.

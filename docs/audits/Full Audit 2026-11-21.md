@@ -150,7 +150,7 @@ Small, self-contained, and worth doing first. Effort: **S** under an hour,
 |---|---|---|---|---|
 | 1 | ✅ An opt-out can be undone three ways — the other operator importing the address, Restore, or an edit | High | M | B-1 |
 | 2 | ✅ Activity log readable by non-admins (owner per log line still open) | High | S | B-2 |
-| 3 | Deleting an account or changing its password doesn't sign it out | High | M | B-3 |
+| 3 | ✅ Deleting an account or changing its password doesn't sign it out | High | M | B-3 |
 | 4 | Activating an email campaign sends real email with no confirmation and no count | High | M | B-9 |
 | 5 | One campaign's bad value stops email sending for everyone | Medium | S | B-6 |
 | 6 | The background sender can die silently and never restart | High | S–M | B-23 |
@@ -884,6 +884,17 @@ can see their own — belongs with the redesign of Settings.
 
 **B-3 · Deleting an account, or changing its password, doesn't sign it
 out. (High · seen)**
+
+> ✅ **RESOLVED** — Plan 1, package 3. `_require_login` loads the user row
+> on every request (kept on `g.user`) and refuses, clearing the session, when
+> the account is gone or the cookie's `sv` is behind
+> `users.session_version`. `change_password` bumps the version (also from
+> `reset_password.py`); changing your own password re-issues this session, so
+> only the other devices are signed out. `is_admin` is read from the row, not
+> the cookie. A session with no `sv` counts as 0, so sessions open at deploy
+> keep working. Checked: `tests/test_sessions.py` (new) and
+> `tools/audit/checks/security_findings.py` S-3 (carol's old session now
+> 401 for listing users and for resetting a password).
 
 A sign-in is a signed cookie that the server trusts without looking the user
 up again ([app.py:340–349](../../app.py#L340-L349)); "is admin" is read from
