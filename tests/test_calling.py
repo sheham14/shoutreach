@@ -41,6 +41,7 @@ def check(label, cond, detail=""):
 def boot(work):
     os.environ["DB_PATH"] = os.path.join(work, "calls.db")
     os.environ["SECRET_KEY"] = "test-secret"
+    os.environ["SHOUTREACH_NO_SCHEDULER"] = "1"
     import db
     importlib.reload(db)
     db.init_db()
@@ -469,6 +470,36 @@ def main():
         for path in ("/api/calls/queue", "/api/call-script", "/api/call-campaigns",
                      "/api/call-outcomes", f"/api/calls/{ids[0]}/ics"):
             check(f"{path} needs a session", anon.get(path).status_code in (401, 403))
+
+        print("\n25. REOPEN TAKES A BUSINESS ID, WHATEVER ITS CALL-LEAD ID IS (B-22)")
+        # Section 13 passed only because its business and call-lead ids
+        # happened to be equal. Make them differ, as they do in real data.
+        db.upsert_businesses([{"company": f"Filler {i}", "phone": f"709-555-07{i:02d}"}
+                              for i in range(5)], owner_id=1)
+        db.upsert_businesses([{"company": "Reopen Me", "phone": "709-555-0800"}], owner_id=1)
+        with db.get_db() as conn:
+            bid = conn.execute("SELECT id FROM businesses WHERE name='Reopen Me'").fetchone()["id"]
+        db.add_to_calling([bid], owner_id=1)
+        clid = _call_lead(bid)
+        db.log_call(clid, "not_interested")
+        check("the business id and the call-lead id differ", bid != clid, f"{bid} vs {clid}")
+        check("it's closed out", all(l["id"] != bid for l in db.get_call_queue("all", owner_id=1)))
+        r = client.post(f"/api/calls/{bid}/reopen", headers=hdr)
+        check("reopen by business id succeeds", r.status_code == 200, f"{r.status_code} {r.get_data(as_text=True)[:80]}")
+        check("and it's back in the queue",
+              any(l["id"] == bid for l in db.get_call_queue("all", owner_id=1)))
+
+        other = db.create_user("other", "test-password-123", is_admin=False)
+        db.upsert_businesses([{"company": "Theirs", "phone": "709-555-0811"}], owner_id=other)
+        with db.get_db() as conn:
+            theirs = conn.execute("SELECT id FROM businesses WHERE name='Theirs'").fetchone()["id"]
+        db.add_to_calling([theirs], owner_id=other)
+        db.log_call(_call_lead(theirs), "not_interested")
+        r = client.post(f"/api/calls/{theirs}/reopen", headers=hdr)
+        check("another operator's lead is still 404", r.status_code == 404, str(r.status_code))
+        with db.get_db() as conn:
+            st = conn.execute("SELECT call_status FROM call_leads WHERE business_id=?", (theirs,)).fetchone()[0]
+        check("and is left closed", st == "not_interested", st)
 
     finally:
         shutil.rmtree(work, ignore_errors=True)

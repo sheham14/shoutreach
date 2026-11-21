@@ -155,7 +155,7 @@ Small, self-contained, and worth doing first. Effort: **S** under an hour,
 | 5 | ✅ One campaign's bad value stops email sending for everyone | Medium | S | B-6 |
 | 6 | ✅ The background sender can die silently and never restart | High | S–M | B-23 |
 | 7 | No backup that the repo shows except at deploy, on the same disk — set up a nightly one that leaves the VM | High | S, no code | B-24 |
-| 8 | Calling → "Reopen" answers "not found" | Medium | S | B-22 |
+| 8 | ✅ Calling → "Reopen" answers "not found" | Medium | S | B-22 |
 | 9 | Email → To do shows two "Done" buttons on every row | Medium | S | F-20 |
 | 10 | Calling shows raw timestamps (`2026-11-20T10:30`) | Medium | S | F-21 |
 | 11 | Phone: the menu button covers the logo when the menu is open | Low | S | F-22 |
@@ -993,6 +993,13 @@ containing `:` or starting with `_` on that route. Effort: S.
 | Small tells across the wall | The meeting address check says "unsubscribed" for an address only the other operator holds — with two operators, "never says whose" says whose. The import overlap notice shows the other operator's name for a business. Both are deliberate and documented; recorded here so the trade-off stays a choice | seen by the review pass |
 
 **B-22 · Calling → "Reopen" doesn't work. (Medium · seen)**
+
+> ✅ **RESOLVED** — Plan 1, package 5. `api_reopen_call_lead` is guarded
+> with `@owned("business", "cid")`. Checked: `tests/test_calling.py` §25 (a
+> lead whose business id 16 and call-lead id 9 differ reopens; another
+> operator's is 404 and stays closed; the test fails on the old guard), and
+> `tools/audit/checks/calling_reopen.py` (six of six closed-out leads now
+> answer 200; the audit saw none).
 
 "Reopen (put back in the queue)" answers "not found" for a lead you own. The
 route's ownership check looks the number up as a call-lead id, but the page

@@ -3004,7 +3004,10 @@ def api_remove_call_campaign_members(cid):
 
 @app.route("/api/calls/<int:cid>/reopen", methods=["POST"])
 @login_required
-@owned("call_lead", "cid")
+# A business id, like every calling route (audit B-22): guarding it as a
+# call-lead id answered 404 for the operator's own lead whenever the two
+# numbers differed. Another operator's business is still a 404.
+@owned("business", "cid")
 def api_reopen_call_lead(cid):
     """
     Return a closed-out lead to the queue — the undo for a misclick.
