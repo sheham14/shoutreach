@@ -89,7 +89,7 @@ function _renderCampaignCards() {
       <div class="flex items-center" style="gap:8px;margin-bottom:8px">
         <div class="card-title">${esc(c.name)}</div>
         <div class="row-menu ml-auto">
-          <button class="btn btn-ghost btn-sm" onclick="toggleRowMenu(this)">⋯</button>
+          <button class="btn btn-ghost btn-sm" onclick="toggleRowMenu(this)" title="More" aria-label="More">${icon('ellipsis')}</button>
           <div class="row-menu-list">
             <button onclick="renameCallCampaign(${c.id})">Rename</button>
             <button class="danger" onclick="deleteCallCampaign(${c.id})">Delete campaign</button>
@@ -103,7 +103,7 @@ function _renderCampaignCards() {
         <div><span style="color:var(--success)">${c.booked} booked</span> · ${c.not_interested} not interested</div>
       </div>
       <div class="flex gap-2" style="margin-top:12px;flex-wrap:wrap">
-        <button class="btn btn-ghost btn-sm" onclick="workCallCampaign(${c.id})">☎ Work it</button>
+        <button class="btn btn-ghost btn-sm" onclick="workCallCampaign(${c.id})">${icon('phone', { size: 14 })} Work it</button>
         <button class="btn btn-ghost btn-sm" onclick="openCallingCampaign(${c.id})">Leads</button>
         <button class="btn btn-ghost btn-sm" onclick="openAddLeadsModal(${c.id})">+ Add leads</button>
       </div>
@@ -520,14 +520,14 @@ function _renderCallTable() {
       <td>${_callBucket === 'worked'
             ? `${callStatusBadge(l.call_status)} <button class="btn btn-ghost btn-sm"
                  onclick="event.stopPropagation();reopenCallLead(${l.id})"
-                 title="Put this lead back in the queue">↩ Reopen</button>`
+                 title="Put this lead back in the queue">${icon('undo-2', { size: 14 })} Reopen</button>`
             : `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openCallLead(${l.id}, true)">Open</button>`}</td>
       <td class="m-card">${mCard(`<span class="biz-name">${esc(l.company || l.email || '—')}</span>${contactSignalPill(l)}`,
         [l.phone && `<span class="tnum">${esc(l.phone)}</span>`,
          `${l.call_attempts} attempt${l.call_attempts === 1 ? '' : 's'}`,
          l.next_call_at && `due ${due}`].filter(Boolean).join(' · '),
         _callBucket === 'worked' ? `${callStatusBadge(l.call_status)} <button class="btn btn-ghost btn-sm"
-          onclick="event.stopPropagation();reopenCallLead(${l.id})">↩ Reopen</button>` : '')}</td>
+          onclick="event.stopPropagation();reopenCallLead(${l.id})">${icon('undo-2', { size: 14 })} Reopen</button>` : '')}</td>
     </tr>`;
   }).join('');
 }
@@ -564,7 +564,7 @@ async function openCallLead(id, show = false) {
   if (t.emails_sent) notes.push(`Emailed ${t.emails_sent}×${t.last_email_at ? ` (last ${esc(fmtWhen(t.last_email_at, 'utc', { dateOnly: true }))})` : ''}`);
   if (t.closed)      notes.push('already replied or opted out by email — check before dialling');
   if (c.call_attempts >= _attemptLimit) notes.push(`${c.call_attempts} attempts already`);
-  if (notes.length) { warn.style.display = 'block'; warn.innerHTML = '⚠ ' + notes.join(' · '); }
+  if (notes.length) { warn.style.display = 'block'; warn.innerHTML = icon('triangle-alert', { size: 14 }) + ' ' + notes.join(' · '); }
   else warn.style.display = 'none';
 
   document.getElementById('cq-notes').value = '';
@@ -760,7 +760,7 @@ async function _renderOutcomeEditor() {
 }
 
 function _outcomeRow(o) {
-  const yes = v => v ? '✓' : '—';
+  const yes = v => v ? icon('check', { size: 14, label: 'Yes' }) : '—';
   return `<tr${o.archived ? ' style="opacity:.5"' : ''}>
     <td>
       <input value="${esc(o.label)}" onchange="renameOutcome('${esc(o.key)}', this.value)"
@@ -780,7 +780,7 @@ function _outcomeRow(o) {
     <td class="tnum" style="font-size:12px">${yes(o.stops_email)}</td>
     <td>${o.is_builtin
         ? '<span class="text-muted" style="font-size:11px">—</span>'
-        : `<button class="btn btn-icon btn-sm" title="Delete this outcome" aria-label="Delete this outcome" onclick="deleteOutcome('${esc(o.key)}')">✕</button>`}</td>
+        : `<button class="btn btn-icon btn-sm" title="Delete this outcome" aria-label="Delete this outcome" onclick="deleteOutcome('${esc(o.key)}')">${icon('x')}</button>`}</td>
   </tr>`;
 }
 
@@ -896,7 +896,7 @@ function _scriptSectionRow(s, i) {
         <input class="cq-sec-title" value="${esc(s.title || '')}" placeholder="Section name"
                style="flex:1;background:var(--raised);border:1px solid var(--line-strong);border-radius:6px;
                       padding:6px 10px;color:var(--text);font-size:13px;font-family:var(--font)" />
-        <button class="btn btn-icon btn-sm" title="Remove this line" aria-label="Remove this line" onclick="this.closest('.cq-script-row').remove()">✕</button>
+        <button class="btn btn-icon btn-sm" title="Remove this line" aria-label="Remove this line" onclick="this.closest('.cq-script-row').remove()">${icon('x')}</button>
       </div>
       <textarea class="cq-sec-body soft-input" style="min-height:90px"
                 placeholder="What you say here…">${esc(s.body || '')}</textarea>
@@ -916,7 +916,7 @@ async function saveCallScript() {
 
   const res = await api('/api/call-script', 'PUT', { sections });
   if (!res || res.error) { toast((res && res.error) || 'Could not save the script', 'err'); return; }
-  toast('Script saved ✓');
+  toast('Script saved');
   await loadCallScript();
   _renderScriptEditor();
 }

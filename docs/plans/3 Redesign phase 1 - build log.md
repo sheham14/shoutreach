@@ -40,8 +40,8 @@ merged; `docs/plans/README.md` has the Status column).
 |---|---|---|---|
 | 0 | Walk-throughs point at Meetings; "before" shots | done | `0bae7f7` |
 | 1 | Tokens, fonts, sign-in page | done | `204b017` (code), audit marked after |
-| 2 | Controls | done | see log |
-| 3 | Icons and the mark | not started | |
+| 2 | Controls | done | `6033e43` (+ `7012a05` audit) |
+| 3 | Icons and the mark | done | see log |
 | 4 | Dialogs, dates, wording | not started | |
 
 ## Log
@@ -225,3 +225,63 @@ for Calling's outcomes.
   `tabindex`); making them reachable is behaviour (F-14, F-40), not looks.
 - Settings' Database tabs mark the open table with `btn-primary` (teal =
   selected); left.
+
+**Package 2 committed** as `6033e43`; the whole suite (32 files) passed
+against that exact commit in a separate worktree, then it was pushed. Audit
+marks in `7012a05`: F-6, F-35 resolved; F-8, F-11, F-27, F-31, F-39, F-40
+partly done.
+
+### Package 3 — icons and the mark (Windows session, 2026-11-22)
+
+- **Source:** `lucide-static` 0.460.0 from the npm registry (tarball unpacked
+  in a scratch folder; only its SVG files were read). ISC licence copied to
+  `static/js/Lucide-LICENSE.txt`.
+- **One place:** `static/js/icons.js` holds the path data for 41 icons as
+  JSON between `/* ICONS-JSON-START */` and `/* ICONS-JSON-END */`, and
+  `icon(name, {size, cls, label})` returns an inline SVG (aria-hidden unless
+  given a label). `app.py` `_load_icons()` parses that block at startup into
+  the Jinja global `ICONS`; `templates/macros/icons.html` has the matching
+  `icon(name, size, cls, label)` macro. No build step, no network.
+- **Replaced:** sidebar items (◉ ⊕ 📅 ✉ ☎ 💬 ⊗ ⚙ ?), the run-now ⟳ and sign
+  out ⎋, the ☰ menu button, every window's ✕ close, the 📅 in the lead's
+  meeting box, Dashboard card titles, and every symbol in a button label
+  (⬆ ⬇ ⏹ ▶ ⏸ ✓ ✕ ⚙ ⊞ ↻ ✎ ⋯ ⟳ ↩ ⤓ 🧹 ⛶ ⚡ ✨ ← → ↗ ↑ ↓), sort arrows (▲ ▼ ⇅),
+  the info dot ⓘ, ⚠ on warnings, ✓/✗ in audit results and the outcomes
+  table, the empty state's ✉. Icon-only buttons got `aria-label`s.
+  Text that used `textContent` to show a symbol now uses `innerHTML` with
+  escaped values (run-now, Remove selected, Run checks again, SMTP test,
+  scrape heartbeat, the Dashboard sender warning).
+- **Help page too:** its section emoji, ▼ chevrons, ⚠ and the symbols it
+  used to name buttons ("⚙ Settings", "▶ Activate") are icons. The page is
+  one `{% raw %}` block (it documents `{{placeholders}}`), so each icon steps
+  out with `{% endraw %}{{ icon(...) }}{% raw %}`.
+- **Toasts:** the trailing ✓ / ▶ / ⏸ decorations were dropped from 21
+  messages ("Saved ✓" → "Saved").
+- **The mark:** `hexiv-mark.svg` beside "ShoutReach" in the sidebar (28 px)
+  and on the sign-in page (36 px), and as the tab icon on both pages
+  (`<link rel="icon" type="image/svg+xml">`). "Powered by Hexiv" and the
+  📣 favicon removed; `.logo-mark` style deleted.
+- **Left on purpose:** Activity log symbols (stored by `db.add_log`); ★ in
+  ratings ("4.5★", data); → inside prose and text links ("See them in
+  Contacts →"); the ← inside a DNS code sample on Help; ≤ in a hint; the
+  CSS-drawn ▸ on the lead panel's folds and ↓ between email steps (generated
+  content, not in the plan's list).
+- **New test:** `tests/test_icons.py` — the set loads from icons.js and
+  matches; every name used in a template or script exists (both arms of a
+  `?:` too) and none in the set is unused; no icon call printed as text;
+  the mark is the tab icon and sits by the name on both pages; the sidebar
+  has 11 icons and no symbol; icons.js loads after utils.js; the licence
+  ships. Proven able to fail: removing `mail` from the set fails "none
+  missing"; un-wrapping Help's icons from the raw block fails "no icon call
+  printed as text".
+- **Two faults found on the way and fixed before commit:** a template
+  substitution left `{{ icon(\'x\', 20) }}` (a backslash) in 14 close
+  buttons, which broke the main page (test_icons caught it); a single-quoted
+  JS string with `${icon()}` in whatsapp.js stopped the file loading (the
+  walk-throughs caught it: 13 problems). Every script is now checked with
+  `node --check` after edits.
+- Walk-throughs: desktop-1, desktop-2, phone-1 `TOTAL PROBLEMS: 0`. Shots in
+  `docs/plans/plan-3-shots/3-icons/`.
+- Audit: F-1, F-2 resolved; F-37 partly (confirmations and Title Case are
+  package 4); F-5 note: every font size in main.css is now on the scale.
+  Handover §8 (test_icons, 33 files) and §10 (where icons live).

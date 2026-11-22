@@ -1,0 +1,7 @@
+{# The template side of static/js/icons.js: the same Lucide path data
+   (app.py puts it in ICONS), the same markup as the JS icon() helper.
+   Use: {% from "macros/icons.html" import icon %} ... {{ icon('mail') }}
+   An icon-only control needs its own aria-label, or pass label=. #}
+{% macro icon(name, size=16, cls='', label='') -%}
+<svg class="icon{{ ' ' ~ cls if cls }}" width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false" {% if label %}role="img" aria-label="{{ label }}"{% else %}aria-hidden="true"{% endif %}>{{ ICONS[name] | safe }}</svg>
+{%- endmacro %}

@@ -1,6 +1,7 @@
+{% from "macros/icons.html" import icon %}
 <div class="modal-overlay" id="modal-enroll">
   <div class="modal">
-    <button class="modal-close" onclick="closeModal('modal-enroll')">✕</button>
+    <button class="modal-close" onclick="closeModal('modal-enroll')" aria-label="Close">{{ icon('x', 20) }}</button>
     <h2>Enroll Contacts</h2>
     <p class="text-muted text-small" style="margin-bottom:18px">Select contacts from your database to add to this campaign. Contacts already enrolled or with status bounced/unsubscribed are automatically skipped.</p>
     <div class="form-group">

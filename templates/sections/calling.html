@@ -1,3 +1,4 @@
+{% from "macros/icons.html" import icon %}
 <div class="section" id="section-calling">
   <div class="page-header">
     <div>
@@ -65,7 +66,7 @@
         </div>
 
       <div id="cq-work" class="sheet">
-        <div class="sheet-bar"><button class="btn btn-ghost btn-sm" onclick="closeSheet('cq-work')">← Back to list</button></div>
+        <div class="sheet-bar"><button class="btn btn-ghost btn-sm" onclick="closeSheet('cq-work')">{{ icon('arrow-left') }} Back to list</button></div>
 
         <div class="card" id="cq-lead-card" style="display:none;padding:20px">
           <div class="flex items-center" style="margin-bottom:4px;gap:8px;flex-wrap:wrap">
@@ -96,7 +97,7 @@
           <div class="flex gap-2" style="flex-wrap:wrap;margin-top:4px">
             <button class="btn btn-primary" onclick="saveCallOutcome()">Save &amp; next lead</button>
             <button class="btn btn-ghost" onclick="skipCallLead()">Skip for now</button>
-            <a class="btn btn-ghost" id="cq-ics-link" style="display:none" href="#">⤓ Add to calendar</a>
+            <a class="btn btn-ghost" id="cq-ics-link" style="display:none" href="#">{{ icon('calendar-plus') }} Add to calendar</a>
           </div>
 
           <div id="cq-history" style="margin-top:18px"></div>

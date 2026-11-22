@@ -1,25 +1,26 @@
+{% from "macros/icons.html" import icon %}
 <aside class="sidebar">
   <div class="logo">
+    <img class="logo-hex" src="{{ url_for('static', filename='img/hexiv-mark.svg') }}" alt="" width="28" height="28" />
     <h1>ShoutReach</h1>
-    <div class="logo-mark">◈ Powered by Hexiv</div>
   </div>
   <!-- Daily work at the top: the start page, every business, the three
        channels (each with the same tabs inside), and the one way new leads
        come in. Setup at the bottom -- Activity log and Database live inside
        Settings now, for admins. -->
   <nav>
-    <a href="#" class="active" data-section="dashboard"><span class="icon">◉</span> Dashboard</a>
-    <a href="#" data-section="contacts"><span class="icon">⊕</span> Contacts</a>
-    <a href="#" data-section="meetings"><span class="icon">📅</span> Meetings <span class="nav-count" id="nav-count-meetings"></span></a>
+    <a href="#" class="active" data-section="dashboard">{{ icon('layout-dashboard', 18) }} Dashboard</a>
+    <a href="#" data-section="contacts">{{ icon('users', 18) }} Contacts</a>
+    <a href="#" data-section="meetings">{{ icon('calendar', 18) }} Meetings <span class="nav-count" id="nav-count-meetings"></span></a>
     <div class="nav-group">Channels</div>
-    <a href="#" data-section="email"><span class="icon">✉</span> Email <span class="nav-count" id="nav-count-email"></span></a>
-    <a href="#" data-section="calling"><span class="icon">☎</span> Calling <span class="nav-count" id="nav-count-calling"></span></a>
-    <a href="#" data-section="whatsapp"><span class="icon">💬</span> WhatsApp <span class="nav-count" id="nav-count-whatsapp"></span></a>
+    <a href="#" data-section="email">{{ icon('mail', 18) }} Email <span class="nav-count" id="nav-count-email"></span></a>
+    <a href="#" data-section="calling">{{ icon('phone', 18) }} Calling <span class="nav-count" id="nav-count-calling"></span></a>
+    <a href="#" data-section="whatsapp">{{ icon('message-circle', 18) }} WhatsApp <span class="nav-count" id="nav-count-whatsapp"></span></a>
     <div class="nav-group">Leads</div>
-    <a href="#" data-section="scraper"><span class="icon">⊗</span> Get leads</a>
+    <a href="#" data-section="scraper">{{ icon('search', 18) }} Get leads</a>
     <div class="nav-group">Setup</div>
-    <a href="#" data-section="settings"><span class="icon">⚙</span> Settings</a>
-    <a href="#" data-section="help"><span class="icon">?</span> Help &amp; Guide</a>
+    <a href="#" data-section="settings">{{ icon('settings', 18) }} Settings</a>
+    <a href="#" data-section="help">{{ icon('circle-help', 18) }} Help &amp; Guide</a>
   </nav>
   <!-- Named for what it produces, not the machinery behind it. "Run Now" gave
        no hint what would run, and "Run the scheduler" only trades one piece of
@@ -29,9 +30,9 @@
        hidden until /api/users/me says this user is an admin (app.js). -->
   <button onclick="runSchedulerNow()" id="run-now-btn" hidden
           title="Sends anything due and checks for replies right now, instead of waiting for the next automatic cycle. Your send window and daily limits still apply."
-          style="margin:8px 12px;width:calc(100% - 24px);padding:7px 12px;background:transparent;border:1px solid var(--line);border-radius:8px;color:var(--text-2);font-size:12px;line-height:1.35;font-family:var(--font);cursor:pointer;text-align:left;transition:border-color .15s,color .15s" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--text)'" onmouseout="this.style.borderColor='var(--line)';this.style.color='var(--text-2)'">⟳ Check for email replies &amp; send</button>
+          style="margin:8px 12px;width:calc(100% - 24px);padding:7px 12px;background:transparent;border:1px solid var(--line);border-radius:8px;color:var(--text-2);font-size:12px;line-height:1.35;font-family:var(--font);cursor:pointer;text-align:left;transition:border-color .15s,color .15s" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--text)'" onmouseout="this.style.borderColor='var(--line)';this.style.color='var(--text-2)'">{{ icon('refresh-cw', 14) }} <span>Check for email replies &amp; send</span></button>
   <div style="padding:12px 16px;border-top:1px solid var(--line);margin-top:auto">
     <div style="font-size:11px;color:var(--text-2);margin-bottom:6px" id="sidebar-username"></div>
-    <a href="/logout" style="font-size:12px;color:var(--text-2);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text-2)'">⎋ Sign out</a>
+    <a href="/logout" style="font-size:12px;color:var(--text-2);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text-2)'">{{ icon('log-out', 14) }} Sign out</a>
   </div>
 </aside>

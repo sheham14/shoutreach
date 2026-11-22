@@ -107,17 +107,21 @@
     z-index: var(--z-sheet);
   }
 
+  /* The Hexiv mark beside the name (Plan 3 package 3, F-2). */
   .logo {
+    display: flex; align-items: center; gap: var(--sp-2);
     padding: 0 var(--sp-5) var(--sp-5);
     border-bottom: 1px solid var(--line);
     margin-bottom: var(--sp-4);
   }
-  .logo-mark {
-    font-size: var(--fs-xs);
-    color: var(--text-3);
-    margin-bottom: var(--sp-1);
-  }
+  .logo-hex { width: 28px; height: 28px; flex-shrink: 0; }
   .logo h1 { font-size: var(--fs-md); font-weight: 600; color: var(--text); letter-spacing: -.01em; }
+
+  /* Icons: Lucide outlines drawn by icon() / the icons macro, in the text
+     colour. Sized by their width/height attributes. */
+  .icon { flex-shrink: 0; vertical-align: -0.15em; }
+  .btn .icon, .chip .icon, .tab .icon { vertical-align: middle; }
+  .lead-table th .arrow .icon, th .icon { vertical-align: -0.1em; }
 
   nav a {
     display: flex; align-items: center; gap: var(--sp-3);
@@ -135,7 +139,8 @@
     background: var(--accent-soft);
     border-left-color: var(--accent);
   }
-  nav a .icon { font-size: var(--fs-base); width: 18px; text-align: center; }
+  nav a .icon { color: var(--text-2); transition: color .15s; }
+  nav a:hover .icon, nav a.active .icon { color: var(--text); }
   nav .nav-group {
     padding: var(--sp-4) var(--sp-5) var(--sp-1); font: 500 var(--fs-xs) var(--font); color: var(--text-3);
   }
@@ -197,7 +202,7 @@
      danger button is only ever a dialog's confirm (#choose-confirm). Amber
      and green are states, never button colours, so .btn-amber is secondary. */
   .btn {
-    display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2);
+    display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-1);
     padding: var(--sp-2) var(--sp-4);
     border-radius: var(--r-control);
     border: none;
@@ -428,7 +433,7 @@
     text-align: center; padding: calc(var(--sp-6) + var(--sp-4)) var(--sp-5);
     color: var(--text-2);
   }
-  .empty-state .icon { font-size: 36px; margin-bottom: var(--sp-3); }
+  .empty-state .empty-icon { color: var(--text-3); margin-bottom: var(--sp-3); }
   .empty-state p     { font-size: var(--fs-base); }
   hr { border: none; border-top: 1px solid var(--line); margin: var(--sp-5) 0; }
   .full-span { grid-column: 1 / -1; }
@@ -445,7 +450,8 @@
   /* ── Sign-in page: the app's own fields and button (Plan 3, F-4) ───────── */
   .login-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
   .login-box { width: 100%; max-width: 380px; padding: 0 var(--sp-5); }
-  .login-box .logo { text-align: center; padding: 0; border: 0; margin-bottom: var(--sp-6); }
+  .login-box .logo { justify-content: center; gap: var(--sp-3); padding: 0; border: 0; margin-bottom: var(--sp-6); }
+  .login-box .logo-hex { width: 36px; height: 36px; }
   .login-box .logo h1 { font-size: var(--fs-xl); letter-spacing: -.02em; }
   .login-card { padding: var(--sp-6); overflow: visible; }
   .login-card h2 { font-size: var(--fs-md); font-weight: 600; color: var(--text); margin-bottom: var(--sp-5); }
@@ -466,7 +472,7 @@
     transition: background .15s;
   }
   .faq-header:hover { background: var(--raised); }
-  .faq-chevron { margin-left: auto; font-size: var(--fs-xs); color: var(--text-2); transition: transform .2s; }
+  .faq-chevron { margin-left: auto; display: inline-flex; color: var(--text-2); transition: transform .2s; }
   .faq-item.open .faq-chevron { transform: rotate(180deg); }
   .faq-body {
     max-height: 0; overflow: hidden;
@@ -510,7 +516,7 @@
     border-radius: var(--r-control); padding: var(--sp-3) var(--sp-4); margin: var(--sp-3) 0;
     color: var(--warning); font-size: var(--fs-sm);
   }
-  .faq-icon { font-size: var(--fs-md); }
+  .faq-icon { display: inline-flex; color: var(--text-2); }
 
   /* ── Info tooltip (tap-to-explain, not hover-only — has to work on a phone) ── */
   .info-dot {
@@ -899,6 +905,8 @@
     border: 1px solid var(--success-edge); background: var(--success-soft);
     display: flex; flex-direction: column; gap: var(--sp-1);
   }
+  .meeting-when { display: flex; align-items: center; gap: var(--sp-2); }
+  .meeting-when .icon { color: var(--success); }
   /* A tick box with its sentence beside it, inside a dialog. */
   .check-line { display: flex; align-items: flex-start; gap: var(--sp-2); margin-top: var(--sp-3); font-size: var(--fs-sm); cursor: pointer; }
   .check-line input { width: auto; margin-top: 2px; cursor: pointer; }

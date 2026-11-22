@@ -1,3 +1,4 @@
+{% from "macros/icons.html" import icon %}
 <div class="section" id="section-database">
   <div class="page-header">
     <div>
@@ -24,14 +25,14 @@
             placeholder="Search..."
             oninput="dbSearch()" />
           <div id="db-col-toggle-wrap" style="position:relative">
-            <button class="btn btn-ghost btn-sm" onclick="dbToggleColDropdown()">⊞ Columns</button>
+            <button class="btn btn-ghost btn-sm" onclick="dbToggleColDropdown()">{{ icon('columns-3', 14) }} Columns</button>
             <div id="db-col-dropdown"
                  style="display:none;position:absolute;top:calc(100% + 4px);right:0;z-index:var(--z-menu);
                         background:var(--surface);border:1px solid var(--line);border-radius:8px;
                         padding:6px 0;min-width:160px;max-height:280px;overflow-y:auto;
                         box-shadow:var(--shadow)"></div>
           </div>
-          <button class="btn btn-ghost btn-sm" onclick="dbExport()">⬇ Export CSV</button>
+          <button class="btn btn-ghost btn-sm" onclick="dbExport()">{{ icon('download', 14) }} Export CSV</button>
           <span id="db-row-count" class="text-muted text-small tnum"></span>
         </div>
       </div>
@@ -43,9 +44,9 @@
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;
                   padding:12px 16px;border-top:1px solid var(--line)">
-        <button class="btn btn-ghost btn-sm" id="db-prev" onclick="dbPage(-1)">← Prev</button>
+        <button class="btn btn-ghost btn-sm" id="db-prev" onclick="dbPage(-1)">{{ icon('arrow-left', 14) }} Prev</button>
         <span id="db-page-label" class="text-muted text-small tnum"></span>
-        <button class="btn btn-ghost btn-sm" id="db-next" onclick="dbPage(1)">Next →</button>
+        <button class="btn btn-ghost btn-sm" id="db-next" onclick="dbPage(1)">Next {{ icon('arrow-right', 14) }}</button>
       </div>
     </div>
   </div>

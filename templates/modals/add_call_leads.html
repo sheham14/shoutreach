@@ -1,9 +1,10 @@
+{% from "macros/icons.html" import icon %}
 <!-- Putting leads you already have on Calling. Anything new -- a file, a
      paste, a scrape -- comes in through Get leads, which this links to with
      the campaign already picked. -->
 <div class="modal-overlay" id="modal-add-call-leads">
   <div class="modal" style="max-width:720px">
-    <button class="modal-close" onclick="closeModal('modal-add-call-leads')">✕</button>
+    <button class="modal-close" onclick="closeModal('modal-add-call-leads')" aria-label="Close">{{ icon('x', 20) }}</button>
     <h2>Add leads to Calling</h2>
     <div class="form-group" style="margin-bottom:6px">
       <label>Call campaign</label>

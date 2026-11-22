@@ -261,7 +261,7 @@ function addAuditLinkRow(label = "", url = "", focus = true) {
   row.innerHTML = `
     <input class="al-label soft-input" placeholder="Semrush" value="${esc(label)}" style="flex:1" />
     <input class="al-url soft-input mono" placeholder="https://…{domain}" value="${esc(url)}" style="flex:3;font-size:12.5px" />
-    <button class="btn btn-ghost btn-sm" onclick="this.closest('.audit-link-row').remove()" title="Remove">✕</button>`;
+    <button class="btn btn-ghost btn-sm" onclick="this.closest('.audit-link-row').remove()" title="Remove" aria-label="Remove">${icon('x')}</button>`;
   document.getElementById("cfg-audit-links").appendChild(row);
   if (focus) row.querySelector(".al-label").focus();
 }
@@ -274,7 +274,7 @@ async function saveAuditLinks() {
   if (!res || res.error) { toast((res && res.error) || "Could not save the links", "err"); return; }
   _auditLinks = res.links;
   renderAuditLinks(res.links);
-  toast("Audit links saved ✓");
+  toast("Audit links saved");
 }
 
 async function saveSettings() {
@@ -307,7 +307,7 @@ async function saveSettings() {
     payload.google_api_key = googleKey.trim();
   await api("/api/settings", "POST", payload);
   window._aiEnabled = payload.ai_features_enabled === "1";
-  toast("Settings saved ✓");
+  toast("Settings saved");
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
@@ -332,7 +332,7 @@ async function loadUsers() {
       <td class="tnum text-muted" style="font-size:11px">${esc(fmtWhen(u.created_at, 'utc', { dateOnly: true }))}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-ghost btn-sm" onclick="openChangePasswordModal(${u.id}, '${escj(u.username)}')">Change password</button>
-        ${u.id !== me.id ? `<button class="btn btn-icon btn-sm" title="Delete user" aria-label="Delete user" onclick="deleteUser(${u.id}, '${escj(u.username)}')">✕</button>` : ""}
+        ${u.id !== me.id ? `<button class="btn btn-icon btn-sm" title="Delete user" aria-label="Delete user" onclick="deleteUser(${u.id}, '${escj(u.username)}')">${icon('x')}</button>` : ""}
       </td>
     </tr>
   `,
@@ -364,7 +364,7 @@ async function saveNewUser() {
     toast(res.error, "err");
     return;
   }
-  toast("User created ✓");
+  toast("User created");
   closeModal("modal-add-user");
   loadUsers();
 }
@@ -406,7 +406,7 @@ async function submitChangePassword() {
     toast(res.error, "err");
     return;
   }
-  toast("Password changed ✓");
+  toast("Password changed");
   closeModal("modal-change-password");
 }
 
@@ -448,10 +448,10 @@ async function loadAccounts() {
         <button class="btn btn-ghost btn-sm" onclick="testAccountSMTPById(${a.id})">Test</button>
         <button class="btn btn-ghost btn-sm" onclick="toggleAccountStatus(${a.id}, ${paused})"
                 title="${paused ? "Resume sending from this account" : "Stop sending from this account, without deleting it"}">
-          ${paused ? "▶ Activate" : "⏸ Pause"}
+          ${paused ? `${icon("play", { size: 14 })} Activate` : `${icon("pause", { size: 14 })} Pause`}
         </button>
-        <button class="btn btn-ghost btn-sm" onclick="openEditAccountModal(${a.id})">✎</button>
-        <button class="btn btn-icon btn-sm" title="Delete account" aria-label="Delete account" onclick="deleteAccount(${a.id})">✕</button>
+        <button class="btn btn-ghost btn-sm" onclick="openEditAccountModal(${a.id})" title="Edit account" aria-label="Edit account">${icon('pencil', { size: 14 })}</button>
+        <button class="btn btn-icon btn-sm" title="Delete account" aria-label="Delete account" onclick="deleteAccount(${a.id})">${icon('x')}</button>
         <span id="acct-row-result-${a.id}" class="tnum" style="font-size:11px;margin-left:8px"></span>
       </td>
     </tr>
@@ -471,7 +471,7 @@ async function toggleAccountStatus(id, currentlyPaused) {
     toast(res.error, "err");
     return;
   }
-  toast(next === "active" ? "Account activated ✓" : "Account paused — it will not send");
+  toast(next === "active" ? "Account activated" : "Account paused — it will not send");
   loadAccounts();
 }
 
@@ -566,10 +566,10 @@ async function saveAccount() {
   }
   if (_accountEditId) {
     await api(`/api/accounts/${_accountEditId}`, "PUT", payload);
-    toast("Account updated ✓");
+    toast("Account updated");
   } else {
     await api("/api/accounts", "POST", payload);
-    toast("Account added ✓");
+    toast("Account added");
   }
   closeModal("modal-account");
   loadAccounts();
@@ -622,9 +622,9 @@ async function testAccountSMTPById(id) {
   const ok = !!(res && res.ok);
   const msg = (res && (res.message || res.error)) || "No response";
   if (el) {
-    el.textContent = ok ? "✓ SMTP ok" : "✕ failed";
+    el.innerHTML = ok ? `${icon("check", { size: 14 })} SMTP ok` : `${icon("x", { size: 14 })} failed`;
     el.style.color = ok ? "var(--success)" : "var(--danger)";
-    // Clear the marker after a while so a stale ✓ is never mistaken for the
+    // Clear the marker after a while so a stale "SMTP ok" is never mistaken for the
     // result of a later change.
     setTimeout(() => {
       if (el.isConnected) el.textContent = "";

@@ -1060,8 +1060,8 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-32 files, all passing as of Plan 2 package 8 (which deleted
-`test_zoho_calendar.py`). `test_rendering.py` once
+33 files, all passing as of Plan 3 package 3 (which added
+`test_icons.py`; Plan 2 package 8 deleted `test_zoho_calendar.py`). `test_rendering.py` once
 failed with "database is locked" mid-suite and passed on its own and on a
 re-run — watch for it.
 
@@ -1073,6 +1073,13 @@ answers 200, so the sign-in page can use `main.css`, the fonts and the mark.
 (`/static/css/../js/app.js`, encoded dots, backslashes) still redirect to
 sign-in, and every `/api/` route and method answers exactly as it does with
 the rule switched off. A prefix-only rule fails it.
+
+`tests/test_icons.py` pins the icon set (Plan 3 package 3): `app.py`
+loads exactly what `static/js/icons.js` holds, every icon name used in a
+template or script exists (a typo would otherwise draw nothing, silently),
+no icon call is printed as text (the Help page is inside `{% raw %}`, so its
+icons step out one at a time), and the mark is the tab icon and sits beside
+the name on both pages.
 
 `tests/test_pipeline.py` covers stages (§5a/§5c): the built-ins and inventing
 your own, one stage read from all three channels, the cadence stopping on set
@@ -1328,6 +1335,13 @@ retired `contacts` table.
   the country picker, opening WhatsApp, the audit section. One JS file per
   page: `contacts.js` (businesses, "Add all to…"), `email_leads.js` (Email →
   Leads and suppression), `calling.js`, `whatsapp.js`, `dashboard.js`.
+- **Icons** — `static/js/icons.js` is the one place: Lucide (ISC,
+  `static/js/Lucide-LICENSE.txt`) path data between two marker comments.
+  Scripts call `icon(name, { size, label })`; templates
+  `{% from "macros/icons.html" import icon %}` then `{{ icon('mail', 16) }}`,
+  which `app.py` feeds by parsing the same block at startup (`_load_icons`).
+  To add one, copy the elements inside lucide-static's `icons/<name>.svg`
+  into the object. An icon-only button needs an `aria-label`.
 - `audit.py` — the lead audit's automatic checks.
 - No calendar code. `zoho_calendar.py` was removed by Plan 2 package 8
   (§5f, retired). Cal.com is the only thing that writes to a calendar, and

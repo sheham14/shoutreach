@@ -52,6 +52,20 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
+
+def _load_icons() -> dict:
+    """The icon set's path data, read from the one place it lives
+    (static/js/icons.js, between its ICONS-JSON markers) so templates draw
+    the same icons the scripts do. Plan 3 package 3."""
+    path = os.path.join(app.root_path, "static", "js", "icons.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    m = re.search(r"/\* ICONS-JSON-START \*/\s*const ICONS = (\{.*?\});\s*/\* ICONS-JSON-END \*/", src, re.S)
+    return json.loads(m.group(1)) if m else {}
+
+
+app.jinja_env.globals["ICONS"] = _load_icons()
+
 # How many proxies sit in front of this app and append to X-Forwarded-For.
 # The GCP deploy runs behind a single Nginx, so 1 is right there. Set to 0 for
 # direct exposure, which makes _client_ip ignore the header entirely.

@@ -62,7 +62,7 @@ async function loadCampaigns() {
   setTabCount('email', 'campaigns', campaigns.length);
   const el = document.getElementById('campaigns-list');
   if (!campaigns.length) {
-    el.innerHTML = '<div class="empty-state"><div class="icon">✉</div><p>No email campaigns yet. Create one, then enroll leads from the Leads tab.</p></div>';
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">${icon('mail', { size: 28 })}</div><p>No email campaigns yet. Create one, then enroll leads from the Leads tab.</p></div>`;
     return;
   }
   el.innerHTML = campaigns.map(c => `
@@ -74,11 +74,11 @@ async function loadCampaigns() {
         </div>
         <div class="ml-auto flex gap-2 items-center">
           ${statusBadge(c.status)}
-          <button class="btn btn-ghost btn-sm" onclick="openCampaign(${c.id})">Manage →</button>
+          <button class="btn btn-ghost btn-sm" onclick="openCampaign(${c.id})">Manage ${icon('arrow-right', { size: 14 })}</button>
           ${c.status === 'active'
-            ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${c.id})">⏸ Pause</button>`
-            : `<button class="btn btn-ghost btn-sm" onclick="activateCampaign(${c.id})">▶ Activate</button>`}
-          <button class="btn btn-icon btn-sm" title="Delete campaign" aria-label="Delete campaign" onclick="deleteCampaign(${c.id}, '${escj(c.name)}')">✕</button>
+            ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${c.id})">${icon('pause', { size: 14 })} Pause</button>`
+            : `<button class="btn btn-ghost btn-sm" onclick="activateCampaign(${c.id})">${icon('play', { size: 14 })} Activate</button>`}
+          <button class="btn btn-icon btn-sm" title="Delete campaign" aria-label="Delete campaign" onclick="deleteCampaign(${c.id}, '${escj(c.name)}')">${icon('x')}</button>
         </div>
       </div>
     </div>
@@ -110,7 +110,7 @@ async function createCampaign() {
     timezone:        document.getElementById('nc-timezone').value || null,
   });
   closeModal('modal-new-campaign');
-  toast('Campaign created ✓');
+  toast('Campaign created');
   loadCampaigns();
   openCampaign(res.id);
 }
@@ -130,14 +130,14 @@ async function activateCampaign(id, reopen = false) {
   if (!ok) return;
   const res = await api(`/api/campaigns/${id}/activate`, 'POST');
   if (!res.ok) { toast(res.error, 'err'); return; }
-  toast('Campaign activated ▶');
+  toast('Campaign activated');
   loadCampaigns();
   if (reopen) openCampaign(id);
 }
 
 async function pauseCampaign(id) {
   await api(`/api/campaigns/${id}/pause`, 'POST');
-  toast('Campaign paused ⏸');
+  toast('Campaign paused');
   loadCampaigns();
 }
 
@@ -163,11 +163,11 @@ async function openCampaign(id) {
   `).join('');
 
   document.getElementById('campaign-actions').innerHTML = `
-    <button class="btn btn-ghost btn-sm" onclick="openEditCampaignModal()">⚙ Settings</button>
+    <button class="btn btn-ghost btn-sm" onclick="openEditCampaignModal()">${icon('settings', { size: 14 })} Settings</button>
     <span class="tnum text-muted" style="font-size:12px;padding:8px">${statusBadge(c.status)}</span>
     ${c.status === 'active'
-      ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${id});openCampaign(${id})">⏸ Pause</button>`
-      : `<button class="btn btn-primary btn-sm" onclick="activateCampaign(${id}, true)">▶ Activate</button>`}
+      ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${id});openCampaign(${id})">${icon('pause', { size: 14 })} Pause</button>`
+      : `<button class="btn btn-primary btn-sm" onclick="activateCampaign(${id}, true)">${icon('play', { size: 14 })} Activate</button>`}
   `;
 
   // Variant stats breakdown (only shown when A/B variants exist)
@@ -227,7 +227,7 @@ function _renderSendStatus(st) {
   el.style.background   = ok ? 'var(--success-soft)' : 'var(--warning-soft)';
   el.style.borderColor  = ok ? 'var(--success-edge)' : 'var(--warning-edge)';
   el.style.color        = ok ? 'var(--success)' : 'var(--warning)';
-  el.innerHTML = `${ok ? '▶' : '⏸'} ${esc(st.reason)}`;
+  el.innerHTML = `${icon(ok ? 'play' : 'pause', { size: 14 })} ${esc(st.reason)}`;
 }
 
 // ── Sending days ─────────────────────────────────────────────────────────────
@@ -287,7 +287,7 @@ function addCampaignVar(key = '', value = '') {
     <input class="ec-var-val" placeholder="value" value="${esc(value)}"
            style="flex:2;background:var(--raised);border:1px solid var(--line-strong);border-radius:6px;
                   padding:6px 10px;color:var(--text);font-size:13px" />
-    <button class="btn btn-icon btn-sm" title="Remove" aria-label="Remove" onclick="this.closest('.ec-var-row').remove()">✕</button>`;
+    <button class="btn btn-icon btn-sm" title="Remove" aria-label="Remove" onclick="this.closest('.ec-var-row').remove()">${icon('x')}</button>`;
   document.getElementById('ec-vars-list').appendChild(row);
 }
 
@@ -341,7 +341,7 @@ async function saveCampaignSettings() {
   }
   await api(`/api/campaigns/${currentCampaignId}`, 'PATCH', payload);
   closeModal('modal-edit-campaign');
-  toast('Settings saved ✓');
+  toast('Settings saved');
   openCampaign(currentCampaignId);
 }
 
@@ -387,7 +387,7 @@ async function saveCampaignAccounts() {
   const ids = [...document.querySelectorAll('#campaign-account-checkboxes input:checked')]
     .map(cb => +cb.value);
   await api(`/api/campaigns/${currentCampaignId}/accounts`, 'POST', { account_ids: ids });
-  toast('Accounts saved ✓');
+  toast('Accounts saved');
   closeModal('modal-campaign-accounts');
   loadCampaignAccountBadges();
 }
@@ -445,7 +445,7 @@ function _updateRemoveSelectedBtn() {
   if (!btn) return;
   const n = enrollSelectedIds.size;
   btn.disabled = n === 0;
-  btn.textContent = n > 0 ? `✕ Remove Selected (${n})` : '✕ Remove Selected';
+  btn.innerHTML = `${icon('x', { size: 14 })} Remove Selected${n > 0 ? ` (${n})` : ''}`;
 }
 
 async function removeSelectedEnrolled() {
@@ -583,7 +583,7 @@ async function saveStep() {
     step_num: stepNum, subject, body_html: body, delay_days: delay, variants,
   });
   closeModal('modal-step');
-  toast('Step saved ✓');
+  toast('Step saved');
   openCampaign(currentCampaignId);
 }
 
@@ -749,7 +749,7 @@ function _updateVariableGapWarning() {
   if (!gaps.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
 
   el.style.display = 'block';
-  el.innerHTML = '⚠ ' + gaps.map(g =>
+  el.innerHTML = icon('triangle-alert', { size: 14 }) + ' ' + gaps.map(g =>
     g.filled === 0
       ? `<span class="mono">{{${esc(g.key)}}}</span> is empty for <strong>all ${g.total}</strong> of these contacts`
       : `<span class="mono">{{${esc(g.key)}}}</span> is empty for <strong>${g.missing} of ${g.total}</strong>`
@@ -897,7 +897,7 @@ function _addVariantBlock(label, subject, body, weight) {
                style="width:64px;background:var(--raised);border:1px solid var(--line-strong);
                       border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px" />
         <span style="font-size:12px;color:var(--text-2)">%</span>
-        <button class="btn btn-icon btn-sm" title="Remove this version" aria-label="Remove this version" onclick="removeVariantBlock(this)">✕</button>
+        <button class="btn btn-icon btn-sm" title="Remove this version" aria-label="Remove this version" onclick="removeVariantBlock(this)">${icon('x')}</button>
       </div>
     </div>
     <div class="form-group" style="margin-bottom:8px">
@@ -1177,7 +1177,7 @@ function renderContactReport(rows) {
       <td class="tnum" style="text-align:center">${r.current_step}</td>
       <td>${statusSel}</td>
       <td class="tnum text-muted" style="font-size:11px">${esc(nextSend)}</td>
-      <td><button class="btn btn-icon btn-sm" onclick="unenrollContact(${r.enroll_id})" title="Remove" aria-label="Remove from this campaign">✕</button></td>
+      <td><button class="btn btn-icon btn-sm" onclick="unenrollContact(${r.enroll_id})" title="Remove" aria-label="Remove from this campaign">${icon('x')}</button></td>
     </tr>`;
   }).join('');
 

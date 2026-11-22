@@ -65,7 +65,7 @@ async function loadMeetings() {
       const joinUrl = httpsOnly(m.join_url);
       const join = joinUrl && m.meeting_state !== 'cancelled'
         ? `<a class="btn btn-ghost btn-sm" href="${esc(joinUrl)}" target="_blank" rel="noopener"
-             onclick="event.stopPropagation()">Join ↗</a>` : '';
+             onclick="event.stopPropagation()">Join ${icon('arrow-up-right', { size: 14 })}</a>` : '';
       return `<tr class="clickable ${(LeadPanel.current['mt-panel'] || {}).businessId === m.business_id ? 'current' : ''}"
                   onclick="openMeetingLead(${m.business_id})">
         <td class="nowrap">${esc(when)}</td>

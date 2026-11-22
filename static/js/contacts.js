@@ -292,7 +292,7 @@ async function saveBusinessForm() {
   }
   if (!res || res.error) { toast((res && res.error) || 'Could not save it', 'err'); return; }
   closeModal('modal-business');
-  toast(_ctEditId ? 'Saved ✓' : (res.created ? 'Contact added ✓' : 'You already had this one — opened it'));
+  toast(_ctEditId ? 'Saved' : (res.created ? 'Contact added' : 'You already had this one — opened it'));
   if (!_ctEditId && document.getElementById('section-contacts').classList.contains('active')) {
     LT.ct.load();
     openContactDetail(res.id);

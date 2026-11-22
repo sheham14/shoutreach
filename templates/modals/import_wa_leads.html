@@ -1,9 +1,10 @@
+{% from "macros/icons.html" import icon %}
 <!-- Putting leads you already have onto WhatsApp. Anything new -- a file, a
      paste, a scrape -- comes in through Get leads, which this links to with
      the campaign and country already picked. -->
 <div class="modal-overlay" id="modal-import-wa">
   <div class="modal" style="max-width:640px">
-    <button class="modal-close" onclick="closeModal('modal-import-wa')">✕</button>
+    <button class="modal-close" onclick="closeModal('modal-import-wa')" aria-label="Close">{{ icon('x', 20) }}</button>
     <h2>Add WhatsApp leads</h2>
 
     <div class="form-grid">

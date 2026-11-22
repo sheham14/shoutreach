@@ -350,7 +350,7 @@ async function saveContact() {
     : await api('/api/contacts', 'POST', payload);
   if (!res.ok) { toast(res.error || 'Could not save it', 'err'); return; }
 
-  toast(contactEditId ? 'Saved ✓' : 'Address added ✓');
+  toast(contactEditId ? 'Saved' : 'Address added');
   closeModal('modal-contact');
   LT.el.load();
 }

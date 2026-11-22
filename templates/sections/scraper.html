@@ -1,3 +1,4 @@
+{% from "macros/icons.html" import icon %}
 <!-- Get leads: the one way in. Scrape Google Maps, or bring a CSV / JSON /
      paste -- into Contacts or straight onto a channel -- and every import
      listed underneath, named and dated. Each channel's "+ Add leads" keeps
@@ -88,8 +89,8 @@
         <label for="sc-autoimport" id="sc-autoimport-label" style="margin:0;font-size:13px;color:var(--text)">Import leads into Contacts as they're found</label>
       </div>
       <div class="flex gap-2" style="margin-top:8px">
-        <button class="btn btn-primary" id="sc-start-btn" onclick="startScraper()">▶ Start</button>
-        <button class="btn btn-danger"  id="sc-stop-btn"  onclick="stopScraper()"  style="display:none">⏹ Stop</button>
+        <button class="btn btn-primary" id="sc-start-btn" onclick="startScraper()">{{ icon('play') }} Start</button>
+        <button class="btn btn-danger"  id="sc-stop-btn"  onclick="stopScraper()"  style="display:none">{{ icon('square') }} Stop</button>
       </div>
     </div>
 
@@ -117,17 +118,17 @@
       </div>
 
       <div id="sc-download-box" style="display:none;margin-bottom:12px">
-        <button class="btn btn-primary btn-sm" id="sc-download-btn">⬇ Download CSV</button>
+        <button class="btn btn-primary btn-sm" id="sc-download-btn">{{ icon('download', 14) }} Download CSV</button>
         <span class="text-muted text-small" style="margin-left:8px">Whatever it has found so far — download again later for the rest.</span>
       </div>
 
       <div id="sc-captcha-box" style="display:none;background:var(--warning-soft);border:1px solid var(--warning);border-radius:8px;padding:14px;margin-bottom:12px">
-        <div style="color:var(--warning);font-weight:600;margin-bottom:8px">⚠ CAPTCHA detected</div>
+        <div style="color:var(--warning);font-weight:600;margin-bottom:8px">{{ icon('triangle-alert') }} CAPTCHA detected</div>
         <div style="color:var(--text-2);font-size:12px;margin-bottom:10px">
           Switch to the Chrome window <strong>on the machine running the worker</strong>
           and solve it there, then click Resume.
         </div>
-        <button class="btn btn-amber btn-sm" onclick="resumeScraper()">✓ Resume</button>
+        <button class="btn btn-amber btn-sm" onclick="resumeScraper()">{{ icon('check', 14) }} Resume</button>
       </div>
     </div>
   </div>
@@ -135,7 +136,7 @@
   <div class="card">
     <div class="card-header">
       <div class="card-title">Live Log</div>
-      <button class="btn btn-ghost btn-sm" onclick="loadScraper()">↻ Refresh</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadScraper()">{{ icon('refresh-cw', 14) }} Refresh</button>
     </div>
     <div id="sc-log-feed" class="tnum" style="max-height:320px;overflow-y:auto;font-size:12px">
       <div class="empty-state"><p>Start a scrape to see live output here.</p></div>
@@ -206,7 +207,7 @@ Or one business per line:   Pearl Dental, 050 123 4567, pearldental.ae'></textar
         <div class="card-title">Your scrapes &amp; imports</div>
         <div class="text-muted text-small" style="margin-top:2px">Download a CSV-only scrape, or send everything a scrape or import brought to a channel in one go.</div>
       </div>
-      <button class="btn btn-ghost btn-sm" onclick="loadScrapeLists()">↻ Refresh</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadScrapeLists()">{{ icon('refresh-cw', 14) }} Refresh</button>
     </div>
     <div class="table-wrap">
       <table class="lead-table m-table">

@@ -417,7 +417,7 @@ function _showImportResult(res) {
   box.innerHTML = `<b>Done.</b> ${esc(res.text)}
     ${res.batch ? ` · <a style="color:var(--accent);cursor:pointer" onclick="openScrapeInContacts('${res.batch}')">See them in Contacts →</a>
       · <a style="color:var(--accent);cursor:pointer" onclick="setTab('getleads','history')">Your imports</a>` : ''}`;
-  toast('Imported ✓');
+  toast('Imported');
 }
 
 // ── Your scrapes & imports ───────────────────────────────────────────────────
@@ -447,7 +447,7 @@ async function loadScrapeLists() {
       title = [l.niche, l.city].filter(Boolean).join(' — ') || `Scrape #${l.id}`;
       forPill = pill('CSV only', 'purple');
       actions = `<button class="btn btn-ghost btn-sm" ${l.count ? '' : 'disabled'}
-          onclick="downloadUrl('/api/scraper/jobs/${l.id}/csv')">⬇ Download CSV</button>`;
+          onclick="downloadUrl('/api/scraper/jobs/${l.id}/csv')">${icon('download', { size: 14 })} Download CSV</button>`;
     } else {
       title = manual ? l.base : (l.name || l.base);
       forPill = manual ? '<span class="text-muted">—</span>'
@@ -558,8 +558,8 @@ async function pollScraperStatus() {
     const stale = d.heartbeat_secs > 30;
     hbEl.style.display = 'block';
     hbEl.style.color = stale ? 'var(--warning)' : 'var(--text-2)';
-    hbEl.textContent = stale
-      ? `⚠ No update in ${d.heartbeat_secs}s — may be stuck (auto-fails after 3 min of silence)`
+    hbEl.innerHTML = stale
+      ? `${icon('triangle-alert', { size: 14 })} No update in ${d.heartbeat_secs}s — may be stuck (auto-fails after 3 min of silence)`
       : `Last update ${d.heartbeat_secs}s ago`;
   } else {
     hbEl.style.display = 'none';

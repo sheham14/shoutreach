@@ -1,3 +1,4 @@
+{% from "macros/icons.html" import icon %}
 <!-- Settings in two halves. My settings is everyone's own: password, scrape
      worker key, audit links. Team setup is what both operators share -- email
      accounts, sending rules, AI, users -- and only an admin can change it, so
@@ -101,7 +102,7 @@
 
   <div class="tab-pane" data-pane-group="settings" data-pane="team">
   <div class="warning-box">
-    ⚠ Before activating any campaign, ensure your domain has SPF, DKIM, and DMARC records configured.
+    {{ icon('triangle-alert', 14) }} Before activating any campaign, ensure your domain has SPF, DKIM, and DMARC records configured.
     Without these, emails will land in spam or be rejected. See README.md for a setup checklist.
   </div>
 

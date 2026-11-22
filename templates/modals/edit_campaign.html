@@ -1,6 +1,7 @@
+{% from "macros/icons.html" import icon %}
 <div class="modal-overlay" id="modal-edit-campaign">
   <div class="modal">
-    <button class="modal-close" onclick="closeModal('modal-edit-campaign')">✕</button>
+    <button class="modal-close" onclick="closeModal('modal-edit-campaign')" aria-label="Close">{{ icon('x', 20) }}</button>
     <h2>Campaign Settings</h2>
     <div class="form-group"><label>Campaign name</label><input id="ec-name" placeholder="My Campaign" /></div>
     <div class="form-grid">

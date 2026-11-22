@@ -1,3 +1,4 @@
+{% from "macros/icons.html" import icon %}
 <!-- Email: one of the three channel pages, laid out like the other two --
      campaigns, every lead on this channel as a table, and the addresses that
      must never be mailed again. -->
@@ -8,7 +9,7 @@
       <div class="page-sub">Sequences that send on their own, inside your send window and daily limits</div>
     </div>
     <div class="flex gap-2">
-      <button class="btn btn-ghost" onclick="openImportModal()" title="A CSV or JSON file, or a paste — on Get leads">⬆ Import</button>
+      <button class="btn btn-ghost" onclick="openImportModal()" title="A CSV or JSON file, or a paste — on Get leads">{{ icon('upload') }} Import</button>
       <button class="btn btn-primary" onclick="openNewCampaignModal()">+ New campaign</button>
     </div>
   </div>
@@ -82,7 +83,7 @@
       </div>
       <div class="flex gap-2 ml-auto items-center">
         <span id="unsub-count" class="text-muted text-small"></span>
-        <button class="btn btn-ghost btn-sm" onclick="exportUnsubscribed()">⬇ Export CSV</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportUnsubscribed()">{{ icon('download', 14) }} Export CSV</button>
       </div>
     </div>
     <div class="card" style="max-height:320px;overflow-y:auto;overflow-x:auto">
@@ -100,7 +101,7 @@
         </div>
         <div class="flex gap-2 ml-auto items-center">
           <span id="invalid-mx-count" class="text-muted text-small"></span>
-          <button class="btn btn-ghost btn-sm" onclick="exportInvalidMx()">⬇ Export CSV</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportInvalidMx()">{{ icon('download', 14) }} Export CSV</button>
         </div>
       </div>
       <div class="card" style="max-height:320px;overflow-y:auto;overflow-x:auto">
@@ -116,7 +117,7 @@
 <div class="section" id="section-campaign-detail">
   <div class="page-header">
     <div>
-      <button class="btn btn-ghost btn-sm" onclick="showSection('email')">← Email</button>
+      <button class="btn btn-ghost btn-sm" onclick="showSection('email')">{{ icon('arrow-left', 14) }} Email</button>
     </div>
     <div id="campaign-actions" class="flex gap-2"></div>
   </div>
@@ -138,7 +139,7 @@
   <div id="cd-accounts-wrap" style="margin-top:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
     <span class="text-muted text-small">Sending accounts:</span>
     <div id="cd-accounts-list" style="display:flex;gap:8px;flex-wrap:wrap"></div>
-    <button class="btn btn-ghost btn-sm" onclick="openCampaignAccountsModal()">⚙ Assign</button>
+    <button class="btn btn-ghost btn-sm" onclick="openCampaignAccountsModal()">{{ icon('settings', 14) }} Assign</button>
   </div>
 
   <div class="section-gap"></div>
@@ -158,9 +159,9 @@
       <div class="card-title">Leads in this campaign</div>
       <div class="flex gap-2 ml-auto items-center">
         <span id="report-count" class="text-muted text-small"></span>
-        <button id="enroll-remove-selected-btn" class="btn btn-danger btn-sm" onclick="removeSelectedEnrolled()" disabled>✕ Remove Selected</button>
+        <button id="enroll-remove-selected-btn" class="btn btn-danger btn-sm" onclick="removeSelectedEnrolled()" disabled>{{ icon('x', 14) }} Remove Selected</button>
         <button class="btn btn-ghost btn-sm" onclick="openEnrollModal()">+ Enroll</button>
-        <a id="report-export-btn" class="btn btn-ghost btn-sm" href="#" target="_blank">⬇ Export Excel</a>
+        <a id="report-export-btn" class="btn btn-ghost btn-sm" href="#" target="_blank">{{ icon('download', 14) }} Export Excel</a>
       </div>
     </div>
     <div class="card" style="max-height:480px;overflow-y:auto;overflow-x:auto">
@@ -179,7 +180,7 @@
 
 <div class="modal-overlay" id="modal-campaign-accounts">
   <div class="modal" style="max-width:420px">
-    <button class="modal-close" onclick="closeModal('modal-campaign-accounts')">✕</button>
+    <button class="modal-close" onclick="closeModal('modal-campaign-accounts')" aria-label="Close">{{ icon('x', 20) }}</button>
     <h2>Assign Sending Accounts</h2>
     <p class="text-muted text-small" style="margin-bottom:16px">Selected accounts will rotate round-robin for this campaign. Falls back to global SMTP settings if none selected.</p>
     <div id="campaign-account-checkboxes" style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px"></div>

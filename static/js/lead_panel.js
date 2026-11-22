@@ -272,10 +272,10 @@ function calMeetingBoxHtml(d, m) {
   const from = typeof meetingFrom === 'function'
     ? meetingFrom({ pipeline_channel: d.pipeline_channel, site }) : '';
   return `<div class="meeting-box">
-      <div><b>📅 ${esc(meetingWhenText(m))}</b></div>
+      <div class="meeting-when">${icon('calendar')}<b>${esc(meetingWhenText(m))}</b></div>
       <div>${state}${from ? ` · ${esc(from)}` : ''}</div>
       ${httpsOnly(m.join_url) && m.state !== 'cancelled'
-        ? `<div><a href="${esc(httpsOnly(m.join_url))}" target="_blank" rel="noopener" style="color:var(--accent)">Join ↗</a></div>` : ''}
+        ? `<div><a href="${esc(httpsOnly(m.join_url))}" target="_blank" rel="noopener" style="color:var(--accent)">Join ${icon('arrow-up-right', { size: 14 })}</a></div>` : ''}
       <div class="text-muted text-small">Moving or cancelling it happens on Cal.com.</div>
     </div>`;
 }
@@ -292,9 +292,9 @@ function meetingBoxHtml(d, opts) {
     ? meetingFrom({ pipeline_channel: d.pipeline_channel, site: ((d.enquiries || [])[0] || {}).site }) : '';
   const join = m && !m.cancelled_at ? httpsOnly(m.join_url) : '';
   return `<div class="meeting-box">
-      <div><b>📅 ${esc(fmtWhen(d.next_action_at, 'wall'))}</b></div>
+      <div class="meeting-when">${icon('calendar')}<b>${esc(fmtWhen(d.next_action_at, 'wall'))}</b></div>
       ${from ? `<div class="text-muted">${esc(from)}</div>` : ''}
-      ${join ? `<div><a href="${esc(join)}" target="_blank" rel="noopener" style="color:var(--accent)">Join ↗</a></div>` : ''}
+      ${join ? `<div><a href="${esc(join)}" target="_blank" rel="noopener" style="color:var(--accent)">Join ${icon('arrow-up-right', { size: 14 })}</a></div>` : ''}
       <div class="text-muted text-small">Arranged outside Cal.com — to move it, change the stage's time.
         Booking on Cal.com instead? Use Copy booking link.</div>
     </div>`;
@@ -437,7 +437,7 @@ function _score(label, value) {
 }
 
 function _yes(ok, yes, no) {
-  return ok ? `<span style="color:var(--success)">✓</span> ${esc(yes)}` : `<span style="color:var(--warning)">✗</span> ${esc(no)}`;
+  return ok ? `<span style="color:var(--success)">${icon('check', { size: 14 })}</span> ${esc(yes)}` : `<span style="color:var(--warning)">${icon('x', { size: 14 })}</span> ${esc(no)}`;
 }
 
 function auditResultsHtml(a, ctx) {
@@ -476,7 +476,7 @@ function auditResultsHtml(a, ctx) {
     if (site.engagement.length) rows.push(`<div class="audit-row"><span class="k">On the site</span><div>${esc(site.engagement.join(', '))}</div></div>`);
     const socials = Object.entries(site.socials || {});
     rows.push(`<div class="audit-row"><span class="k">Socials linked</span><div>${socials.length
-      ? socials.map(([k, v]) => `<a href="${esc(v)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(k)} ↗</a>`).join(' · ')
+      ? socials.map(([k, v]) => `<a href="${esc(v)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(k)} ${icon('arrow-up-right', { size: 14 })}</a>`).join(' · ')
       : '<span class="text-muted">None linked from the homepage</span>'}</div></div>`);
   } else if (site.error) {
     rows.push(`<div class="audit-row"><span class="k">Website</span><div style="color:var(--warning)">${esc(site.error)}</div></div>`);
@@ -503,7 +503,7 @@ function auditSectionHtml(d) {
   const groups = auditLinkGroups(d);
   return `<div class="audit-section" id="audit-${d.id}">
     <div class="flex items-center gap-2" style="flex-wrap:wrap">
-      ${d.website ? `<button class="btn btn-ghost btn-sm" onclick="runAudit(${d.id})" id="audit-run-${d.id}">⚡ Run checks</button>
+      ${d.website ? `<button class="btn btn-ghost btn-sm" onclick="runAudit(${d.id})" id="audit-run-${d.id}">${icon('zap', { size: 14 })} Run checks</button>
         <span class="text-muted text-small" id="audit-status-${d.id}">${d.audit ? '' : 'Speed & SEO scores, tech, pixels, email, site age — about a minute'}</span>`
       : '<span class="text-muted text-small">No website on file, so there\'s nothing to check automatically.</span>'}
     </div>
@@ -512,7 +512,7 @@ function auditSectionHtml(d) {
     <div class="audit-links">${groups.map(([title, links]) => `
       <div class="audit-link-group"><span class="k">${esc(title)}</span>
         <div class="chips">${links.map(([label, href]) =>
-          `<a class="chip" href="${esc(href)}" target="_blank" rel="noopener">${esc(label)} ↗</a>`).join('')}</div>
+          `<a class="chip" href="${esc(href)}" target="_blank" rel="noopener">${esc(label)} ${icon('arrow-up-right', { size: 14 })}</a>`).join('')}</div>
       </div>`).join('')}
       <div class="text-muted text-small">Add your own links under Settings → Audit links.</div>
     </div>
@@ -538,7 +538,7 @@ async function runAudit(businessId) {
       if (el) el.innerHTML = auditResultsHtml(data.audit, data.rating_context);
       const b = document.getElementById(`audit-run-${businessId}`);
       const s = document.getElementById(`audit-status-${businessId}`);
-      if (b) { b.disabled = false; b.textContent = '⚡ Run checks again'; }
+      if (b) { b.disabled = false; b.innerHTML = `${icon('zap', { size: 14 })} Run checks again`; }
       if (s) s.textContent = '';
     } else if (Date.now() - started > 150000) {
       clearInterval(_auditPolls[businessId]);
@@ -707,7 +707,7 @@ async function openLeadPanel(businessId, opts) {
 
   const links = [];
   if (d.phone) links.push(`<a href="tel:${esc(d.phone)}" style="color:var(--accent)">${esc(d.phone)}</a>`);
-  if (d.website) links.push(`<a href="${esc(d.website.startsWith('http') ? d.website : 'https://' + d.website)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(d.domain || d.website)} ↗</a>`);
+  if (d.website) links.push(`<a href="${esc(d.website.startsWith('http') ? d.website : 'https://' + d.website)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(d.domain || d.website)} ${icon('arrow-up-right', { size: 14 })}</a>`);
   const facts = [d.category, d.city || d.address, d.rating != null ? `${d.rating}★ (${d.review_count ?? 0})` : '']
     .filter(Boolean).map(esc).join(' · ');
 
@@ -716,8 +716,8 @@ async function openLeadPanel(businessId, opts) {
     <div class="flex items-center gap-2" style="justify-content:space-between">
       <h3>${esc(d.company || 'Unnamed business')}</h3>
       <div class="flex gap-2">
-        <button class="btn btn-ghost btn-sm" onclick="openBusinessForm(${d.id})" title="Edit details">✎</button>
-        <button class="btn btn-ghost btn-sm" onclick="closeLeadPanel('${opts.panelId}')" title="Close">✕</button>
+        <button class="btn btn-ghost btn-sm" onclick="openBusinessForm(${d.id})" title="Edit details" aria-label="Edit details">${icon('pencil', { size: 14 })}</button>
+        <button class="btn btn-ghost btn-sm" onclick="closeLeadPanel('${opts.panelId}')" title="Close" aria-label="Close">${icon('x', { size: 14 })}</button>
       </div>
     </div>
     <div class="text-small" style="display:flex;gap:10px;flex-wrap:wrap">${links.join('')}</div>
@@ -790,7 +790,7 @@ async function _waPanelSection(d) {
       : `<div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px;align-items:center">
           <button class="btn btn-primary btn-sm" onclick="openFromPanel(${w.id}, '${kind}', '${esc(w.wa_number)}', '${panelId}')">Open in WhatsApp</button>
           ${kind === 'opener'
-            ? (window._aiEnabled ? `<button class="btn btn-ghost btn-sm" onclick="rewordWaMessage(${w.id}, '${panelId}')">✨ Reword with AI</button>` : '')
+            ? (window._aiEnabled ? `<button class="btn btn-ghost btn-sm" onclick="rewordWaMessage(${w.id}, '${panelId}')">${icon('sparkles', { size: 14 })} Reword with AI</button>` : '')
             : `<button class="btn btn-ghost btn-sm" onclick="waMarkReplied(${w.id}, true)">They replied</button>
                <button class="btn btn-ghost btn-sm" onclick="waSetPaused([${w.id}], true)">Pause follow-ups</button>`}
         </div>`;
@@ -853,7 +853,7 @@ function _callPanelSection(d) {
       ${c.next_call_at ? ` · next call ${esc(fmtWhen(c.next_call_at, 'wall'))}` : ''}</div>
     ${camps ? `<div style="margin-top:6px">${camps}</div>` : ''}
     <div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px">
-      <button class="btn btn-primary btn-sm" onclick="openInDialler(${d.id})">☎ Open in the dialler</button>
+      <button class="btn btn-primary btn-sm" onclick="openInDialler(${d.id})">${icon('phone', { size: 14 })} Open in the dialler</button>
       <button class="btn btn-ghost btn-sm" onclick="callLeadsToCampaign([${d.id}])">Add to campaign</button>
       ${c.call_status ? `<button class="btn btn-ghost btn-sm" onclick="reopenCallLead(${d.id})">Reopen</button>` : ''}
       <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="removeFromCalling([${d.id}])">Take off Calling</button>

@@ -19,7 +19,7 @@ build it in.
 | | |
 |---|---|
 | Fix-now items (§2) | 18 of 19 done: 16 by Plan 1 (2026-11-21); 12 and 13 (F-23, F-24) by Plan 2 package 5. All deployed 2026-11-22. Open: 7 (B-24, backups — the operator's job, no code) |
-| Front-end findings (§3) | 17 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5), all deployed 2026-11-22. Plan 3 (branch `plan-3-redesign-phase-1`, not deployed): F-3, F-4, F-7, F-29, F-38 (package 1); F-6, F-35 (package 2). Partly done: F-5, F-8, F-11, F-27, F-31, F-39, F-40 |
+| Front-end findings (§3) | 19 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5), all deployed 2026-11-22. Plan 3 (branch `plan-3-redesign-phase-1`, not deployed): F-3, F-4, F-7, F-29, F-38 (package 1); F-6, F-35 (package 2); F-1, F-2 (package 3). Partly done: F-5, F-8, F-11, F-27, F-31, F-37, F-39, F-40 |
 | Design direction (§4) | agreed in mockup form on 2026-11-21 ("the mockups look good"); mark saved as `static/img/hexiv-mark.svg` |
 | Back-end findings (§5–§6) | 10 of 31 done: B-1, B-2 (first half: owners on log lines still open), B-3, B-6, B-9, B-10, B-14, B-15, B-22, B-23 |
 | Zoho booking retired (§1, Plan 2 package 8, deployed 2026-11-22) | The Zoho parts of B-7, B-8, B-13 and B-17 are closed and marked in place. Each finding stays open for its other parts, so none is counted as done above |
@@ -192,6 +192,15 @@ What's on screen, from [main.css:1–21](../../static/css/main.css#L1-L21) and
 | Ornament | a pulsing glowing dot ([main.css:106–111](../../static/css/main.css#L106-L111)) | Decoration with no meaning |
 | Icons | emoji and symbols: 📣 ◉ ⊕ ✉ ☎ 💬 ⊗ ⚙ ⟳ ⎋ | Drawn differently on every device; none match |
 
+> ✅ **RESOLVED** — Plan 3, packages 1 and 3. Palette: hexiv.co's dark
+> theme with one teal accent (package 1). Type: Inter, self-hosted; the
+> coding font only on code; labels in sentence case (package 1). The pulsing
+> dot is gone (package 1). Icons: one Lucide outline set in
+> `static/js/icons.js`, drawn by `icon()` in scripts and the
+> `macros/icons.html` macro in templates; every emoji and symbol used as an
+> icon is replaced (package 3). Checked: `tests/test_icons.py` (every name
+> used exists, the sidebar has no symbol left) and the walk-throughs.
+
 **F-2 · Nothing on screen comes from Hexiv. (High)** The logo — a teal
 hexagon (`#00A3AD`), a heavy white wordmark, pure black — appears nowhere.
 The browser-tab icon is a megaphone emoji. The sidebar says "Powered by
@@ -203,6 +212,12 @@ The two **live** sites, hexiv.co.uk and hexiv.co, do have a consistent
 identity, and ShoutReach shares none of it: both use a teal taken from the
 logo, Inter for body text, and each defines its own dark theme (checked in
 their source, 2026-11-21). §4 starts from those.
+
+> ✅ **RESOLVED** — Plan 3, package 3. `hexiv-mark.svg` sits beside "ShoutReach" in the
+> sidebar and on the sign-in page, and is the browser-tab icon on both;
+> "Powered by Hexiv" and the megaphone are gone. The old landing and
+> portfolio pages in the repo root are not part of the app and are
+> untouched. Checked: `tests/test_icons.py` section 3 and the sign-in shots.
 
 **F-3 · Three channel colours fight the meaning of colour. (Medium)** Email
 is green, Calling is blue, WhatsApp is purple
@@ -260,7 +275,8 @@ up.
 > `--z-toast`). Every z-index and every font size in `main.css` now uses
 > them (the 36 px empty-state emoji goes with package 3). Package 2
 > (`6033e43`) put every padding, margin, gap and corner in `main.css` on
-> the space and radius tokens. Sizes written inline in the
+> the space and radius tokens. Package 3 removed the 36 px emoji, so every
+> font size in `main.css` is on the type scale. Sizes written inline in the
 > scripts and templates go screen by screen in later phases.
 
 **F-6 · Four designs for one job. (Medium)** A small coloured label is a
@@ -641,6 +657,12 @@ still use the browser's own grey pop-up
 [settings.js:424](../../static/js/settings.js#L424)), while newer screens use
 the app's own dialog — so "are you sure?" looks different depending on where
 you are.
+
+> ◐ **PARTLY DONE** — Plan 3, package 3. Symbols in button labels are icons from the
+> one set (⬆ ⬇ ⏹ ▶ ⏸ ✓ ✕ ⚙ ⊞ ↻ ✎ ⋯ ⟳ ⎋ ← → ↗ and the rest); icon-only
+> buttons have an `aria-label`. The Activity log's stored symbols stay
+> (they are data written by `db.add_log`). Confirmations and Title Case are
+> package 4.
 
 ### 3.6 Reach, touch and legibility (measured)
 

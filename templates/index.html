@@ -1,17 +1,18 @@
+{% from "macros/icons.html" import icon %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>ShoutReach</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📣</text></svg>">
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='img/hexiv-mark.svg') }}">
 <link rel="preload" href="{{ url_for('static', filename='fonts/InterVariable.woff2') }}" as="font" type="font/woff2" crossorigin />
 <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}" />
 </head>
 <body>
 
 <div class="shell">
-  <button class="sidebar-toggle" onclick="toggleSidebar()" aria-label="Menu">☰</button>
+  <button class="sidebar-toggle" onclick="toggleSidebar()" aria-label="Menu">{{ icon('menu', 20) }}</button>
   <div class="sidebar-scrim" id="sidebar-scrim" onclick="toggleSidebar(false)"></div>
   {% include 'sections/sidebar.html' %}
   <main class="main">
@@ -45,7 +46,7 @@
 <!-- One dialog for every "where should this go?" question. See chooseDialog. -->
 <div class="modal-overlay" id="modal-choose">
   <div class="modal" style="max-width:480px">
-    <button class="modal-close" onclick="chooseCancel()">✕</button>
+    <button class="modal-close" onclick="chooseCancel()" aria-label="Close">{{ icon('x', 20) }}</button>
     <h2 id="choose-title"></h2>
     <div id="choose-body"></div>
     <div class="flex gap-2" style="margin-top:18px">
@@ -57,7 +58,7 @@
 
 <div class="modal-overlay" id="modal-add-user">
   <div class="modal" style="max-width:380px">
-    <button class="modal-close" onclick="closeModal('modal-add-user')">✕</button>
+    <button class="modal-close" onclick="closeModal('modal-add-user')" aria-label="Close">{{ icon('x', 20) }}</button>
     <h2 id="user-modal-title">Add User</h2>
     <div class="form-group">
       <label>Username</label>
@@ -89,7 +90,7 @@
 
 <div class="modal-overlay" id="modal-change-password">
   <div class="modal" style="max-width:380px">
-    <button class="modal-close" onclick="closeModal('modal-change-password')">✕</button>
+    <button class="modal-close" onclick="closeModal('modal-change-password')" aria-label="Close">{{ icon('x', 20) }}</button>
     <h2>Change Password</h2>
     <p class="text-muted text-small" style="margin-bottom:16px">for <strong id="chpw-username"></strong></p>
     <input type="hidden" id="chpw-uid" />
@@ -110,6 +111,7 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
+<script src="{{ url_for('static', filename='js/icons.js') }}"></script>
 <script src="{{ url_for('static', filename='js/tables.js') }}"></script>
 <script src="{{ url_for('static', filename='js/lead_panel.js') }}"></script>
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>

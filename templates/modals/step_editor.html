@@ -1,6 +1,7 @@
+{% from "macros/icons.html" import icon %}
 <div class="modal-overlay" id="modal-step">
   <div class="modal" style="max-width:640px">
-    <button class="modal-close" onclick="closeModal('modal-step')">✕</button>
+    <button class="modal-close" onclick="closeModal('modal-step')" aria-label="Close">{{ icon('x', 20) }}</button>
     <h2 id="step-modal-title">Edit Step</h2>
     <input type="hidden" id="step-num-input" />
     <div class="form-group">
@@ -28,7 +29,7 @@
       <div class="form-group">
         <div class="flex items-center gap-2" style="margin-bottom:6px">
           <button type="button" class="btn btn-ghost btn-sm" onclick="toggleVariablePanel()"
-                  id="var-panel-toggle">⊞ Insert variable</button>
+                  id="var-panel-toggle">{{ icon('columns-3') }} Insert variable</button>
           <span class="text-muted text-small" id="var-panel-scope"></span>
         </div>
         <div id="var-panel" style="display:none;border:1px solid var(--line);border-radius:8px;
@@ -57,7 +58,7 @@
     </div>
 
     <div id="spam-warning" style="display:none;background:var(--warning-soft);border:1px solid var(--warning-edge);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--warning)">
-      ⚠ Potential spam trigger words detected: <span id="spam-words"></span>
+      {{ icon('triangle-alert', 14) }} Potential spam trigger words detected: <span id="spam-words"></span>
     </div>
 
     <div style="margin:16px 0;border-top:1px solid var(--line);padding-top:16px">

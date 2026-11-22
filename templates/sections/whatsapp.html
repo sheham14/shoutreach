@@ -1,3 +1,4 @@
+{% from "macros/icons.html" import icon %}
 <div class="section" id="section-whatsapp">
   <div class="page-header">
     <!-- Which campaign you're in is the heading, not a dropdown in the
@@ -6,7 +7,7 @@
          biggest source of confusion in the first week of real use. -->
     <div>
       <div class="page-crumb text-muted text-small" id="wa-crumb" hidden>
-        <a style="color:var(--accent);cursor:pointer" onclick="waShowAllCampaigns()">← All campaigns</a>
+        <a style="color:var(--accent);cursor:pointer" onclick="waShowAllCampaigns()">{{ icon('arrow-left', 14) }} All campaigns</a>
       </div>
       <div class="page-title" id="wa-title">WhatsApp</div>
       <div class="page-sub" id="wa-sub">Nothing sends by itself — you always tap Send yourself, inside WhatsApp</div>

@@ -56,7 +56,7 @@ function closeModal(id) { document.getElementById(id).classList.remove('open'); 
 // sibling elements -- toggleInfo relies on that adjacency, so keep them
 // together wherever this is used.
 function infoDot(text) {
-  return `<button type="button" class="info-dot" onclick="toggleInfo(this)">ⓘ</button><div class="info-tip">${esc(text)}</div>`;
+  return `<button type="button" class="info-dot" onclick="toggleInfo(this)" aria-label="Explain">${icon('info', { size: 14 })}</button><div class="info-tip">${esc(text)}</div>`;
 }
 
 function toggleInfo(btn) {
