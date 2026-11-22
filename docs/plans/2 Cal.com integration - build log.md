@@ -26,7 +26,7 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
 | 5 | One Meetings page | done | `2cffc4e` |
 | 6 | The other operator's copy | done | `574cad8` |
 | 7 | Telling the team | done | `62eb404` |
-| 8 | Remove ShoutReach's Zoho booking | **next — not started** | |
+| 8 | Remove ShoutReach's Zoho booking | done | `fc6a8ed` |
 
 ## Log
 
@@ -211,50 +211,282 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
   any cap; five attempts.
 - Tests: tests/test_notifications.py. Suite: 33 files pass.
 
-## STOPPED HERE (2026-11-22, session usage ran out) — how to carry on
+### Package 8 — done (`fc6a8ed`)
 
-**Next: package 8, remove ShoutReach's Zoho booking (last).** Per the plan:
-delete `zoho_calendar.py`, the `/api/zoho/*` and `/zoho/*` routes, the
-meeting sync/invite/cancel routes (`/api/businesses/<id>/meeting/...`),
-`_book_meeting` and its two callers (`api_set_business_pipeline` with
-`meeting` in the body, and `api_log_call`), the Zoho cards in Settings (Team
-setup "Zoho Calendar", My settings "Meetings & calendar"), the booking
-dialog's calendar fields (`meetingFieldsHtml` in lead_panel.js and whatever
-calls it; `_zohoStatus`, `retryMeetingSync`, `sendMeetingInvite`,
-`cancelMeeting` and friends), and `tests/test_zoho_calendar.py`. Keep the
-`meetings` and `zoho_connections` tables; empty `zoho_connections` with a
-guarded one-shot (it can hold tokens). Setting the stage to booked by hand
-must still work with a time (that's the package 5 departure noted above).
-Then: mark Handover §5f retired and remove its Zoho to-do list from §9; mark
-the Zoho parts of audit B-7, B-8, B-13, B-17 resolved (find them by id).
-Check meetings rows with source '' (old Zoho ones) still render via the
-reduced box (`meetingBoxHtml`).
+- **Removed:** `zoho_calendar.py`; `/api/zoho/{status,calendars,prefs,disconnect}`,
+  `/zoho/connect`, `/zoho/callback`; `/api/businesses/<id>/meeting/{sync,invite,cancel}`
+  and `/api/meetings/address-check`; `_book_meeting` and its use in
+  `api_set_business_pipeline` and `api_log_call`; Team setup "Zoho Calendar" and
+  My settings "Meetings & calendar"; the stage dialog's calendar fields
+  (`meetingFieldsHtml`, `collectMeetingFields`, `_meetingEmailChanged`,
+  `toastMeeting`, `loadZohoStatus`/`loadZohoCalendars` and the option helpers) and
+  the panel's `retryMeetingSync`, `sendMeetingInvite`, `cancelMeeting`; in db
+  `get/save_meeting_prefs`, `get/save/delete_zoho_connection` and the
+  `MEETING_*` constants; Calling's Zoho hint, toasts and `timezone` field;
+  `tests/test_zoho_calendar.py`.
+- **Kept:** the `meetings` and `zoho_connections` tables (comments now say
+  retired). `_migrate_retire_zoho` (in `init_db`, marker
+  `_retired_zoho_calendar`) empties `zoho_connections` once.
+- **Booking by hand:** the pipeline route saves the stage and time through
+  `set_business_pipeline` and nothing else; a `meeting` key in the body (what
+  the old dialog sent) is ignored. A "Meeting booked" call outcome likewise.
+  The stage dialog shows one line for Meeting booked: the time is kept here and
+  shows on Meetings, nothing goes on a calendar, use Copy booking link to book
+  on Cal.com. Old Zoho rows (`source` '') show in the reduced box
+  (`meetingBoxHtml`): the stage's time, where it came from, Join if the row
+  has a link.
+- **Departures and choices:**
+  - The clean-up also deletes `zoho_region`, `zoho_client_id`,
+    `zoho_client_secret` and every `meeting_prefs:<id>` from settings. The plan
+    names only `zoho_connections`, but the client secret is a secret for the
+    same reason, and the meeting defaults are the B-7 half that goes with Zoho.
+  - `/api/meetings/address-check` is removed with the dialog's email field it
+    served. That also closes the meeting half of B-8's "small tells".
+  - Booking by hand no longer writes a `meetings` row. The Zoho code wrote one
+    even with no connection. Nothing needs it: the Meetings page and the panel
+    take the time from the stage.
+  - `get_pipeline_board` no longer selects the Zoho columns (`event_uid`,
+    `sync_error`, invite fields); nothing read them after the Booked tab went.
+  - Kept, though no route calls them now: `db.add_business_email`
+    (`tests/test_suppression.py` checks it honours suppression) and
+    `db.save_meeting` (`tools/audit/serve.py` uses it to plant old-style rows).
+  - Three tests from packages 4, 5 and 7 (`test_website_followups.py`,
+    `test_meetings.py`, `test_notifications.py`) read source files without
+    `encoding="utf-8"`, so they failed on Windows (cp1252) though they pass on
+    Linux. Fixed in this commit. The baseline on this machine before package 8
+    was 30 of 33 passing, the three being exactly these.
+- **Audit:** the Zoho parts of B-7, B-8, B-13 and B-17 marked resolved in
+  place, and the status block updated (it also now counts package 5's F-19,
+  F-23, F-24, which weren't in it). Handover: §5f marked retired with what was
+  removed and kept, its Zoho to-do list removed from §9, §0/§1/§8/§10 and the
+  B-13 line updated, a Plan 2 status paragraph added to §9. README's booking
+  text rewritten for Cal.com.
+- **Tests:** `tests/test_meetings.py` §5 (every removed route is a 404; no
+  module; a backslash business name booked by hand → 200, stage and typed time
+  saved, no meeting row, no saved invite address, listed on Meetings; a
+  "Meeting booked" call outcome → stage and time, no row; an old Zoho row
+  reaches the panel and Meetings with its Join link, and moving the stage's
+  time leaves it alone; no Zoho code or wording left in `static/js`,
+  `templates` or `app.py`; the clean-up empties the table and the settings,
+  keeps other per-person keys and both tables, and runs once).
+- **Browser** (audit harness, `tools/audit/serve.py`, Chromium 1440×900):
+  Meetings lists the harness's three old Zoho rows, with Join on the one that
+  has a link; that lead's panel shows the reduced box ("Today 3:30 pm · from
+  WhatsApp · Join ↗ · Arranged outside Cal.com…"); the stage dialog for
+  Meeting booked shows only the stage, the time and the new line, and saving
+  stores the typed time; Settings has neither Zoho card. No console errors
+  from this change (see "Noticed" for one from the harness).
+- Suite: 32 files pass.
 
-**Then the hand-back** (plan's "Hand-back" section): per package the commit,
-tests, what was checked by hand (each package entry above has it), the
-scrubbed payloads (`tests/fixtures/`, README there) and how they differed
-from the handoff (package 3 entry). Also still to write up there:
+## Hand-back (Plan 2, 2026-11-22)
 
-- **Website repos (separate sessions)** — each site's server route posts
-  contract A to `https://shoutreach.hexiv.co/api/inbound/website-lead` with
-  header `X-API-Key: <website key>` from a server-only env var, at the moment
-  it calls EmailJS today, without waiting on it. JSON body: `site`
-  ("hexiv.co.uk" | "hexiv.co"), `name`, `email` (required), `business`,
-  `phone`, `website`, `country` ("GB" from the UK site), `locale` (.co only),
-  `answers` (object, English labels, in the order asked — .co maps its option
-  ids via content.en.ts), `summary`. ≤ 32 KB; reply `{"ok": true}`; 60/min.
-  Keep EmailJS until package 7 has been seen working for a week. Check the
-  line under the details step says they may be followed up by email or
-  WhatsApp; propose wording if not.
-- **Operator steps:** set each site's owner and country, the booking link,
-  and their notification address and follow-up campaigns; put the website
-  key on each site's hosting. The webhook already exists and works.
-- **Open questions:** (1) "Booked via the website" is also applied when only
-  an enquiry matches the other operator's copy (package 6); (2) verify with
-  one real booking made from "Copy booking link" that
-  `metadata.shoutreach_ref` arrives (package 5); (3) the three real test
-  deliveries on the live server get read once this deploys — the test
-  booking will show as a lead (Hevixxx), booked then cancelled; delete it.
-- **Reviewer commands:** `for f in tests/test_*.py; do python "$f" || echo FAIL $f; done`
-  (33 files); replay `tests/fixtures/cal_*.json` signed into a local server
-  (see tests/test_cal_bookings.py for how).
+The plan's "Hand-back" section asks for: per package the commit, tests added,
+what was checked by hand and what was done differently; the captured Cal.com
+payloads and how they differed from the handoff; plus, from this log, what
+each website needs, the operator's steps and the open questions. A reviewer
+checks the branch against the plan separately.
+
+**State of the branch:** all eight packages are built on `plan-2-cal-com`.
+Packages 1 and 2 (and `30b17d9`, the payload download) are merged and
+deployed (PR #2). Packages 3 to 8 are only on the branch: **merging it
+deploys them** and runs package 8's one-time clean-up on the live database
+(below). Suite: 32 files, all pass on Windows (Python 3.13) and were written
+for the server's Python 3.11.
+
+### Per package
+
+| # | Commit(s) | Tests added | Checked by hand | Done differently from the plan, and why |
+|---|---|---|---|---|
+| 1 Settings and the two doors | `e9d6607`; `30b17d9` (download of received deliveries) | `tests/test_inbound.py` (no key, wrong key, worker key → 401; bad signature → 401; unknown site → 400; oversize → 413; repeat post doesn't duplicate; 56 checks) | Browser: both Settings cards, the show-once key dialog | The Cal.com route stored every verified delivery and answered 200 without parsing, so the deployed route could capture real payloads before the parser existed. Idempotency was per identical body until package 3 added Cal.com's booking id. `30b17d9` (an admin download of what Cal.com sent) isn't in the plan; it was how the payloads were captured. A site with no owner set still stores the enquiry, filed for no one until set |
+| 2 An enquiry becomes a lead | `9a9625d` | `tests/test_inbound.py` §9 (owner from the site setting; the other operator can't see it; suppressed address recorded, its email lead suppressed; a local UK number matches the international one) | Browser: an enquiry posted the way a site would; Contacts → its panel shows the stage pill and the "Website enquiry" fold, answers in form order | Business name falls back to the person's name when the form leaves it empty. An enquiry sets the stage only when the business has none, so a deal never moves backwards. Answers stored as an ordered list, because Flask sorts JSON object keys |
+| 3 A booking updates the lead | `e046fc6` (created, rescheduled), `48f13ab` (cancelled) | `tests/test_cal_bookings.py`, built on the captured fixtures (created → stage, time, meeting row, email enrolment ended, unsent WhatsApp paused; repeat delivery changes nothing; reschedule; cancel; no `wa_log` row ever) | Browser: the four scrubbed fixtures replayed, signed, into a local server; the lead read "Today 6:30 pm · Booked on Cal.com · from hexiv.co.uk · Join", then "Cancelled on Cal.com" with no Join | Two commits, because the cancellation payload was captured later. A booking with no prior enquiry takes its answers from the site's "Label: answer" notes. A booking whose metadata names no known site is recorded on the event as "not filed". A reschedule whose original never arrived is filed as a booking marked moved. A site with no owner keeps the event waiting (`CalWaiting`), retried on the next settings save |
+| 4 Following up people who didn't book | `5904f68` | `tests/test_website_followups.py` (injected clock: nothing before the wait; both after; only email with no number; neither when booked in between; no email to a suppressed address; run twice, queued once) | Nothing beyond the tests | "Booked in between" also counts stage `booked`/`booked_elsewhere`, not only a Cal.com booking. A do-not-contact business gets neither follow-up. Every enquiry past the wait is marked queued even when nothing was queued, so choosing campaigns later doesn't reach back to older enquiries |
+| 5 One Meetings page | `2cffc4e` | `tests/test_meetings.py` §1–4 (every channel listed; count; Copy booking link signed and matched; Dashboard block; Booked tab gone) | Browser: Meetings at 1440×900 with a lead open beside it and at 390×844; the Dashboard block; WhatsApp tabs without Booked (a remembered Booked tab opens To do) | The pipeline route's call into Zoho stayed until package 8, because removing it earlier would have broken `test_zoho_calendar.py` before package 8 deleted it. "Needs an outcome" = the time has passed and the stage is still booked. A cancelled Cal.com meeting stays listed while the stage is booked, and drops out of the count |
+| 6 The other operator's copy | `574cad8` | `tests/test_booked_elsewhere.py` (the other operator sees the stage and nothing more, through every route; their follow-ups stop; the enquiry's owner sees nothing about the other copy) | Nothing beyond the tests | Leaves a copy alone if its owner already booked it or it's on a terminal stage; clears `pipeline_at` so not even the time of marking shows; a booking from a copied link doesn't trigger it. Handover §3 records the crossing |
+| 7 Telling the team | `62eb404` | `tests/test_notifications.py` (own address per operator; routes queue, never send; retried then left; no address, no email; the scheduler runs it) | Nothing beyond the tests | Sent by the scheduler, not the routes (contract B: never call out from the inbound route), from the first active sending account, not counted against any cap, five attempts |
+| 8 Remove ShoutReach's Zoho booking | `fc6a8ed` | `tests/test_meetings.py` §5; `tests/test_zoho_calendar.py` deleted | Browser, on the audit harness: old Zoho rows on Meetings and in the reduced box with Join; the stage dialog without calendar fields saves the typed time; Settings without either Zoho card | The clean-up also deletes the Zoho settings and `meeting_prefs:<id>` (secrets, and B-7's meeting half). `/api/meetings/address-check` removed with the invite field it served. Booking by hand writes no `meetings` row. Three tests from packages 4, 5, 7 fixed to read files as UTF-8 (they failed on Windows). Details in the package 8 entry above |
+
+### The Cal.com payloads (`tests/fixtures/`)
+
+Captured on the live route on 2026-11-22: the webhook page's test ping
+(01:28 UTC), a real booking made through hexiv.co.uk's form (01:32), its
+reschedule (01:37) and its cancellation from Cal.com's emailed cancel link
+(01:42). Scrubbed copies: `cal_ping.json`, `cal_booking_created.json`,
+`cal_booking_rescheduled.json`, `cal_booking_cancelled.json`.
+`tests/fixtures/README.md` lists what was replaced (attendee name and email,
+organizer email, business/website/phone, the CalDAV calendar id). Everything
+else is exactly as sent. The signature check (`X-Cal-Signature-256`,
+lower-case hex HMAC-SHA256 of the raw body) passed on all four real
+deliveries.
+
+How they differ from the handoff document:
+
+- **Metadata matches, and has more.** `payload.metadata` carries `site`,
+  `phone` and `website` as the handoff says, plus the UK form's answers
+  under their own keys (`businessType`, `challenge`, `source`, `volume`,
+  `ads`, `businessName`) and Cal.com's own `videoCallUrl`.
+- **The phone is only in metadata.** The attendee's `phoneNumber` is null.
+- **A reschedule is a new booking.** New `uid`, new `bookingId`, new video
+  link; `rescheduleUid`, `rescheduleId` and `rescheduleStartTime` name the
+  old one. The handoff assumed the same booking moved.
+- **A cancellation carries the uid of the booking it ends** (the rescheduled
+  one), `status` "CANCELLED", `cancellationReason` "" and
+  `requestReschedule` false.
+- **Declining the calendar invite doesn't cancel.** The operator's "No" on
+  the invite went to the calendar, not to Cal.com, so no webhook came. Only
+  Cal.com's own cancel link (or its dashboard) sends one.
+- **The test phone had no `+`** ("17097648718"), so phones are read with
+  the site's default country.
+- **The ping is a different shape**: no `uid`, no metadata, organizer time
+  zone `Europe/London`. It is answered 200 and ignored.
+- **The host time zone in the real bookings is `America/St_Johns`**
+  (Newfoundland), for the organizer and the attendee. See open question 4.
+
+### The websites (`HexivUK`, `hexivsite`: separate sessions)
+
+Each site gets the same small change: a **server route** that the booking
+form calls at the moment it reaches the calendar (where it calls EmailJS
+today). The route checks the shape and forwards to ShoutReach. The form must
+not wait on it: if ShoutReach is down or slow, the calendar still appears
+(fire and forget, short timeout, errors logged on the server only).
+
+**Contract A, as built:**
+
+```
+POST https://shoutreach.hexiv.co/api/inbound/website-lead
+X-API-Key: <the website key>          (server-only env var, never NEXT_PUBLIC_)
+Content-Type: application/json
+
+{
+  "site":     "hexiv.co.uk" | "hexiv.co",        required; anything else → 400
+  "name":     "...",                             required
+  "email":    "...",                             required
+  "business": "...",                             optional (≤200)
+  "phone":    "...",                             optional, as typed (≤50)
+  "website":  "...",                             optional (≤500)
+  "country":  "GB",                              UK site always "GB"; .co only if it knows
+  "locale":   "en" | "ar",                       .co only
+  "answers":  { "Question label": "Answer label", ... },   English labels, in the order asked, ≤40
+  "summary":  "the plain-text summary the site already builds"   (≤5000)
+}
+```
+
+- Replies `{"ok": true}` and never echoes data. 401 for a missing or wrong
+  key (a scraper worker key doesn't work here), 400 for a bad shape or
+  unknown site, 413 over 32 KB, 429 over 60 posts a minute per key.
+- Unknown fields are ignored; every string is cut to its limit; a list
+  answer is joined with ", ".
+- Posting the same email from the same site again updates the open enquiry
+  rather than adding a second; an empty field keeps what the first post
+  said.
+- **hexiv.co.uk:** the form already has English labels; send `site:
+  "hexiv.co.uk"` and `country: "GB"`.
+- **hexiv.co:** today it sends option *ids*; map each to its English label
+  with the English content file (`content.en.ts`) before sending, whatever
+  the visitor's language. Send `site: "hexiv.co"`, `locale`, and `country`
+  only if the form knows it.
+- **Keep EmailJS** until package 7's team emails have been seen working for
+  a week; removing it is a separate change.
+- **Copy check:** the line under the details step should say the visitor
+  may be followed up by email or WhatsApp. If it doesn't, propose wording;
+  the operator approves copy changes.
+- The Cal.com embed already sends `metadata[site]`, `metadata[phone]`,
+  `metadata[website]` and the answers; keep it as it is (package 3 reads
+  them from the captured shape).
+
+### For the operator
+
+The webhook is already created in Cal.com and verified working (it delivered
+the four test events). Still to do:
+
+1. **Merge `plan-2-cal-com`** when the review passes (it deploys packages 3
+   to 8). Take a backup first, as always. Package 8's clean-up runs once on
+   the live database: it empties `zoho_connections` and deletes
+   `zoho_region`, `zoho_client_id`, `zoho_client_secret` and every
+   `meeting_prefs:<id>` setting. Nothing was ever connected, so nothing a
+   person uses is lost.
+2. **Team setup → Website and bookings:** set who receives each site's
+   leads and the .co site's default country (the UK site defaults to GB);
+   paste the Cal.com booking link (e.g.
+   `https://cal.com/hexiv/free-strategy-call`) for Copy booking link; check
+   the two waits (30 minutes for WhatsApp To do, 24 hours for the email).
+   Saving this also files any enquiries or bookings that arrived while a
+   site had no owner.
+3. **Generate the website key** on that card (shown once), and put it on
+   each site's hosting as a server-only environment variable.
+4. **Each person, My settings → Website enquiries that don't book:** pick
+   the email campaign and the WhatsApp campaign for people who don't book,
+   and a notification address. Until a campaign is chosen, enquiries are
+   recorded but not followed up; without an address, no team email is sent.
+5. Once the sites post contract A, watch one real enquiry end to end:
+   it appears as a lead, its owner gets the email, it's followed up after
+   the waits if it doesn't book.
+
+### Open questions
+
+1. **"Booked via the website" on an enquiry alone (package 6).** The plan
+   applies the other operator's marking when an enquiry is filed, before any
+   booking, so their copy reads "Booked via the website" even if the visitor
+   never books. Built as the plan says. Should an enquiry-only match read
+   differently?
+2. **Copy booking link, unproven against Cal.com (package 5).** The copied
+   link carries `metadata[shoutreach_ref]` using Cal.com's documented URL
+   prefill. Not yet seen in a real booking. Make one booking from a copied
+   link and check that it lands on that lead (the Meetings page shows it
+   "from a call" or "from WhatsApp", not as a new website lead).
+3. **The three real test deliveries on the live server** are still unread
+   by the deployed code (packages 1–2 only store them). The first delivery
+   or Website-settings save after the merge reads them, so the test booking
+   appears as a lead (the operator's own test business, Hevixxx), booked then
+   cancelled. Delete it once seen.
+4. **The Cal.com host's time zone.** The real bookings say the organizer is
+   on `America/St_Johns` (Newfoundland, UTC−3:30). ShoutReach converts each
+   booking into the host's time zone once, on arrival, and shows that wall
+   clock everywhere (Handover §5c). If the Cal.com profile's time zone is
+   wrong, every website meeting will show at Newfoundland time. Check
+   Cal.com → Settings → General → Timezone before the merge.
+
+### Noticed, not fixed
+
+1. **A Cal.com booking that was cancelled, then booked again by hand**
+   (packages 3 and 5). The `meetings` row stays `source='cal'`,
+   `state='cancelled'`. So the panel keeps showing the Cal.com box,
+   "Cancelled on Cal.com" with the old time, instead of the stage's new
+   time. Meetings marks the row cancelled and leaves it out of the sidebar
+   count, though it lists the new time. Found by reading
+   `meetingBoxHtml` and `count_meetings`; not exercised. Fixing it needs a
+   decision: should a hand booking after a Cal.com cancellation hide the old
+   box, or clear the old row? Left for the review.
+2. **A saved lead audit from before `engagement` existed breaks the lead
+   panel.** `auditResultsHtml` reads `site.engagement.length` with no guard,
+   so a business whose audit was saved before `cf49426` (2026-09) throws, and
+   its panel doesn't render. Seen on the audit harness, whose canned audit
+   lacks the field. Worth checking whether the live database has such audits.
+   Not related to this plan.
+3. `db.add_business_email` and `db.save_meeting` have no caller in a route
+   any more (kept for a test and the harness, above). `/api/businesses/<id>/ics`
+   is no longer linked from any page since the Booked tab went (package 5);
+   Calling's `/api/calls/<id>/ics` still is.
+4. `app.py` imports `sys` and `url_for` without using them, and `db.py`
+   imports `Path` without using it. This was already so before this branch.
+
+### For the reviewer
+
+```bash
+git fetch origin plan-2-cal-com && git switch plan-2-cal-com
+pip install --ignore-installed blinker -r requirements.txt Pillow beautifulsoup4 playwright playwright-stealth
+for f in tests/test_*.py; do python "$f" > /dev/null 2>&1 || echo "FAIL $f"; done   # 32 files, no output = all pass
+python tests/test_meetings.py          # §5 is package 8
+python tests/test_cal_bookings.py      # the parser, on the real fixtures
+git diff bea9be1..plan-2-cal-com --stat
+git grep -n -i "zoho" -- '*.py' '*.js' '*.html'
+#   expected: Zoho *Mail* (SMTP/IMAP help, provider detection), the retired-table
+#   comments and _migrate_retire_zoho in db.py, one docstring line in app.py,
+#   tests/test_meetings.py §5, and tools/audit/serve.py's fake old meeting rows
+```
+
+Replaying the fixtures by hand: start the app on a throwaway database
+(`DB_PATH`, `SHOUTREACH_NO_SCHEDULER=1`), set a Cal.com secret in Team setup,
+then post each `tests/fixtures/cal_*.json` to `/api/inbound/cal` with
+`X-Cal-Signature-256` = hex HMAC-SHA256 of the exact bytes with that secret
+(`deliver()` in `tests/test_cal_bookings.py` does exactly this).
