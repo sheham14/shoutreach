@@ -9,7 +9,7 @@
     {"name": "wa-stage-dialog", "do": [["click", "#wl-panel a:has-text('Set a stage')"]]},
     {"name": "wa-stage-dialog-booked", "do": [["js", "const r=[...document.querySelectorAll('#modal-choose input[type=radio]')].find(x=>x.value==='booked'); if(r){r.click();}"], ["wait", 500]], "full": false},
     {"name": "wa-stage-dialog-eval", "noshot": true, "do": [["eval", "() => ({h: document.querySelector('#modal-choose .modal').scrollHeight, vh: innerHeight, inputs: document.querySelectorAll('#modal-choose input, #modal-choose select, #modal-choose textarea').length})"]]},
-    {"name": "wa-booked-panel", "do": [["js", "chooseCancel(); setTab('whatsapp','booked')"], ["wait", 600], ["click", "#wa-booked-body tbody tr:nth-child(1) .biz-name >> nth=1"]]},
+    {"name": "meetings-panel", "do": [["js", "chooseCancel(); showSection('meetings')"], ["wait", 600], ["click", "#mt-body tr.clickable >> nth=0"]]},
     {"name": "wa-todo-1280", "do": [["size", 1280, 720], ["js", "setTab('whatsapp','todo')"], ["wait", 700]]},
     {"name": "wa-leads-1280", "do": [["js", "setTab('whatsapp','leads')"], ["wait", 700]]},
     {"name": "calling-1280", "do": [["js", "showSection('calling'); setTab('calling','todo')"], ["wait", 700]]},

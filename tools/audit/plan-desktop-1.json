@@ -16,7 +16,7 @@
     {"name": "wa-leads", "do": [["js", "setTab('whatsapp','leads')"]]},
     {"name": "wa-campaigns", "do": [["js", "setTab('whatsapp','campaigns')"]]},
     {"name": "wa-messages", "do": [["js", "setTab('whatsapp','templates')"]]},
-    {"name": "wa-booked", "do": [["js", "setTab('whatsapp','booked')"]]},
+    {"name": "meetings", "do": [["js", "showSection('meetings')"], ["wait", 600]]},
     {"name": "getleads", "do": [["js", "showSection('scraper')"]]},
     {"name": "settings", "do": [["js", "showSection('settings')"]]},
     {"name": "help", "do": [["js", "showSection('help')"]]}
