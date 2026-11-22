@@ -1201,7 +1201,15 @@ Next: Plan 2 (Cal.com) and Plan 3 (redesign phase 1) both build on this.
 are merged and deployed; packages 3 to 8 are only on the branch. Package 8
 retires the Zoho booking (§5f). The record, with every choice that differs
 from the plan, the operator's setup steps and the open questions, is
-`docs/plans/2 Cal.com integration - build log.md`.
+`docs/plans/2 Cal.com integration - build log.md`. After the hand-back, a second
+pass (2026-11-22) answered open question 1 (an enquiry alone now marks the
+other operator's copy "Filled in the website form — not booked", see §3),
+let a hand booking replace a cancelled Cal.com meeting, fixed the lead
+panel crashing on an old saved audit, removed unused imports, and fixed a
+date-dependent test. Still for the operator to test before or after the
+merge: a booking from "Copy booking link", and Cal.com's time zone.
+**Next:** review and merge `plan-2-cal-com`; Plan 3 (the redesign) comes
+later, separately.
 
 Also still open and real: B-13 (secrets stored in plaintext — SMTP/IMAP
 passwords, AI keys, the Cal.com webhook secret, the session key — and in

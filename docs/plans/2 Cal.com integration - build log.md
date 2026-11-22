@@ -424,7 +424,10 @@ the four test events). Still to do:
 
 ### Open questions
 
-1. **"Booked via the website" on an enquiry alone (package 6).** The plan
+1. **ANSWERED 2026-11-22, built in `0997911`:** an enquiry alone now reads
+   "Filled in the website form — not booked"; see "Follow-ups after the
+   hand-back" below. *(Original question:)* **"Booked via the website" on an
+   enquiry alone (package 6).** The plan
    applies the other operator's marking when an enquiry is filed, before any
    booking, so their copy reads "Booked via the website" even if the visitor
    never books. Built as the plan says. Should an enquiry-only match read
@@ -448,7 +451,8 @@ the four test events). Still to do:
 
 ### Noticed, not fixed
 
-1. **A Cal.com booking that was cancelled, then booked again by hand**
+1. **FIXED in `dd3715e`** (see below). **A Cal.com booking that was
+   cancelled, then booked again by hand**
    (packages 3 and 5). The `meetings` row stays `source='cal'`,
    `state='cancelled'`. So the panel keeps showing the Cal.com box,
    "Cancelled on Cal.com" with the old time, instead of the stage's new
@@ -457,8 +461,8 @@ the four test events). Still to do:
    `meetingBoxHtml` and `count_meetings`; not exercised. Fixing it needs a
    decision: should a hand booking after a Cal.com cancellation hide the old
    box, or clear the old row? Left for the review.
-2. **A saved lead audit from before `engagement` existed breaks the lead
-   panel.** `auditResultsHtml` reads `site.engagement.length` with no guard,
+2. **FIXED in `8374b4f`** (see below). **A saved lead audit from before
+   `engagement` existed breaks the lead panel.** `auditResultsHtml` reads `site.engagement.length` with no guard,
    so a business whose audit was saved before `cf49426` (2026-09) throws, and
    its panel doesn't render. Seen on the audit harness, whose canned audit
    lacks the field. Worth checking whether the live database has such audits.
@@ -467,8 +471,9 @@ the four test events). Still to do:
    any more (kept for a test and the harness, above). `/api/businesses/<id>/ics`
    is no longer linked from any page since the Booked tab went (package 5);
    Calling's `/api/calls/<id>/ics` still is.
-4. `app.py` imports `sys` and `url_for` without using them, and `db.py`
-   imports `Path` without using it. This was already so before this branch.
+4. **FIXED in `c207d9f`** (with three more in sender.py). `app.py` imports
+   `sys` and `url_for` without using them, and `db.py` imports `Path` without
+   using it. This was already so before this branch.
 
 ### For the reviewer
 
@@ -515,10 +520,21 @@ suite passes after each.
    touched. Tests: test_cal_bookings.py §5. Known edge left alone: booking
    by hand while a Cal.com meeting is still on changes the stage's time,
    but the panel's Cal.com box still shows Cal.com's time (Cal.com owns it).
-4. (this commit) — **"Noticed" 2 fixed:** the lead panel no longer crashes
+4. `8374b4f` — **"Noticed" 2 fixed:** the lead panel no longer crashes
    on an audit saved before `engagement` existed; four list fields default
    to empty. Verified on the harness (lead 41 threw before, renders after).
-5. Next: remove the unused imports ("Noticed" 4).
+5. `c207d9f` — **"Noticed" 4 fixed:** unused imports removed (`sys`,
+   `url_for` in app.py; `Path` in db.py; and pyflakes found `time`, `random`,
+   `Optional` in sender.py). Nothing referred to them in the app, tests or
+   tools/audit.
+
+**Where this leaves Plan 2 (for the next session):** all eight packages and
+these follow-ups are on `plan-2-cal-com`, pushed, suite 32/32 passing (also
+compiled under Python 3.11). Nothing left to build. Next steps belong to
+the operator: one batch review, then merge (deploys packages 3–8 and the
+follow-ups; take a backup first — package 8's clean-up runs once). The
+three testing items below are left for the operator. Plan 3 (redesign) is
+to be done later in its own session and branch, not on this one.
 
 Still for the operator to test later (unchanged): a booking made from
 "Copy booking link" (question 2); Cal.com's time zone (question 4);
