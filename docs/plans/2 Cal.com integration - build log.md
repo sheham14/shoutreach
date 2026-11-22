@@ -544,3 +544,30 @@ deleting the "Hevixxx" test booking after the merge (question 3).
 the next written plan, added at the operator's request so it's reviewed in
 the same batch. It's a plan only: no code. Its branch is `plan-4-hardening`,
 from `master` after Plan 2 is merged.
+
+
+## Review fixes (review of `2bb3a7a`, 2026-11-22)
+
+The review (Fable) found the upgrade safe and the hard rules holding, and
+asked for nine changes on this branch, one commit each with tests; no merge.
+Progress, newest last — if this session stops, carry on from the first item
+not marked done:
+
+1. **done `e28c9fb`** — join link https only: `_https_only` when storing (db),
+   `httpsOnly()` (tables.js) wherever a join link is rendered
+   (meetings.js, `calMeetingBoxHtml`, `meetingBoxHtml`), so old rows too.
+   Test: test_cal_bookings.py §6.
+2. todo — a failed delivery is retried (unread, attempts, give up after 5
+   with one Activity-log line; unreadable bodies marked at once).
+3. todo — (a) a cancellation waits while a delivery for its booking is
+   unread; (b) a created booking arriving after its own reschedule is skipped.
+4. todo — the other operator's copy is marked only when it has no stage
+   (enquired_elsewhere may still move up); Handover §3 + tests.
+5. todo — non-booker follow-up skipped if the business left "enquired".
+6. todo — filing an enquiry on a business the owner holds ends its email
+   sequences.
+7. todo — non-ASCII signature header → 401 (compare bytes).
+8. todo — unknown organizer time zone recorded on the event's outcome.
+9. todo — line breaks collapsed in a team email's subject.
+10. todo — Plan 4 gets "Draft, under review: do not build from this yet".
+11. todo — note the "leave for now" items here; hand back.
