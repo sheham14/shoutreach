@@ -23,7 +23,7 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
 | 2 | An enquiry becomes a lead | done | `9a9625d` |
 | 3 | A booking updates the lead | done | `e046fc6`, `48f13ab` |
 | 4 | Following up people who didn't book | done | `5904f68` |
-| 5 | One Meetings page | not started | |
+| 5 | One Meetings page | done | `2cffc4e` |
 | 6 | The other operator's copy | not started | |
 | 7 | Telling the team | not started | |
 | 8 | Remove ShoutReach's Zoho booking | not started | |
@@ -147,3 +147,34 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
   campaigns later doesn't reach back to older enquiries. WhatsApp uses the
   enquiry's country, else the site's.
 - Tests: tests/test_website_followups.py (injected clock). Suite: 30 files.
+
+### Package 5 — done (`2cffc4e`)
+
+- db: `get_meetings`, `count_meetings`, `get_recent_enquiries`,
+  `make_booking_ref` / `read_booking_ref` / `booking_link_for` (`CAL_REF_KEY`
+  = `shoutreach_ref`, signed with the install's `_secret_key`); the Cal.com
+  parser reads `metadata.shoutreach_ref` and, when it verifies, books exactly
+  that lead (channel from the ref) instead of matching by site and email.
+- Routes: `/api/meetings`, `/api/meetings/count`,
+  `/api/businesses/<id>/booking-link?channel=`; `/api/dashboard` gains
+  `website`.
+- UI: `templates/sections/meetings.html`, `static/js/meetings.js`, sidebar
+  link with count (`refreshMeetingCount()` in app.js at load), Dashboard
+  "From the website" card, reduced meeting box, "Copy booking link".
+  WhatsApp Booked tab and its JS removed.
+- **To confirm with a real booking:** the prefill parameters of the copied
+  link (`name`, `email`, `metadata[shoutreach_ref]` in the query string) are
+  Cal.com's documented URL prefill, not something captured — a booking made
+  from a copied link should arrive with `metadata.shoutreach_ref`. Asked the
+  operator to try one.
+- Departure: "setting booked by hand no longer touches any calendar" — the
+  panel's box no longer offers calendar actions now, but the pipeline route's
+  call into the Zoho code is removed with that code in package 8 (removing it
+  here would break `tests/test_zoho_calendar.py`, which package 8 deletes).
+- Choices: "Needs an outcome" = the meeting time has passed and the stage is
+  still booked; a cancelled meeting stays listed (marked) while the stage is
+  booked, and leaves the sidebar count; a meeting set by hand reads "set by
+  hand" when its stage has no channel.
+- Browser: Meetings at 1440×900 (with the lead open beside it) and 390×844;
+  Dashboard block; WhatsApp tabs without Booked (a remembered Booked tab opens
+  To do). Audit: F-19, F-23, F-24 marked resolved. Suite: 31 files pass.
