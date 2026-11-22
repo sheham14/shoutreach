@@ -114,8 +114,9 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
 - Departure: package 3 lands in two commits, because the cancellation payload
   hadn't been captured yet.
 - Note for the operator: the three real deliveries on the live server are
-  still unread; the first delivery or settings save after this deploys reads
-  them, so the test booking appears as a booked lead (delete it if unwanted).
+  still unread; the scheduler's first pass after this deploys reads them
+  (within a minute — corrected after review), so the test booking appears as
+  a booked lead (delete it if unwanted).
 - Tests: tests/test_cal_bookings.py. Suite: 29 files pass.
 
 ### Package 3 — cancel done (`48f13ab`); package 3 complete
@@ -438,8 +439,9 @@ the four test events). Still to do:
    link and check that it lands on that lead (the Meetings page shows it
    "from a call" or "from WhatsApp", not as a new website lead).
 3. **The three real test deliveries on the live server** are still unread
-   by the deployed code (packages 1–2 only store them). The first delivery
-   or Website-settings save after the merge reads them, so the test booking
+   by the deployed code (packages 1–2 only store them). The scheduler's first
+   pass after the merge reads them, within a minute (corrected after review:
+   it isn't only "the next delivery or settings save"), so the test booking
    appears as a lead (the operator's own test business, Hevixxx), booked then
    cancelled. Delete it once seen.
 4. **The Cal.com host's time zone.** The real bookings say the organizer is
@@ -582,8 +584,87 @@ not marked done:
 6. **done `a76c0d8`** — `file_website_enquiry` ends running sequences when an
    enquiry is first filed on a business that already existed. First filing
    only (choice: a repeat post must not end package 4's own follow-up email).
-7. todo — non-ASCII signature header → 401 (compare bytes).
-8. todo — unknown organizer time zone recorded on the event's outcome.
-9. todo — line breaks collapsed in a team email's subject.
-10. todo — Plan 4 gets "Draft, under review: do not build from this yet".
-11. todo — note the "leave for now" items here; hand back.
+7. **done `402ca20`** — `api_inbound_cal` compares the signature as bytes; a
+   non-ASCII header answers 401. Test: test_inbound.py §4.
+8. **done `be6a54f`** — `_cal_zone_problem`: a missing or unknown organizer
+   time zone is written on the delivery ("booked; unknown organizer time
+   zone '…': times stored as UTC"). Test: test_cal_bookings.py §9.
+9. **done `6c6fc60`** — `_queue_team_notification` collapses whitespace in the
+   business name, so the subject is one line (and no header can be slipped
+   in). Test: test_notifications.py.
+10. **done `a0c66e2`** — Plan 4 has "Draft, under review: do not build from
+    this yet" at the top; nothing else changed.
+11. **done** — the items below noted; hand-back below.
+
+### Left for now, as the review asked (not fixed)
+
+- **The admin download of deliveries** (`GET /api/website-settings/cal-events`,
+  package 1) shows an admin both operators' bookings in full, and stored
+  bodies (`cal_events`) are never pruned. The operator will decide what
+  replaces it. Fix 2's give-up line goes to the Activity log and doesn't
+  depend on it.
+- **No time-zone label on Cal.com times.** Meetings and the lead show the
+  host's wall clock with no zone named (the lead's box adds the zone only
+  when it differs from the browser's).
+- **A deleted follow-up campaign** leaves its dead id in
+  `website_followup:<uid>`; `add_businesses_to_wa` / `enroll_contacts_bulk`
+  then find no campaign and nothing is queued, silently.
+- **`metadata.clinic` and `metadata.locale`** are read by `_cal_booking` but
+  appear in no captured fixture: capture one real hexiv.co booking and add
+  it to `tests/fixtures/`.
+- **Cal.com strings aren't length-capped** in `_cal_booking` (name, title,
+  answers from notes are capped later only where they pass through
+  `record_website_enquiry`; the meeting title isn't).
+- **Corrected above:** stored deliveries are read by the scheduler's first
+  pass after a deploy (within a minute), not only on the next delivery or
+  settings save.
+
+### Hand-back for the re-review
+
+All nine changes and the Plan 4 line are on `plan-2-cal-com`, one commit
+each, each with its tests and the whole suite run (32 files, all passing).
+Not merged; nothing pushed to `master`.
+
+| # | Commit | What | Tests |
+|---|---|---|---|
+| 1 | `e28c9fb` | Join link https only, stored and rendered (old rows too) | test_cal_bookings.py §6 |
+| 2 | `9f75f43` | A failed delivery is retried, given up after 5 with a log line; unreadable bodies marked at once; a booking's last writes are one transaction | test_cal_bookings.py §7 (the reviewer's reproduction) |
+| 3 | `4cd44d6` | Any delivery order: a cancellation waits for its unread booking, and a booking filed later applies a stored cancellation; an original after its reschedule is skipped | test_cal_bookings.py §8 (five orders) |
+| 4 | `c7b9761` | The other operator's copy is marked only with no stage | test_booked_elsewhere.py §4 |
+| 5 | `1e8a824` | No non-booker follow-up once the lead has moved on | test_website_followups.py |
+| 6 | `a76c0d8` | First filing on a held business ends its sequences | test_inbound.py §9, test_website_followups.py |
+| 7 | `402ca20` | Non-ASCII signature header → 401 | test_inbound.py §4 |
+| 8 | `be6a54f` | Unknown organizer time zone noted on the delivery | test_cal_bookings.py §9 |
+| 9 | `6c6fc60` | Team email subject one line | test_notifications.py |
+| — | `a0c66e2` | Plan 4 marked draft | — |
+
+**Where I went beyond, or differed from, the review:**
+
+- **Item 3:** the review's rule (a cancellation waits while an unread
+  delivery for its booking exists) leaves one order open: a cancellation
+  delivered *before* its booking, with nothing stored yet, is marked read,
+  and the booking arriving later would read booked. So, in addition, a
+  booking or reschedule being filed applies a cancellation already stored
+  for its uid (`_cal_apply_known_cancellation`). §8 covers that order.
+- **Item 2:** to make "a second run of a half-done booking is harmless"
+  true, the meeting row, the enquiry's booking id and the team email are
+  written in one transaction (`_queue_team_notification(conn, …)`), and the
+  "already recorded" path re-runs the idempotent cross-operator marking.
+- **Item 6:** only on an enquiry's *first* filing, so a person who posts the
+  form again doesn't end the website follow-up email their first post
+  started (tested).
+- **Item 5's test file:** several "different" leads shared the domain
+  `clinic.co.uk`, which the matcher treats as one business, so a few checks
+  (two from package 4) were testing the same lead. Each has its own domain
+  now, with a check that they are separate.
+
+**Reviewer commands:**
+
+```bash
+git fetch origin plan-2-cal-com && git switch plan-2-cal-com
+for f in tests/test_*.py; do python "$f" > /dev/null 2>&1 || echo "FAIL $f"; done   # 32 files
+python tests/test_cal_bookings.py      # §6–§9 are review fixes 1, 2, 3, 8
+python tests/test_booked_elsewhere.py  # §4 is fix 4
+git log --oneline 2bb3a7a..plan-2-cal-com
+```
+
