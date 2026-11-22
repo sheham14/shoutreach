@@ -159,6 +159,9 @@ function prettyWaNumber(n) {
 // opts.sentence: "today at 3:30 pm" / "on Wed 25 Nov at 10:00 am", for
 //                the middle of a sentence.
 // opts.dateOnly: never the time.
+// opts.absolute: never "Today"/"Yesterday", and plain spaces -- for text
+//                that outlives today or leaves the page: an import's
+//                automatic name, which also becomes a CSV file name.
 function _parseWhen(value, kind) {
   if (!value) return null;
   const raw = String(value).trim();
@@ -176,10 +179,10 @@ function _parseWhen(value, kind) {
   return isNaN(d) ? null : { d, hasTime };
 }
 
-function _clock(d) {
+function _clock(d, plain = false) {
   const h = d.getHours(), mm = String(d.getMinutes()).padStart(2, '0');
-  // A no-break space, so "10:30 am" never splits across two lines.
-  return `${h % 12 || 12}:${mm}\u00a0${h < 12 ? 'am' : 'pm'}`;
+  // A no-break space on screen, so "10:30 am" never splits across two lines.
+  return `${h % 12 || 12}:${mm}${plain ? ' ' : '\u00a0'}${h < 12 ? 'am' : 'pm'}`;
 }
 
 function fmtWhen(value, kind = 'utc', opts = {}) {
@@ -190,20 +193,22 @@ function fmtWhen(value, kind = 'utc', opts = {}) {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const day = new Date(d); day.setHours(0, 0, 0, 0);
   const diff = Math.round((day - today) / 864e5);
-  const rel = diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : diff === -1 ? 'Yesterday' : '';
+  const rel = opts.absolute ? ''
+    : diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : diff === -1 ? 'Yesterday' : '';
+  const clock = x => _clock(x, !!opts.absolute);
   const sameYear = d.getFullYear() === today.getFullYear();
   const date = `${d.toLocaleDateString('en-GB', { weekday: 'short' })} ${d.getDate()} ${
     d.toLocaleDateString('en-GB', { month: 'short' })}${sameYear ? '' : ` ${d.getFullYear()}`}`;
   if (opts.compact) {
-    if (diff === 0 && hasTime) return _clock(d);
+    if (diff === 0 && hasTime) return clock(d);
     return rel || date;
   }
   if (opts.sentence) {
     const on = rel ? rel.toLowerCase() : `on ${date}`;
-    return hasTime ? `${on} at ${_clock(d)}` : on;
+    return hasTime ? `${on} at ${clock(d)}` : on;
   }
   if (!hasTime) return rel || date;
-  return rel ? `${rel} ${_clock(d)}` : `${date}, ${_clock(d)}`;
+  return rel ? `${rel} ${clock(d)}` : `${date}, ${clock(d)}`;
 }
 
 // Kept as names other files already call.
@@ -219,7 +224,9 @@ function localDateTime(s) { return fmtWhen(s, 'utc'); }
 function sourceLabel(s) {
   if (!s) return '';
   if (s.kind === 'manual') return s.base || s.label;
-  return s.name || `${s.base} · ${localDateTime(s.created_at)}`;
+  // Absolute: this name identifies the import in every "From" list and
+  // becomes the CSV file name, so "Today" would be wrong by tomorrow.
+  return s.name || `${s.base} · ${fmtWhen(s.created_at, 'utc', { absolute: true })}`;
 }
 
 function sourceOptionsHtml(sources, selected = '', allLabel = 'All imports') {

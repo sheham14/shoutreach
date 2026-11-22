@@ -148,7 +148,7 @@ function addSelectedListToChannel() {
 function renameSelectedList() {
   const id = document.getElementById('ct-source').value;
   const list = _ctSources.find(s => String(s.id) === id);
-  if (list) renameImport(id, list.name, `${list.base} · ${localDateTime(list.created_at)}`,
+  if (list) renameImport(id, list.name, `${list.base} · ${fmtWhen(list.created_at, 'utc', { absolute: true })}`,
                          () => _loadContactSources(id));
 }
 

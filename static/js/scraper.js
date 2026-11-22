@@ -455,7 +455,7 @@ async function loadScrapeLists() {
             l.kind === 'import' ? ` <span class="text-muted text-small">import</span>` : ''}`;
       actions = `
         ${manual ? '' : `<button class="btn btn-ghost btn-sm" onclick="renameImport('${escj(id)}', '${escj(l.name || '')}',
-            '${escj(`${l.base} · ${localDateTime(l.created_at)}`)}', loadScrapeLists)">Rename</button>`}
+            '${escj(`${l.base} · ${fmtWhen(l.created_at, 'utc', { absolute: true })}`)}', loadScrapeLists)">Rename</button>`}
         <button class="btn btn-ghost btn-sm" onclick="openScrapeInContacts('${escj(id)}')">View</button>
         <button class="btn btn-primary btn-sm" onclick="addListToChannel('${escj(id)}', '${escj(title)}', ${l.count})">Add all to…</button>`;
     }

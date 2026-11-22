@@ -250,3 +250,32 @@ a real iPhone (F-30).
 
 **Suggested order:** deploy Plan 1 and set up the snapshot → Plans 2 and 3
 → write the back-end hardening plan, starting with B-13, B-18 and B-27.
+
+## Review response (2026-11-22)
+
+Review of `c92729a..29d6cf9`: two must-fix items, three smaller ones;
+all five departures agreed.
+
+1. **B-1 backstop was case-sensitive** — fixed in `932a3d1`. Every address
+   match in the suppression path is `lower(trim(email))` (both `NOT EXISTS`
+   clauses, `_apply_suppression`, soft bounce, `address_suppression`
+   fallback), with index `email_leads_email_lc_idx`. Test: §4 of
+   test_suppression.py (forced " Loud@SHOUTY.ae " row).
+2. **Migration recorded but didn't apply** — fixed in `932a3d1`.
+   `_migrate_suppressed_addresses` calls `_apply_suppression` for every
+   recorded address. Test: §5 (B's copy left active → unsubscribed, business
+   DNC, enrollment stopped; an unrelated lead untouched). Upgrade re-rehearsed
+   on the `c92729a`-built database with that hole planted (an upper-case copy
+   on the other operator's business): only that row and its business changed;
+   a second `init_db` changes nothing. Every new check fails on the old db.py.
+3. **F-9 at 1280** — Campaign column also hidden below 1400 px
+   (`_waNarrowList`, re-renders on resize). 1280×720: median 59 px, 7 visible
+   (4 before); 1440×900: 10 visible (5 before); no overflow.
+4. **"Today" in import names and file names** — `fmtWhen(..., {absolute:
+   true})`: no relative words, plain spaces. Used by `sourceLabel` and both
+   Rename defaults (contacts.js, scraper.js). The server's `_csv_response`
+   already reduces names to safe characters.
+5. **Python 3.11** — earlier I only ran `py_compile` with `/usr/bin/python3.11`
+   on the 12 changed .py files. Now also: a 3.11.18 venv with
+   requirements.txt plus the worker packages, and the **whole suite passes
+   on 3.11** (27/27), with all 12 changed files compiled there.

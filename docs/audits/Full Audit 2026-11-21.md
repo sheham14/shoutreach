@@ -287,6 +287,11 @@ See [desktop-whatsapp-todo.png](evidence-2026-11-21/desktop-whatsapp-todo.png).
 > names wrap instead of pushing the number off. Checked in Chromium on the
 > harness: rows 59 px at 1440×900 (were ~100), and at 1280×720 every column
 > fits with the whole number showing (Number was off-screen before).
+> **Review fix (2026-11-22):** at 1280 the names still wrapped to three or
+> four lines, so below 1400 px the Campaign column is left out too (the side
+> panel names the campaign). Re-measured: median row 59 px everywhere; at
+> 1280×720, 7 rows visible (4 before); at 1440×900, 10 (5 before); no
+> sideways overflow at either.
 
 **F-10 · On a phone, 40% of the screen is used before the first lead.
 (High)** In order: the menu button on a row of its own, the title, the
@@ -524,7 +529,8 @@ about twenty places that just chop the raw string
 > whatsapp.js, lead_panel.js, email_leads.js and settings.js goes through it;
 > the three left are CSV values and a date picker's value, which must stay
 > raw. `pipelineOverdue` now compares a typed date with the reader's own
-> today, not UTC's. Checked by running the helper under UTC−3:30 (wall times
+> today, not UTC's. `opts.absolute` (no "Today", plain spaces) is used for an
+> import's automatic name, which also becomes a CSV file name (review fix). Checked by running the helper under UTC−3:30 (wall times
 > unshifted, UTC converted) and on the harness.
 
 **F-37 · Words and buttons. (Low)** Button labels mix Title Case and sentence

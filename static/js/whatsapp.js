@@ -346,12 +346,18 @@ function _waNumberCell(l) {
     ? ` ${pill('landline', '', 'Landlines are less likely to have WhatsApp')}` : ''}`;
 }
 
+const _waNarrowList = window.matchMedia('(max-width: 1399px)');
+_waNarrowList.addEventListener('change', () => { if (_waQueue && _waQueue.length) _renderWaQueue(); });
+
 function _renderWaQueue() {
   // Rows stay one line (audit F-9): no Campaign column when one campaign is
   // picked (it's the heading), the name cut with "…" otherwise; no Version
   // column unless a lead here has one; the number never wraps.
   const picked = _waFilter();
-  const showCamp = !picked || picked === 'none';
+  // Below ~1400px the side panel leaves the list too narrow for a Campaign
+  // column -- the business names wrapped to four lines (F-9 review). The
+  // panel names the lead's campaign anyway.
+  const showCamp = (!picked || picked === 'none') && !_waNarrowList.matches;
   const showVersion = _waBucket === 'ready' && _waQueue.some(l => l.template_variant);
   const heads = ['Business', ...(showCamp ? ['Campaign'] : []),
     ...(_waBucket === 'ready' ? [...(showVersion ? ['Version'] : []), 'Number'] : ['Last sent', 'Follow-ups'])];
