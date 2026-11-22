@@ -564,8 +564,14 @@ not marked done:
    enquiry booking id, team email via `_queue_team_notification(conn, …)`)
    are one transaction; "already recorded" re-runs the idempotent
    cross-operator marking. Test: test_cal_bookings.py §7.
-3. todo — (a) a cancellation waits while a delivery for its booking is
-   unread; (b) a created booking arriving after its own reschedule is skipped.
+3. **done `4cd44d6`** — any order: `_cal_events_naming` finds stored deliveries
+   naming a uid; (a) a cancellation raises `CalWaiting` while an unread
+   created/rescheduled for its booking exists, and **also** (beyond the
+   review's rule, which left "cancellation first, nothing waiting" open) a
+   booking or reschedule being filed applies an already-stored cancellation
+   (`_cal_apply_known_cancellation`); (b) a created booking named as
+   `rescheduleUid` by a stored reschedule is skipped ("superseded by its
+   reschedule"). Test: test_cal_bookings.py §8 (five orders).
 4. todo — the other operator's copy is marked only when it has no stage
    (enquired_elsewhere may still move up); Handover §3 + tests.
 5. todo — non-booker follow-up skipped if the business left "enquired".
