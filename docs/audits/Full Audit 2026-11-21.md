@@ -18,11 +18,11 @@ build it in.
 
 | | |
 |---|---|
-| Fix-now items (§2) | 18 of 19 done: 16 by Plan 1 (2026-11-21); 12 and 13 (F-23, F-24) by Plan 2 package 5, on branch `plan-2-cal-com`, not yet deployed. Open: 7 (B-24, backups — the operator's job, no code) |
-| Front-end findings (§3) | 10 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5, on the branch) |
+| Fix-now items (§2) | 18 of 19 done: 16 by Plan 1 (2026-11-21); 12 and 13 (F-23, F-24) by Plan 2 package 5. All deployed 2026-11-22. Open: 7 (B-24, backups — the operator's job, no code) |
+| Front-end findings (§3) | 10 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5). All deployed 2026-11-22 |
 | Design direction (§4) | agreed in mockup form on 2026-11-21 ("the mockups look good"); mark saved as `static/img/hexiv-mark.svg` |
 | Back-end findings (§5–§6) | 10 of 31 done: B-1, B-2 (first half: owners on log lines still open), B-3, B-6, B-9, B-10, B-14, B-15, B-22, B-23 |
-| Zoho booking retired (§1, Plan 2 package 8, on the branch) | The Zoho parts of B-7, B-8, B-13 and B-17 are closed and marked in place. Each finding stays open for its other parts, so none is counted as done above |
+| Zoho booking retired (§1, Plan 2 package 8, deployed 2026-11-22) | The Zoho parts of B-7, B-8, B-13 and B-17 are closed and marked in place. Each finding stays open for its other parts, so none is counted as done above |
 
 Convention as in [README.md](README.md): a finding is marked `✅ RESOLVED` in
 place, with the commit and how it was checked.

@@ -1,6 +1,8 @@
 # Plan 4 · Back-end hardening
 
-**Draft, under review: do not build from this yet.**
+**Draft: do not build from this.** It was reviewed on 2026-11-22 and has to
+be rewritten first. What the rewrite must deal with is in
+[its review notes](4%20Back-end%20hardening%20-%20review%20notes.md).
 
 **For:** a coding session. **Branch:** `plan-4-hardening`, from `master` once
 Plan 2 is merged. **Source:** the audit's back-end findings still open after
