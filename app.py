@@ -709,7 +709,8 @@ def api_save_website_settings():
         db.save_website_config(request.json or {})
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
-    return jsonify({"ok": True})
+    # Enquiries that arrived while a site was set to nobody are filed now.
+    return jsonify({"ok": True, "filed": db.file_waiting_enquiries()})
 
 
 @app.route("/api/website-settings/key", methods=["POST"])

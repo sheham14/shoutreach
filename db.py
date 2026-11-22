@@ -943,6 +943,7 @@ def init_db():
         try:
             _seed_pipeline_stages(conn)
             _migrate_pipeline_wants_time(conn)
+            _migrate_later_pipeline_stage(conn, "enquired")
         except Exception as exc:
             logger.warning("Pipeline stage seeding skipped: %s", exc)
 
@@ -4674,7 +4675,15 @@ _BUILTIN_PIPELINE_STAGES = {
     "not_interested": ("Not interested", True,  False, False, "bad",     60),
 }
 
-PIPELINE_CHANNELS = ("whatsapp", "call", "email")
+PIPELINE_CHANNELS = ("whatsapp", "call", "email", "website")
+
+# Built-ins added after the first set, each seeded by its own guarded
+# one-shot rather than by _seed_pipeline_stages, so a stage an operator has
+# changed or removed is never put back on a restart. Same tuple shape.
+_LATER_PIPELINE_STAGES = {
+    # Plan 2: someone filled in the booking form on a website.
+    "enquired": ("Enquired on the website", False, False, False, "info", 5),
+}
 
 # Settings marker for the one-shot below -- see _migrate_pipeline_wants_time.
 _PIPELINE_WANTS_TIME_MARKER = "_migrated_pipeline_wants_time"
@@ -4708,6 +4717,20 @@ def _migrate_pipeline_wants_time(conn):
     """)
     conn.execute("INSERT INTO settings(key, value) VALUES(?, '1')",
                  (_PIPELINE_WANTS_TIME_MARKER,))
+
+
+def _migrate_later_pipeline_stage(conn, key: str):
+    """Seed one of _LATER_PIPELINE_STAGES, once, guarded by its own marker."""
+    marker = f"_seeded_pipeline_stage_{key}"
+    if conn.execute("SELECT 1 FROM settings WHERE key=?", (marker,)).fetchone():
+        return
+    label, term, dated, timed, tone, order = _LATER_PIPELINE_STAGES[key]
+    conn.execute("""
+        INSERT OR IGNORE INTO pipeline_stages
+            (key, label, is_terminal, wants_date, wants_time, tone, sort_order, is_builtin)
+        VALUES(?,?,?,?,?,?,?,1)
+    """, (key, label, int(term), int(dated), int(timed), tone, order))
+    conn.execute("INSERT INTO settings(key, value) VALUES(?, '1')", (marker,))
 
 
 def get_pipeline_stages(include_archived=False, owner_id=None) -> dict:
@@ -8340,6 +8363,8 @@ def get_business_detail(business_id: int, owner_id=None):
     except (TypeError, ValueError):
         out["audit"] = None
     out["rating_context"] = get_rating_context(business_id, owner_id=owner)
+    # Plan 2: what they told the website, for the panel's "Website enquiry".
+    out["enquiries"] = get_business_enquiries(business_id, owner_id=owner)
     return out
 
 
@@ -9319,12 +9344,14 @@ def record_website_enquiry(enquiry: dict) -> int:
     """
     Store one cleaned enquiry, idempotently: the same email from the same
     site, while it hasn't booked, updates that enquiry instead of adding a
-    second. Returns its id. (Package 2 files it as a lead.)
+    second. Then files it as a lead (file_website_enquiry). Returns its id.
     """
     fields = {"name": enquiry["name"], "business_name": enquiry.get("business", ""),
               "phone": enquiry.get("phone", ""), "website": enquiry.get("website", ""),
               "country": enquiry.get("country", ""), "locale": enquiry.get("locale", ""),
-              "answers": json.dumps(enquiry.get("answers") or {}, ensure_ascii=False),
+              # '' when there are none, so a repeat post without answers keeps
+              # the first one's (the update below skips empty values).
+              "answers": json.dumps(enquiry["answers"], ensure_ascii=False) if enquiry.get("answers") else "",
               "summary": enquiry.get("summary", "")}
     with get_db() as conn:
         row = conn.execute("""
@@ -9338,12 +9365,107 @@ def record_website_enquiry(enquiry: dict) -> int:
             args = [v for value in fields.values() for v in (value, value)]
             conn.execute(f"UPDATE website_enquiries SET {sets}, updated_at=datetime('now') WHERE id=?",
                          (*args, row["id"]))
-            return row["id"]
-        cols = ["site", "email", *fields]
-        cur = conn.execute(
-            f"INSERT INTO website_enquiries({', '.join(cols)}) VALUES({', '.join('?' * len(cols))})",
-            (enquiry["site"], enquiry["email"], *fields.values()))
-        return cur.lastrowid
+            enquiry_id = row["id"]
+        else:
+            cols = ["site", "email", *fields]
+            enquiry_id = conn.execute(
+                f"INSERT INTO website_enquiries({', '.join(cols)}) VALUES({', '.join('?' * len(cols))})",
+                (enquiry["site"], enquiry["email"], *fields.values())).lastrowid
+    file_website_enquiry(enquiry_id)
+    return enquiry_id
+
+
+def _website_batch_id(conn, owner: int, site: str) -> int:
+    """Each site's one named import for this operator, so the "From" filter
+    finds website leads on every Leads tab. Found by kind and site, so a
+    rename by the operator sticks."""
+    row = conn.execute("SELECT id FROM lead_batches WHERE owner_id=? AND kind='website' AND source=?",
+                       (owner, site)).fetchone()
+    if row:
+        return row["id"]
+    return conn.execute(
+        "INSERT INTO lead_batches(owner_id, kind, name, source, channel) VALUES(?, 'website', ?, ?, '')",
+        (owner, f"Website — {site}", site)).lastrowid
+
+
+def file_website_enquiry(enquiry_id: int):
+    """
+    Make an enquiry a lead for its site's owner (a Team setup setting): find
+    or create the business with the existing matcher -- with the country, so
+    "07700 900123" matches "+44 7700 900123" -- and its email as an email lead
+    with the person's first name. Creation goes through upsert_businesses, so
+    an address that unsubscribed or bounced arrives suppressed (Plan 1). The
+    enquiry is still recorded: they asked to be contacted about a booking.
+
+    Sets the stage to "Enquired on the website" unless the business already
+    has a stage: an enquiry never moves a deal backwards. Returns the
+    business id, or None while the site has no owner set.
+    """
+    with get_db() as conn:
+        e = conn.execute("SELECT * FROM website_enquiries WHERE id=?", (enquiry_id,)).fetchone()
+    if not e:
+        return None
+    site_cfg = get_website_config()["sites"].get(e["site"]) or {}
+    owner = int(site_cfg.get("owner_id") or 0)
+    if not owner:
+        return None
+    if e["business_id"] and e["owner_id"] and e["owner_id"] != owner:
+        owner = e["owner_id"]      # filed already; a later change of setting doesn't move it
+    first, _, last = (e["name"] or "").partition(" ")
+    row = {"company": e["business_name"] or e["name"], "email": e["email"],
+           "first_name": first, "last_name": last.strip(),
+           "phone": e["phone"], "website": e["website"],
+           "country": e["country"] or site_cfg.get("country") or ""}
+    with get_db() as conn:
+        newest = conn.execute("SELECT COALESCE(MAX(id), 0) FROM businesses").fetchone()[0]
+    _accepted, ids = upsert_businesses([row], owner_id=owner)
+    if not ids:
+        return None
+    bid = ids[0]
+    with get_db() as conn:
+        batch = _website_batch_id(conn, owner, e["site"])
+        conn.execute("INSERT OR IGNORE INTO lead_batch_members(batch_id, business_id, is_new) VALUES(?,?,?)",
+                     (batch, bid, 1 if bid > newest else 0))
+        conn.execute("UPDATE website_enquiries SET owner_id=?, business_id=?, updated_at=datetime('now') "
+                     "WHERE id=?", (owner, bid, enquiry_id))
+        stage = conn.execute("SELECT pipeline_stage FROM businesses WHERE id=?", (bid,)).fetchone()
+    if stage and not stage["pipeline_stage"]:
+        set_business_pipeline(bid, "enquired", "website", owner_id=owner)
+    return bid
+
+
+def file_waiting_enquiries() -> int:
+    """File every enquiry still waiting for its site's owner to be set.
+    Called when the website settings are saved."""
+    with get_db() as conn:
+        ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM website_enquiries WHERE business_id IS NULL ORDER BY id")]
+    return sum(1 for i in ids if file_website_enquiry(i))
+
+
+def get_business_enquiries(business_id: int, owner_id=None) -> list:
+    """The website enquiries behind one of this operator's businesses, newest
+    first, for the lead panel."""
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        rows = conn.execute("""
+            SELECT id, site, name, email, business_name, phone, website, locale,
+                   answers, summary, cal_booking_id, created_at, updated_at
+              FROM website_enquiries WHERE business_id=? AND owner_id=?
+             ORDER BY id DESC
+        """, (business_id, owner)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            answers = json.loads(d["answers"] or "{}")
+        except ValueError:
+            answers = {}
+        # A list of [question, answer] in the order the form asked them: a JSON
+        # object would come back with its keys sorted alphabetically.
+        d["answers"] = [[q, a] for q, a in answers.items()] if isinstance(answers, dict) else []
+        out.append(d)
+    return out
 
 
 def record_cal_event(body: bytes) -> bool:

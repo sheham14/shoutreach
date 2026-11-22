@@ -136,7 +136,8 @@ function pipelinePill(row) {
   if (!key) return '';
   const s = pipelineStage(key);
   const label = s ? s.label : (row.pipeline_label || key);
-  const via = row.pipeline_channel ? ` · via ${row.pipeline_channel}` : '';
+  const via = row.pipeline_channel
+    ? ` · via ${row.pipeline_channel === 'website' ? 'the website' : row.pipeline_channel}` : '';
   const when = row.pipeline_at ? ` · ${fmtWhen(row.pipeline_at, 'utc', { compact: true })}` : '';
   const due = row.next_action_at ? ` · due ${fmtWhen(row.next_action_at, 'wall')}` : '';
   return pill(label, _PIPE_TONE[s && s.tone] || '', `${label}${via}${when}${due}`);
@@ -857,8 +858,30 @@ function pipelineRowHtml(d, opts) {
     </div>`;
 }
 
+// What they told the website's booking form (Plan 2), newest first. The
+// answers arrive as English labels, so they read as they were asked.
+function enquiryHtml(d) {
+  return (d.enquiries || []).map(e => {
+    const answers = Array.isArray(e.answers) ? e.answers : [];
+    const contact = [e.name, e.phone, e.website].filter(Boolean).map(esc).join(' · ');
+    return `<div class="text-small" style="line-height:1.55;margin-bottom:10px">
+      <div class="text-muted">${esc(e.site)} · ${esc(fmtWhen(e.created_at, 'utc'))}${
+        e.cal_booking_id ? ' · booked' : ''}${e.locale === 'ar' ? ' · in Arabic' : ''}</div>
+      ${contact ? `<div>${contact}</div>` : ''}
+      ${answers.length ? `<table class="kv" style="margin-top:6px">${answers.map(([q, a]) =>
+        `<tr><td class="text-muted" style="padding:2px 10px 2px 0;vertical-align:top">${esc(q)}</td>
+             <td style="padding:2px 0">${esc(a)}</td></tr>`).join('')}</table>`
+        : (e.summary ? `<div style="margin-top:6px;white-space:pre-wrap">${esc(e.summary)}</div>` : '')}
+    </div>`;
+  }).join('');
+}
+
 function sharedSectionsHtml(d, { open = 'notes' } = {}) {
-  return `
+  const enquiries = (d.enquiries || []).length;
+  return `${enquiries ? `
+    <details class="panel-fold" open>
+      <summary>Website enquiry${enquiries > 1 ? ` <span class="text-muted text-small">· ${enquiries}</span>` : ''}</summary>
+      ${enquiryHtml(d)}</details>` : ''}
     <details class="panel-fold" ${open === 'notes' || open === 'all' ? 'open' : ''}>
       <summary>Notes</summary>${notesHtml(d)}</details>
     <details class="panel-fold" ${open === 'audit' || open === 'all' ? 'open' : ''}>

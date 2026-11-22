@@ -43,6 +43,117 @@ LEAD = {"site": "hexiv.co.uk", "name": "Sam Smith", "email": "Sam@Example.co.uk"
         "summary": "Dental clinic, wants more bookings"}
 
 
+def test_enquiry_becomes_lead(db, path, anon, ca, co, hdr, web, admin, other):
+    print("\n9. AN ENQUIRY BECOMES A LEAD (PACKAGE 2)")
+    with db.get_db() as conn:   # start clean: sections above stored enquiries for nobody
+        conn.execute("DELETE FROM website_enquiries")
+    ca.put("/api/website-settings", headers=hdr, json={
+        "sites": {"hexiv.co.uk": {"owner_id": other, "country": "GB"},
+                  "hexiv.co": {"owner_id": 0, "country": ""}}})
+    lead = {**LEAD, "email": "jo@brightsmiles.co.uk", "name": "Jo Bright", "business": "Bright Smiles",
+            "phone": "07700 900456", "website": "brightsmiles.co.uk",
+            "answers": {"What kind of business?": "Dental clinic", "Biggest challenge": "Not enough bookings"}}
+    # Sent as raw JSON: the test client's json= sorts keys, and the order the
+    # form asked its questions in is part of what's being checked.
+    r = anon.post("/api/inbound/website-lead", data=json.dumps(lead),
+                  headers={**web, "Content-Type": "application/json"})
+    check("accepted", r.status_code == 200, str(r.status_code))
+    rows = q(path, "SELECT owner_id, business_id FROM website_enquiries WHERE email='jo@brightsmiles.co.uk'")
+    owner, bid = rows[0] if rows else (None, None)
+    check("filed for the site's owner, from the setting", owner == other and bid, str(rows))
+    check("the business is theirs", q(path, "SELECT owner_id, name FROM businesses WHERE id=?", (bid,))
+          == [(other, "Bright Smiles")])
+    check("the email is an email lead with the person's first name",
+          q(path, "SELECT first_name, last_name, status FROM email_leads WHERE business_id=?", (bid,))
+          == [("Jo", "Bright", "active")])
+    check("stage: Enquired on the website, via the website",
+          q(path, "SELECT pipeline_stage, pipeline_channel FROM businesses WHERE id=?", (bid,))
+          == [("enquired", "website")])
+    check("the stage is a built-in with that label",
+          q(path, "SELECT label, is_builtin FROM pipeline_stages WHERE key='enquired'")
+          == [("Enquired on the website", 1)])
+    src = co.get("/api/contacts/sources").get_json()
+    site_src = [x for x in src if x.get("name") == "Website — hexiv.co.uk"]
+    check("the site has one named import the From filter offers", len(site_src) == 1, str(src)[:200])
+    page = co.get(f"/api/businesses?source_job_id={site_src[0]['id'] if site_src else 0}").get_json()
+    check("and filtering by it finds the lead",
+          any(b.get("id") == bid for b in (page.get("rows") if isinstance(page, dict) else page) or []),
+          str(page)[:200])
+    d = co.get(f"/api/businesses/{bid}").get_json()
+    check("the lead panel gets the enquiry with its answers",
+          d.get("enquiries") and d["enquiries"][0]["answers"] ==
+          [["What kind of business?", "Dental clinic"], ["Biggest challenge", "Not enough bookings"]],
+          str(d.get("enquiries"))[:200])
+
+    print("   the wall")
+    check("the other operator gets 404 for the lead", ca.get(f"/api/businesses/{bid}").status_code == 404)
+    listing = ca.get("/api/businesses?per_page=500").get_json()
+    rows_ = listing.get("rows") if isinstance(listing, dict) else listing
+    check("and it's absent from their Contacts", all(b.get("id") != bid for b in rows_ or []))
+    check("and from their From list", all(x.get("name") != "Website — hexiv.co.uk"
+                                          for x in ca.get("/api/contacts/sources").get_json()))
+    check("and their own leads carry no enquiries",
+          all(not db.get_business_enquiries(b, owner_id=admin) for (b,) in
+              q(path, "SELECT id FROM businesses WHERE owner_id=?", (admin,))))
+
+    print("   a repeat post, a second person, matching, suppression")
+    anon.post("/api/inbound/website-lead", json={**lead, "answers": {}}, headers=web)
+    check("a repeat post keeps one business and one enquiry, and its answers",
+          q(path, "SELECT COUNT(*) FROM businesses WHERE name='Bright Smiles'")[0][0] == 1
+          and len(co.get(f"/api/businesses/{bid}").get_json()["enquiries"]) == 1
+          and co.get(f"/api/businesses/{bid}").get_json()["enquiries"][0]["answers"])
+
+    db.upsert_businesses([{"company": "Harbour Physio", "phone": "+44 7700 900777",
+                           "country": "GB"}], owner_id=other)
+    held = q(path, "SELECT id FROM businesses WHERE name='Harbour Physio'")[0][0]
+    anon.post("/api/inbound/website-lead", json={**LEAD, "email": "kim@harbourphysio.co.uk",
+              "name": "Kim", "business": "Harbour Physio Ltd", "phone": "07700 900777", "country": ""},
+              headers=web)
+    got = q(path, "SELECT business_id FROM website_enquiries WHERE email='kim@harbourphysio.co.uk'")
+    check("a local UK number matches the same number held in international form (site country GB)",
+          got == [(held,)], f"{got} vs {held}")
+
+    db.unsubscribe_contact("stop@nomail.co.uk")
+    anon.post("/api/inbound/website-lead", json={**LEAD, "email": "stop@nomail.co.uk", "name": "Stop",
+              "business": "No Mail Ltd"}, headers=web)
+    check("a suppressed address is still recorded as an enquiry",
+          q(path, "SELECT COUNT(*) FROM website_enquiries WHERE email='stop@nomail.co.uk'")[0][0] == 1)
+    check("but its email lead is suppressed",
+          q(path, "SELECT status FROM email_leads WHERE email='stop@nomail.co.uk'") == [("unsubscribed",)])
+
+    with db.get_db() as conn:
+        conn.execute("UPDATE businesses SET pipeline_stage='proposal_sent' WHERE id=?", (bid,))
+    anon.post("/api/inbound/website-lead", json={**lead, "summary": "again"}, headers=web)
+    check("an enquiry never moves a deal backwards",
+          q(path, "SELECT pipeline_stage FROM businesses WHERE id=?", (bid,)) == [("proposal_sent",)])
+
+    print("   a site set to nobody, then set")
+    anon.post("/api/inbound/website-lead", json={**LEAD, "site": "hexiv.co", "email": "ali@clinic.ae",
+              "name": "Ali", "business": "Ali Clinic", "locale": "ar"}, headers=web)
+    check("kept, filed for no one, while hexiv.co has no owner",
+          q(path, "SELECT owner_id, business_id FROM website_enquiries WHERE email='ali@clinic.ae'") == [(0, None)])
+    r = ca.put("/api/website-settings", headers=hdr, json={"sites": {"hexiv.co": {"owner_id": admin}}})
+    check("setting the owner files it", r.get_json().get("filed") == 1 and
+          q(path, "SELECT owner_id FROM website_enquiries WHERE email='ali@clinic.ae'") == [(admin,)])
+
+    print("   deleting the lead")
+    r = co.post("/api/businesses/delete", headers=hdr, json={"business_ids": [bid]})
+    check("the owner deletes the lead", r.status_code == 200 and r.get_json().get("deleted") == 1, str(r.get_json()))
+    check("takes its enquiry with it", q(path, "SELECT COUNT(*) FROM website_enquiries WHERE business_id=?",
+                                         (bid,))[0][0] == 0)
+    group = q(path, "SELECT delete_group FROM deleted_leads WHERE business_id=?", (bid,))
+    co.post("/api/trash/restore", headers=hdr, json={"group": group[0][0] if group else ""})
+    check("and Recently deleted brings it back",
+          q(path, "SELECT COUNT(*) FROM website_enquiries WHERE business_id=?", (bid,))[0][0] == 1)
+
+    print("   the stage's own migration")
+    with db.get_db() as conn:
+        conn.execute("UPDATE pipeline_stages SET label='Web lead' WHERE key='enquired'")
+    db.init_db()
+    check("re-running startup doesn't re-seed a renamed built-in",
+          q(path, "SELECT label FROM pipeline_stages WHERE key='enquired'") == [("Web lead",)])
+
+
 def main():
     work = tempfile.mkdtemp(prefix="inbound_")
     try:
@@ -217,6 +328,11 @@ def main():
         r = ca.post("/api/website-settings/key", headers=hdr)
         r2 = anon.post("/api/inbound/website-lead", json=LEAD, headers=web)
         check("rotating the key stops the old one", r2.status_code == 401, str(r2.status_code))
+
+        app_mod._inbound_hits.clear()
+        key = ca.post("/api/website-settings/key", headers=hdr).get_json()["key"]
+        web = {"X-API-Key": key}
+        test_enquiry_becomes_lead(db, path, anon, ca, co, hdr, web, admin, other)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
