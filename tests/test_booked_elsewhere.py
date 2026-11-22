@@ -194,6 +194,38 @@ def main():
               == [("booked", "2026-12-05 10:00:00")])
         check("a copy already on a terminal stage keeps it",
               q(path, "SELECT pipeline_stage FROM businesses WHERE id=?", (won,)) == [("won",)])
+
+        print("\n4. ONLY A COPY WITH NO STAGE IS MARKED (decided 2026-11-22)")
+        db.upsert_businesses([{"company": "Proposal Clinic", "phone": "+44 7700 900111", "country": "GB"}],
+                             owner_id=sheham)
+        prop = q(path, "SELECT id FROM businesses WHERE name='Proposal Clinic'")[0][0]
+        db.set_business_pipeline(prop, "proposal_due", "email", next_action_at="2026-12-01", owner_id=sheham)
+        custom = db.create_pipeline_stage("Sent a loom", owner_id=sheham)
+        db.upsert_businesses([{"company": "Custom Clinic", "phone": "+44 7700 900112", "country": "GB"}],
+                             owner_id=sheham)
+        cust = q(path, "SELECT id FROM businesses WHERE name='Custom Clinic'")[0][0]
+        db.set_business_pipeline(cust, custom, "call", owner_id=sheham)
+        for name, phone, email in (("Proposal Clinic", "07700 900111", "p@prop.co.uk"),
+                                   ("Custom Clinic", "07700 900112", "c@cust.co.uk")):
+            db.record_website_enquiry(db.clean_website_enquiry({"site": "hexiv.co.uk", "name": "X", "email": email,
+                                                                "business": name, "phone": phone}))
+        check("a copy on 'Proposal due, 1 Dec' keeps its stage AND its date",
+              q(path, "SELECT pipeline_stage, next_action_at FROM businesses WHERE id=?", (prop,))
+              == [("proposal_due", "2026-12-01")])
+        check("a copy on the owner's own custom stage keeps it",
+              q(path, "SELECT pipeline_stage FROM businesses WHERE id=?", (cust,)) == [(custom,)])
+        db.upsert_businesses([{"company": "Moved Back", "phone": "+44 7700 900113", "country": "GB"}],
+                             owner_id=sheham)
+        back = q(path, "SELECT id FROM businesses WHERE name='Moved Back'")[0][0]
+        enquiry = {"site": "hexiv.co.uk", "name": "X", "email": "m@back.co.uk", "business": "Moved Back",
+                   "phone": "07700 900113"}
+        db.record_website_enquiry(db.clean_website_enquiry(enquiry))
+        check("a copy with no stage is marked",
+              q(path, "SELECT pipeline_stage FROM businesses WHERE id=?", (back,)) == [("enquired_elsewhere",)])
+        db.set_business_pipeline(back, "replied", "call", owner_id=sheham)
+        db.record_website_enquiry(db.clean_website_enquiry({**enquiry, "summary": "again"}))
+        check("once its owner moves it on, a repeat post leaves it alone",
+              q(path, "SELECT pipeline_stage FROM businesses WHERE id=?", (back,)) == [("replied",)])
         check("no wa_log row", q(path, "SELECT COUNT(*) FROM wa_log")[0][0] == 0)
     finally:
         shutil.rmtree(work, ignore_errors=True)

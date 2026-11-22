@@ -283,8 +283,11 @@ visibility into anyone else's leads.
   follow-ups stop (email sequences end, unsent WhatsApp paused, messaged
   WhatsApp marked replied). It reveals nothing else: no time (`pipeline_at`
   and `next_action_at` stay empty), no answers, no contact details, not who
-  holds it, no history line. Nothing is merged. A copy already booked by its
-  owner, or on a terminal stage of its owner's, is left alone.
+  holds it, no history line. Nothing is merged. **Only a copy with no stage
+  is marked** (decided 2026-11-22, after review): a copy on any stage of its
+  owner's — replied, proposal due with its date, booked, won, a custom one —
+  is left exactly as it is, and stays so after its owner moves it on; the one
+  move allowed is "Filled in the form" up to "Booked via the website".
   `tests/test_booked_elsewhere.py`.
 - **Overlap between operators is advisory only** (`find_cross_owner_matches`).
   The import goes ahead; the notice shows business name, channel and date,

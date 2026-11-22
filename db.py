@@ -10048,11 +10048,8 @@ def booking_link_for(business_id: int, channel: str = "", owner_id=None):
 # Decided 2026-11-21 as a deliberate exception to the wall (Handover §3).
 # It reveals nothing else: no time (pipeline_at and next_action_at are left
 # empty), no answers, no contact details, not who holds it, nothing on the
-# lead's history. Nothing is merged. Their copy is left alone if it is
-# already booked, or already on a terminal stage of its owner's.
-
-_ELSEWHERE_STAGES = ("enquired_elsewhere", "booked_elsewhere")
-
+# lead's history. Nothing is merged. Only a copy with NO stage is marked:
+# any stage of its owner's is left exactly as it is (decided 2026-11-22).
 
 def mark_other_operators_copies(business_id: int, booked: bool = False) -> int:
     """`booked`: a Cal.com booking was just filed, not only an enquiry.
@@ -10078,12 +10075,13 @@ def mark_other_operators_copies(business_id: int, booked: bool = False) -> int:
                   FROM businesses b LEFT JOIN pipeline_stages s ON s.key = b.pipeline_stage
                  WHERE b.id=?""", (row["id"],)).fetchone()
             stage_now = current["pipeline_stage"]
-            if stage_now == "booked" or stage_now == target_stage:
+            # Decided 2026-11-22 (review of Plan 2, item 4): only a copy with
+            # no stage is marked. Any stage of its owner's -- replied,
+            # proposal due with its date, booked, won, a custom one -- is
+            # left exactly as it is; so is a copy its owner moved off one of
+            # these stages. The one move allowed: enquired -> booked.
+            if not (stage_now == "" or (booked and stage_now == "enquired_elsewhere")):
                 continue
-            if current["terminal"] and stage_now not in _ELSEWHERE_STAGES:
-                continue          # won, not interested...: their call, left alone
-            if stage_now == "booked_elsewhere" and not booked:
-                continue          # never back down from booked to enquired
             targets.append((row["id"], other))
     for other_id, other_owner in targets:
         set_business_pipeline(other_id, target_stage, "website", owner_id=other_owner)
