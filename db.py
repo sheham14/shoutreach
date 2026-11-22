@@ -5536,6 +5536,7 @@ def log_call(call_lead_id: int, outcome: str, notes: str = "", next_call_at: str
         if biz:
             set_business_pipeline(business_id, "booked", channel="call",
                                   next_action_at=next_call_at, owner_id=biz["owner_id"])
+            clear_cancelled_cal_meeting(business_id)
 
     return {"outcome": outcome, "terminal": is_terminal, "stopped_email": stops_email}
 
@@ -10070,3 +10071,20 @@ def run_team_notifications(send=None) -> dict:
             conn.execute("UPDATE team_notifications SET sent_at=datetime('now'), attempts=attempts+1, "
                          "error='' WHERE id=?", (r["id"],))
     return counts
+
+
+
+def clear_cancelled_cal_meeting(business_id: int) -> bool:
+    """
+    A person booked this lead by hand after its Cal.com booking was
+    cancelled: the new meeting replaces the cancelled one, so the lead and
+    the Meetings page show the time just typed, "set by hand", instead of
+    "Cancelled on Cal.com" at the old time. The cancelled row goes; Cal.com
+    keeps its own record of the booking and its cancellation. A Cal.com
+    meeting that is still on is never touched. Called by the two hand-booking
+    paths (the pipeline route, a "Meeting booked" call outcome), not by the
+    Cal.com parser.
+    """
+    with get_db() as conn:
+        return conn.execute("DELETE FROM meetings WHERE business_id=? AND source='cal' AND state='cancelled'",
+                            (int(business_id),)).rowcount > 0

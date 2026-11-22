@@ -2408,6 +2408,9 @@ def api_set_business_pipeline(bid):
     )
     if not result.get("ok"):
         return jsonify(result), 404 if result.get("error") == "Not found" else 400
+    if (d.get("stage") or "") == "booked":
+        # A meeting booked by hand after a Cal.com cancellation replaces it.
+        db.clear_cancelled_cal_meeting(bid)
     return jsonify(result)
 
 

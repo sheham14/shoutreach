@@ -276,6 +276,52 @@ def test_awkward_deliveries(work):
     check("no wa_log row", q(path, "SELECT COUNT(*) FROM wa_log")[0][0] == 0)
 
 
+def test_rebooked_by_hand(work):
+    print("\n5. CANCELLED ON CAL.COM, THEN BOOKED BY HAND")
+    db, path, a, b, deliver, app_mod = boot(work, "rebooked.db")
+    db.save_website_config({"sites": {"hexiv.co.uk": {"owner_id": b, "country": "GB"}}})
+    deliver(CREATED)
+    deliver(MOVED)
+    deliver(CANCELLED)
+    bid = biz_for(path, EMAIL)
+    c = app_mod.app.test_client()
+    with c.session_transaction() as sess:
+        sess["user_id"] = b
+        sess["csrf_token"] = "t"
+    r = c.put(f"/api/businesses/{bid}/pipeline", headers={"X-CSRF-Token": "t"},
+              json={"stage": "booked", "channel": "whatsapp", "next_action_at": "2026-12-03T14:00"})
+    check("the hand booking saves", r.status_code == 200, str(r.status_code))
+    check("the cancelled Cal.com meeting is replaced: no row left",
+          q(path, "SELECT COUNT(*) FROM meetings WHERE business_id=?", (bid,))[0][0] == 0)
+    m = [x for x in db.get_meetings(owner_id=b) if x["business_id"] == bid]
+    check("Meetings shows the new time, set from WhatsApp, not 'cancelled'",
+          len(m) == 1 and m[0]["starts_at"] == "2026-12-03 14:00:00" and m[0]["pipeline_channel"] == "whatsapp"
+          and m[0]["meeting_state"] is None, str(m))
+    check("and the lead's detail has no meeting row to show", db.get_business_detail(bid, owner_id=b)["meeting"] is None)
+
+    db.save_website_config({"sites": {"hexiv.co.uk": {"owner_id": a, "country": "GB"}}})
+    live = json.loads(json.dumps(CREATED))
+    live["payload"]["uid"] = "live-booking"
+    live["payload"]["attendees"][0]["email"] = "live@example.com"
+    live["payload"]["metadata"]["businessName"] = "Live Clinic"
+    live["payload"]["metadata"]["phone"] = "07700 900765"
+    deliver(live)
+    lid = biz_for(path, "live@example.com")
+    with c.session_transaction() as sess:
+        sess["user_id"] = a
+    c.put(f"/api/businesses/{lid}/pipeline", headers={"X-CSRF-Token": "t"},
+          json={"stage": "booked", "channel": "call", "next_action_at": "2026-12-04T09:00"})
+    check("a Cal.com meeting that's still on is never touched by a hand booking",
+          q(path, "SELECT cal_uid, state FROM meetings WHERE business_id=?", (lid,)) == [("live-booking", "booked")])
+    with db.get_db() as conn:
+        conn.execute("UPDATE meetings SET state='cancelled' WHERE business_id=?", (lid,))
+        cl = db.get_or_create_call_lead(conn, lid)
+    db.log_call(cl, "booked", next_call_at="2026-12-05 11:00")
+    check("a 'Meeting booked' call outcome replaces a cancelled one too",
+          q(path, "SELECT COUNT(*) FROM meetings WHERE business_id=?", (lid,))[0][0] == 0)
+    check("no wa_log row", q(path, "SELECT COUNT(*) FROM wa_log")[0][0] == 0)
+
+
 def main():
     work = tempfile.mkdtemp(prefix="cal_bookings_")
     try:
@@ -283,6 +329,7 @@ def main():
         test_enquiry_first_and_followups(work)
         test_booked_from_any_channel(work)
         test_awkward_deliveries(work)
+        test_rebooked_by_hand(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print()
