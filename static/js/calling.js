@@ -626,7 +626,7 @@ function chooseOutcome(key) {
     ? 'Meeting date & time'
     : (required ? 'Next call' : 'Next call (optional)');
   hint.textContent = o && o.key === 'booked'
-    ? 'Goes on your Zoho Calendar if it\'s connected. Invite the client from their lead panel after.'
+    ? 'Kept here and shown on Meetings; no calendar is touched. To book on Cal.com instead, use Copy booking link on the lead.'
     : (required
         ? 'Puts this lead back in "Due now" at that time.'
         : 'Leave blank to keep the lead in the queue with no date attached.');
@@ -667,15 +667,10 @@ async function saveCallOutcome() {
     notes:        document.getElementById('cq-notes').value,
     next_call_at: nextAt || null,
     call_campaign_id: _callCampaignId || null,
-    // A meeting booked here goes on Zoho Calendar in your timezone, unless
-    // My settings names another.
-    timezone: browserTimezone(),
   });
   if (!res || res.error) { toast((res && res.error) || 'Could not save', 'err'); return; }
 
-  if (res.meeting && res.meeting.status === 'on_calendar') toast('Logged — the meeting is on your calendar. Send the invite from the lead\'s panel.');
-  else if (res.meeting && res.meeting.status === 'failed') toast(`Logged, but it isn't on your calendar — Zoho said: ${res.meeting.sync_error}`, 'err');
-  else toast(res.stopped_email ? 'Logged — email sequence stopped' : 'Logged');
+  toast(res.stopped_email ? 'Logged — email sequence stopped' : 'Logged');
   loadCallCampaigns();
   _advanceToNextLead(_callLead.id);
 }

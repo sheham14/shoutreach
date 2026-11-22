@@ -7,6 +7,11 @@ channel or the website; its count is asked for when the app loads. "Copy
 booking link" gives the Cal.com page prefilled for a lead with a signed
 reference in metadata, and a booking that comes back carrying it lands on
 exactly that lead. The WhatsApp Booked tab is gone.
+
+§5 is package 8: ShoutReach's own Zoho booking is removed. Setting a lead to
+Meeting booked by hand, with a time, still works and touches nothing but the
+stage; an old Zoho-era meeting row still reaches the panel; the Zoho tokens
+and settings are cleared once by a guarded migration.
 """
 import copy
 import hashlib
@@ -167,14 +172,140 @@ def main():
         check("the other operator's dashboard has none", cb.get("/api/dashboard").get_json().get("website") == [])
 
         print("\n4. THE WHATSAPP BOOKED TAB IS GONE")
-        html = open(os.path.join(ROOT, "templates", "sections", "whatsapp.html")).read()
-        js = open(os.path.join(ROOT, "static", "js", "whatsapp.js")).read()
+        html = open(os.path.join(ROOT, "templates", "sections", "whatsapp.html"), encoding="utf-8").read()
+        js = open(os.path.join(ROOT, "static", "js", "whatsapp.js"), encoding="utf-8").read()
         check("no Booked tab or pane", 'data-tab="booked"' not in html and 'data-pane="booked"' not in html)
         check("no Booked code left", "renderWaBooked" not in js and "wa-booked" not in js)
-        side = open(os.path.join(ROOT, "templates", "sections", "sidebar.html")).read()
-        app_js = open(os.path.join(ROOT, "static", "js", "app.js")).read()
+        side = open(os.path.join(ROOT, "templates", "sections", "sidebar.html"), encoding="utf-8").read()
+        app_js = open(os.path.join(ROOT, "static", "js", "app.js"), encoding="utf-8").read()
         check("Meetings is in the sidebar, its count loaded with the app",
               'data-section="meetings"' in side and "refreshMeetingCount()" in app_js)
+
+        print("\n5. SHOUTREACH'S ZOHO BOOKING IS GONE (package 8)")
+        csrf = {"X-CSRF-Token": "t"}
+        check("no zoho_calendar module, and app doesn't import one",
+              not os.path.exists(os.path.join(ROOT, "zoho_calendar.py")) and "zoho_calendar" not in sys.modules)
+        bid = ids["Call Clinic"]
+        gone = [("get", "/api/zoho/status"), ("get", "/api/zoho/calendars"), ("put", "/api/zoho/prefs"),
+                ("post", "/api/zoho/disconnect"), ("get", "/zoho/connect"), ("get", "/zoho/callback?state=x"),
+                ("post", f"/api/businesses/{bid}/meeting/sync"), ("post", f"/api/businesses/{bid}/meeting/invite"),
+                ("post", f"/api/businesses/{bid}/meeting/cancel"),
+                ("get", "/api/meetings/address-check?email=c%40call.co.uk")]
+        codes = {u: getattr(ca, m)(u, json={}, headers=csrf).status_code for m, u in gone}
+        check("every Zoho, meeting sync/invite/cancel and address-check route is a 404",
+              set(codes.values()) == {404}, str(codes))
+
+        print("   booking by hand still works, and touches nothing else")
+        db.upsert_businesses([{"company": "AC\\DC Dental", "phone": "07700 900555"},
+                              {"company": "Phone Booked", "phone": "07700 900666"},
+                              {"company": "Old Zoho", "phone": "07700 900777"}], owner_id=a)
+        ids = {n: i for i, n in q(path, "SELECT id, name FROM businesses")}
+        acdc = ids["AC\\DC Dental"]
+        r = ca.put(f"/api/businesses/{acdc}/pipeline", headers=csrf, json={
+            "stage": "booked", "channel": "whatsapp", "next_action_at": "2026-12-05T11:15",
+            # What the old dialog sent. Ignored now: no calendar, no invite, no saved address.
+            "meeting": {"send_invite": True, "invite_email": "boss@acdc.example", "save_email": True,
+                        "link_kind": "zmeeting", "timezone": "Asia/Dubai", "minutes": 30}})
+        check("a backslash in the name (B-8): booked by hand with a time, 200",
+              r.status_code == 200, f"{r.status_code} {r.get_data(as_text=True)[:200]}")
+        check("the stage, channel and typed time are saved",
+              q(path, "SELECT pipeline_stage, pipeline_channel, next_action_at FROM businesses WHERE id=?", (acdc,))
+              == [("booked", "whatsapp", "2026-12-05 11:15:00")])
+        check("no meeting row, and the answer says nothing about a meeting",
+              q(path, "SELECT COUNT(*) FROM meetings WHERE business_id=?", (acdc,))[0][0] == 0
+              and "meeting" not in (r.get_json() or {}))
+        check("the address typed for an invite isn't saved anywhere",
+              q(path, "SELECT COUNT(*) FROM email_leads WHERE business_id=?", (acdc,))[0][0] == 0)
+        listed = {m["company"]: m for m in ca.get("/api/meetings").get_json()}
+        check("it's on Meetings at the typed time", (listed.get("AC\\DC Dental") or {}).get("starts_at")
+              == "2026-12-05 11:15:00", str(listed.get("AC\\DC Dental")))
+
+        r = ca.post("/api/calls/log", headers=csrf, json={
+            "contact_id": ids["Phone Booked"], "outcome": "booked", "next_call_at": "2026-12-06T09:00",
+            "timezone": "Asia/Dubai"})
+        check("a 'Meeting booked' call outcome with a time: 200, stage booked at that time, no meeting row",
+              r.status_code == 200 and "meeting" not in (r.get_json() or {})
+              and q(path, "SELECT pipeline_stage, next_action_at FROM businesses WHERE id=?", (ids["Phone Booked"],))
+              == [("booked", "2026-12-06 09:00:00")]
+              and q(path, "SELECT COUNT(*) FROM meetings WHERE business_id=?", (ids["Phone Booked"],))[0][0] == 0,
+              f"{r.status_code} {r.get_data(as_text=True)[:200]}")
+
+        print("   an old Zoho-era meeting still shows")
+        old = ids["Old Zoho"]
+        db.set_business_pipeline(old, "booked", "call", next_action_at="2026-12-07 10:00", owner_id=a)
+        conn = sqlite3.connect(path)
+        conn.execute("""INSERT INTO meetings(business_id, starts_at, timezone, minutes, title, invite_email,
+                            link_kind, own_link, join_url, calendar_uid, event_uid, event_etag, invited_at)
+                        VALUES(?, '2026-12-07 10:00:00', 'Asia/Riyadh', 60, 'Hexiv x Old Zoho: intro call',
+                               'c@old.example', 'own', 'https://meet.google.com/abc-defg-hij',
+                               'https://meet.google.com/abc-defg-hij', 'cal1', 'ev1', '7', '2026-10-30 10:00:00')""",
+                     (old,))
+        conn.commit()
+        conn.close()
+        d = ca.get(f"/api/businesses/{old}").get_json()
+        m = d.get("meeting") or {}
+        check("the panel still gets it (source '', its Join link, no etag) for the reduced box",
+              m.get("source") == "" and m.get("join_url") == "https://meet.google.com/abc-defg-hij"
+              and "event_etag" not in m and d.get("next_action_at") == "2026-12-07 10:00:00", str(m))
+        row = {x["company"]: x for x in ca.get("/api/meetings").get_json()}.get("Old Zoho") or {}
+        check("and it's on Meetings, with Join, not cancelled",
+              row.get("join_url") == "https://meet.google.com/abc-defg-hij" and row.get("meeting_state") != "cancelled"
+              and row.get("cancelled_at") is None, str(row))
+        r = ca.put(f"/api/businesses/{old}/pipeline", headers=csrf,
+                   json={"stage": "booked", "channel": "call", "next_action_at": "2026-12-08T16:00"})
+        check("moving it by hand changes the stage's time and leaves the old row alone",
+              r.status_code == 200
+              and q(path, "SELECT next_action_at FROM businesses WHERE id=?", (old,)) == [("2026-12-08 16:00:00",)]
+              and q(path, "SELECT starts_at, event_uid, cancelled_at FROM meetings WHERE business_id=?", (old,))
+              == [("2026-12-07 10:00:00", "ev1", None)])
+
+        print("   nothing in the page still calls the Zoho code")
+        page = ""
+        for folder in ("static/js", "templates"):
+            for dirpath, _, files in os.walk(os.path.join(ROOT, folder)):
+                for name in files:
+                    if name.endswith((".js", ".html")):
+                        with open(os.path.join(dirpath, name), encoding="utf-8") as f:
+                            page += f.read()
+        stale = [s for s in ("/api/zoho", "/zoho/connect", "meeting/sync", "meeting/invite", "meeting/cancel",
+                             "address-check", "meetingFieldsHtml", "loadZohoStatus", "retryMeetingSync",
+                             "sendMeetingInvite", "cancelMeeting(", "saveZohoSetup", "cfg-zoho", "Zoho Calendar",
+                             "Zoho Meeting")
+                 if s in page]
+        check("no Zoho Calendar code, cards or wording left in static/js or templates", not stale, str(stale))
+        with open(os.path.join(ROOT, "app.py"), encoding="utf-8") as f:
+            app_src = f.read()
+        check("app.py has no Zoho code left", "zoho_calendar" not in app_src and "_book_meeting" not in app_src)
+
+        print("   the one-time clean-up of Zoho's tokens and settings")
+        conn = sqlite3.connect(path)
+        conn.execute("INSERT INTO zoho_connections(owner_id, region, refresh_token, access_token) "
+                     "VALUES(?, 'sa', 'refresh-token', 'access-token')", (a,))
+        conn.executemany("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)",
+                         [("zoho_client_secret", "s3cret"), ("zoho_client_id", "1000.X"), ("zoho_region", "sa"),
+                          (f"meeting_prefs:{a}", '{"own_link": "https://meet.example/x"}'),
+                          (f"audit_links:{a}", "[]")])
+        # A database from before package 8: the marker isn't there yet.
+        conn.execute("DELETE FROM settings WHERE key='_retired_zoho_calendar'")
+        conn.commit()
+        conn.close()
+        db.init_db()
+        check("init_db empties zoho_connections", q(path, "SELECT COUNT(*) FROM zoho_connections")[0][0] == 0)
+        check("and deletes the Zoho settings and meeting defaults (B-7, B-13)",
+              q(path, "SELECT key FROM settings WHERE key LIKE 'zoho_%' OR key LIKE 'meeting_prefs:%'") == [])
+        check("but nothing else (another per-person key stays)",
+              q(path, "SELECT value FROM settings WHERE key=?", (f"audit_links:{a}",)) == [("[]",)])
+        check("the tables are kept",
+              q(path, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('zoho_connections','meetings')")
+              [0][0] == 2 and q(path, "SELECT COUNT(*) FROM meetings WHERE business_id=?", (old,))[0][0] == 1)
+        conn = sqlite3.connect(path)
+        conn.execute("INSERT INTO zoho_connections(owner_id, region) VALUES(?, 'sa')", (a,))
+        conn.commit()
+        conn.close()
+        db.init_db()
+        check("it runs once: a second init_db leaves the table alone",
+              q(path, "SELECT COUNT(*) FROM zoho_connections")[0][0] == 1
+              and q(path, "SELECT COUNT(*) FROM settings WHERE key='_retired_zoho_calendar'")[0][0] == 1)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print()

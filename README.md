@@ -462,7 +462,7 @@ rather than returning to a table between calls.
 |---|---|
 | No answer / Left voicemail | Stays in the queue, attempt count goes up |
 | Callback booked / Interested / Proposal sent | Requires a date, returns to *Due now* then |
-| Meeting booked | Leaves the queue, keeps the meeting time, goes on your Zoho Calendar if connected |
+| Meeting booked | Leaves the queue, keeps the meeting time, shows on **Meetings** (no calendar is touched) |
 | Not interested / Wrong number / Do not call | Terminal — **and stops any email sequence** |
 
 That last row is the point of keeping both channels in one tool. Saying "not
@@ -510,17 +510,15 @@ while *Do not call* also marks them unsubscribed.
 no reply is still worth ringing; one that already replied or opted out is not.
 The app tells you which and lets you decide.
 
-**Booked meetings go on Zoho Calendar.** Once an admin has added the Zoho app
-under **Settings → Team setup → Zoho Calendar**, each person clicks **Connect
-Zoho Calendar** in **My settings** and picks the calendar their meetings go on
-(normally one you share). From then on, setting a lead to **Meeting booked** —
-from its panel, or as a call outcome — puts it on that calendar with a Zoho
-Meeting room or your own link. Tick **Email them an invite** and the client gets
-one from your own Zoho address; they're never emailed otherwise. Changing the
-stage never cancels a meeting: **Cancel meeting** on the lead's panel does, and
-asks whether to tell them. An `.ics` download is still there for any other
-calendar. Callbacks don't go on a calendar: the *Due now* queue is already
-where you'll be looking.
+**Meetings are booked on Cal.com.** Cal.com is the only thing that puts a
+meeting on a calendar or emails the client an invite. To book a lead you're
+talking to, use **Copy booking link** on its panel and send it to them: the
+booking that comes back lands on that lead. Bookings made on the websites
+arrive by themselves. Setting a lead to **Meeting booked** by hand, from its
+panel or as a call outcome, records the time here and nothing else. Every
+booked meeting is listed on **Meetings**. Calling's lead card still offers
+an `.ics` download for your own calendar. Callbacks don't go on a calendar: the *Due now* queue
+is already where you'll be looking.
 
 ---
 

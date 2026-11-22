@@ -680,11 +680,10 @@ def init_db():
                 error      TEXT    NOT NULL DEFAULT ''
             );
 
-            -- An operator's Zoho Calendar connection (zoho_calendar.py). Its
-            -- own table, like worker_keys, so the refresh token never rides
-            -- along in a row loaded or serialised for something else. One per
-            -- operator: each connects their own Zoho login, so a meeting --
-            -- and the invite the client gets -- comes from whoever booked it.
+            -- RETIRED (Plan 2 package 8): the Zoho Calendar booking this held
+            -- each operator's login for is gone, and nothing reads or writes
+            -- this table. Kept rather than dropped on the live database;
+            -- emptied once by _migrate_retire_zoho, since it held tokens.
             CREATE TABLE IF NOT EXISTS zoho_connections (
                 owner_id       INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                 -- The Zoho data centre the tokens were issued by ('sa',
@@ -706,15 +705,17 @@ def init_db():
             -- The calendar side of a booked meeting. One per business: a
             -- business has one stage, so at most one meeting at a time.
             --
-            -- Deliberately not businesses.next_action_at, which moves with
-            -- the stage. This row is what's on someone's calendar and in the
-            -- client's inbox, and changing or clearing the stage must never
-            -- cancel it -- that would email the client a cancellation over a
-            -- mis-click. Only an explicit "Cancel meeting" does.
+            -- Written only by Cal.com bookings now (source 'cal', Plan 2).
+            -- Rows with source '' are from the retired Zoho booking (Plan 2
+            -- package 8); they are kept and still shown. Deliberately not
+            -- businesses.next_action_at, which moves with the stage: changing
+            -- or clearing the stage never changes or cancels this row. The
+            -- calendar columns below (link_kind ... sync_error) were Zoho's.
             CREATE TABLE IF NOT EXISTS meetings (
                 business_id   INTEGER PRIMARY KEY REFERENCES businesses(id) ON DELETE CASCADE,
-                -- Wall-clock 'YYYY-MM-DD HH:MM:SS' in `timezone`, exactly as
-                -- typed. Converted to UTC only on its way to Zoho.
+                -- Wall-clock 'YYYY-MM-DD HH:MM:SS' in `timezone`: Cal.com's
+                -- instant converted once, on arrival (starts_utc keeps the
+                -- instant), or, on an old Zoho row, exactly as typed.
                 starts_at     TEXT    NOT NULL,
                 timezone      TEXT    NOT NULL DEFAULT '',
                 minutes       INTEGER NOT NULL DEFAULT 60,
@@ -884,6 +885,7 @@ def init_db():
         _migrate_wa_followup_counts(conn)
         _migrate_email_reply_todo(conn)
         _migrate_suppressed_addresses(conn)
+        _migrate_retire_zoho(conn)
 
         # Uniqueness is per owner, not global. The old global index is dropped
         # rather than left in place: while it exists, a second operator
@@ -5049,9 +5051,7 @@ def get_pipeline_board(owner_id=None, include_terminal=False, stage=None,
                    COALESCE(s.wants_time, 0)           AS stage_wants_time,
                    w.id AS wa_lead_id, w.wa_number, wc.name AS wa_campaign_name,
                    m.business_id IS NOT NULL           AS has_meeting,
-                   m.timezone   AS meeting_timezone,   m.join_url AS meeting_join_url,
-                   m.event_uid  AS meeting_event_uid,  m.sync_error AS meeting_sync_error,
-                   m.invite_email AS meeting_invite_email, m.invited_at AS meeting_invited_at
+                   m.timezone   AS meeting_timezone,   m.join_url AS meeting_join_url
               FROM businesses b
               LEFT JOIN pipeline_stages s ON s.key = b.pipeline_stage
               LEFT JOIN wa_leads w ON w.business_id = b.id
@@ -5066,79 +5066,31 @@ def get_pipeline_board(owner_id=None, include_terminal=False, stage=None,
 
 # ── Meetings: the calendar side of a booking ─────────────────────────────────
 #
-# A business on 'booked' with a time gets a `meetings` row, and if its owner
-# has connected Zoho Calendar, an event (zoho_calendar.py does the talking).
-# These are the storage halves; nothing here reaches the network.
-
-MEETING_DEFAULT_TITLE = "Hexiv × {{business}}: intro call"
-MEETING_DEFAULT_MINUTES = 60
-MEETING_LINK_KINDS = ("zmeeting", "own", "none")
+# A `meetings` row is written by a Cal.com booking (Plan 2, _cal_store_meeting).
+# Rows from the retired Zoho booking (Plan 2 package 8) are kept and shown.
+# Setting a stage to 'booked' by hand writes no row. Nothing here reaches the
+# network.
 
 _MEETING_COLUMNS = ("starts_at", "timezone", "minutes", "title", "invite_email", "link_kind",
                     "own_link", "join_url", "calendar_uid", "calendar_name", "event_uid",
                     "event_etag", "invited_at", "synced_at", "sync_error", "cancelled_at")
 
 
-def _meeting_prefs_key(owner: int) -> str:
-    return f"meeting_prefs:{int(owner)}"
-
-
-def get_meeting_prefs(owner_id=None) -> dict:
-    """This operator's defaults for a new meeting. Per operator: the two book
-    from different timezones and may pitch under different titles."""
-    owner = _owner_or_default(owner_id)
-    try:
-        saved = json.loads(get_settings().get(_meeting_prefs_key(owner)) or "{}")
-    except (TypeError, ValueError):
-        saved = {}
-    if not isinstance(saved, dict):
-        saved = {}
-    kind = saved.get("link_kind")
-    return {
-        "timezone":     str(saved.get("timezone") or ""),
-        "minutes":      int(saved.get("minutes") or MEETING_DEFAULT_MINUTES),
-        "invite_title": str(saved.get("invite_title") or MEETING_DEFAULT_TITLE),
-        "link_kind":    kind if kind in MEETING_LINK_KINDS else "zmeeting",
-        "own_link":     str(saved.get("own_link") or ""),
-    }
-
-
-def save_meeting_prefs(prefs: dict, owner_id=None) -> dict:
-    """Store already-validated preferences (zoho_calendar.clean_prefs)."""
-    owner = _owner_or_default(owner_id)
-    merged = {**get_meeting_prefs(owner), **{k: v for k, v in prefs.items()
-                                             if k in ("timezone", "minutes", "invite_title",
-                                                      "link_kind", "own_link")}}
-    save_settings({_meeting_prefs_key(owner): json.dumps(merged)})
-    return merged
-
-
-def get_zoho_connection(owner_id) -> dict:
-    """This operator's Zoho login, tokens included -- for zoho_calendar.py
-    only. Never send this row to a browser."""
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM zoho_connections WHERE owner_id=?",
-                           (int(owner_id),)).fetchone()
-    return dict(row) if row else None
-
-
-def save_zoho_connection(owner_id, **fields):
-    allowed = {"region", "zoho_email", "refresh_token", "access_token", "access_expires",
-               "calendar_uid", "calendar_name"}
-    updates = {k: v for k, v in fields.items() if k in allowed}
-    with get_db() as conn:
-        conn.execute("INSERT OR IGNORE INTO zoho_connections(owner_id) VALUES(?)", (int(owner_id),))
-        if "refresh_token" in updates:
-            updates["connected_at"] = datetime.datetime.now(
-                datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        if updates:
-            conn.execute(f"UPDATE zoho_connections SET {', '.join(f'{k}=?' for k in updates)} "
-                         "WHERE owner_id=?", (*updates.values(), int(owner_id)))
-
-
-def delete_zoho_connection(owner_id):
-    with get_db() as conn:
-        conn.execute("DELETE FROM zoho_connections WHERE owner_id=?", (int(owner_id),))
+def _migrate_retire_zoho(conn):
+    """
+    Plan 2 package 8 retired ShoutReach's own Zoho booking. It held secrets
+    that nothing uses any more, so clear them once (audit B-13, and B-7's
+    meeting half): each operator's Zoho tokens in zoho_connections, the Zoho
+    app's id and secret and region, and every person's meeting defaults
+    (meeting_prefs:<id>). The tables stay -- dropping tables on the live
+    database isn't worth the risk. Guarded by a settings marker.
+    """
+    if conn.execute("SELECT 1 FROM settings WHERE key='_retired_zoho_calendar'").fetchone():
+        return
+    conn.execute("DELETE FROM zoho_connections")
+    conn.execute("DELETE FROM settings WHERE key IN ('zoho_region', 'zoho_client_id', 'zoho_client_secret') "
+                 "OR key GLOB 'meeting_prefs:*'")
+    conn.execute("INSERT INTO settings(key, value) VALUES('_retired_zoho_calendar', '1')")
 
 
 def get_meeting(business_id: int):
@@ -5153,7 +5105,8 @@ def get_meeting(business_id: int):
 
 def save_meeting(business_id: int, **fields) -> dict:
     """Create or update the meeting for a business. `starts_at` is required
-    the first time."""
+    the first time. No route calls this since the Zoho booking was retired;
+    tools/audit/serve.py uses it to plant old-style rows."""
     updates = {k: v for k, v in fields.items() if k in _MEETING_COLUMNS}
     with get_db() as conn:
         exists = conn.execute("SELECT 1 FROM meetings WHERE business_id=?",

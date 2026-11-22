@@ -133,7 +133,7 @@ def main():
               q(path, "SELECT COUNT(*) FROM team_notifications")[0][0] == before)
         import scheduler
         importlib.reload(scheduler)
-        check("the pass calls it", "run_team_notifications()" in open(scheduler.__file__).read().split("def _one_pass")[1])
+        check("the pass calls it", "run_team_notifications()" in open(scheduler.__file__, encoding="utf-8").read().split("def _one_pass")[1])
         real = db.run_team_notifications
         db.run_team_notifications = lambda send=None: (_ for _ in ()).throw(RuntimeError("boom"))
         try:

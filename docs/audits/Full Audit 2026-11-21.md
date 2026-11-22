@@ -18,10 +18,11 @@ build it in.
 
 | | |
 |---|---|
-| Fix-now items (§2) | 16 of 19 done (Plan 1, 2026-11-21). Open: 7 (B-24, backups — the operator's job, no code); 12 and 13 (F-23, F-24 — moved to Plan 2) |
-| Front-end findings (§3) | 7 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 |
+| Fix-now items (§2) | 18 of 19 done: 16 by Plan 1 (2026-11-21); 12 and 13 (F-23, F-24) by Plan 2 package 5, on branch `plan-2-cal-com`, not yet deployed. Open: 7 (B-24, backups — the operator's job, no code) |
+| Front-end findings (§3) | 10 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5, on the branch) |
 | Design direction (§4) | agreed in mockup form on 2026-11-21 ("the mockups look good"); mark saved as `static/img/hexiv-mark.svg` |
 | Back-end findings (§5–§6) | 10 of 31 done: B-1, B-2 (first half: owners on log lines still open), B-3, B-6, B-9, B-10, B-14, B-15, B-22, B-23 |
+| Zoho booking retired (§1, Plan 2 package 8, on the branch) | The Zoho parts of B-7, B-8, B-13 and B-17 are closed and marked in place. Each finding stays open for its other parts, so none is counted as done above |
 
 Convention as in [README.md](README.md): a finding is marked `✅ RESOLVED` in
 place, with the commit and how it was checked.
@@ -1063,6 +1064,14 @@ goes into a client's invite. It matters only if the admin account is
 misused, but it is a gap in "admin is not a back door". **Fix:** refuse keys
 containing `:` or starting with `_` on that route. Effort: S.
 
+> ✅ **RESOLVED, meeting half** — Plan 2, package 8. Nothing reads
+> `meeting_prefs:<id>` any more: the meeting defaults, and the invite link
+> they fed, went with the Zoho booking. `_migrate_retire_zoho` deletes the
+> stored keys once. **Still open:** the route still accepts any key, so an
+> admin can still write `audit_links:<id>`. The fix above is unchanged.
+> Checked: `tests/test_meetings.py` §5 (the keys are gone after `init_db`,
+> and no route reads them).
+
 **B-8 · Smaller items. (Low)**
 
 | What | Detail | How checked |
@@ -1073,6 +1082,17 @@ containing `:` or starting with `_` on that route. Effort: S.
 | Two CSV downloads skip the spreadsheet-formula protection | Unsubscribed and Invalid-MX are built in the browser ([email_leads.js:256](../../static/js/email_leads.js#L256)) | read |
 | Malformed ids answer with a bare server error | Fourteen routes return a 500 on a non-numeric id or an unexpected field, instead of "bad request". No data exposed | seen by the review pass |
 | Small tells across the wall | The meeting address check says "unsubscribed" for an address only the other operator holds — with two operators, "never says whose" says whose. The import overlap notice shows the other operator's name for a business. Both are deliberate and documented; recorded here so the trade-off stays a choice | seen by the review pass |
+
+> ✅ **RESOLVED, calendar rows** — Plan 2, package 8. The backslash crash
+> was in `zoho_calendar.render_title`, which is deleted with the rest of
+> the Zoho booking. Setting a business named `AC\DC Dental` to Meeting
+> booked now saves its stage and time and nothing else. The meeting address
+> check (`/api/meetings/address-check`) served only the invite field and
+> is removed, so that half of "small tells" is gone. The import overlap
+> notice is still there, deliberately. **Still open:** the `javascript:`
+> website link, carriage returns in `.ics`, the two browser-built CSVs, and
+> 500s on malformed ids. Checked: `tests/test_meetings.py` §5 (the
+> backslash name books by hand with a 200; the address check is a 404).
 
 **B-22 · Calling → "Reopen" doesn't work. (Medium · seen)**
 
@@ -1160,6 +1180,18 @@ columns with a key held in the server's environment, not in the database;
 take a backup first. Effort: L. This is the largest remaining risk that is
 not a bug.
 
+> ✅ **RESOLVED, Zoho part** — Plan 2, package 8. The Zoho client secret
+> and each person's Zoho tokens are no longer stored. `_migrate_retire_zoho`
+> empties `zoho_connections` (the table is kept, not dropped) and deletes
+> `zoho_client_id`, `zoho_client_secret` and `zoho_region` from settings,
+> once, behind the marker `_retired_zoho_calendar`. Nothing writes either
+> place again. Copies in backups taken before the deploy still hold them.
+> **Still open:** SMTP/IMAP passwords, AI keys, worker keys, the Cal.com
+> webhook secret (Plan 2 package 1) and the session key are still plain
+> text. Checked: `tests/test_meetings.py` §5 (a planted connection and
+> secret are gone after `init_db`, and a second `init_db` leaves a re-planted
+> row alone, so it runs once).
+
 **B-21 · No content-security policy, and hundreds of inline handlers.
 (Low · read)** The page builds HTML as text in about 140 places and wires
 clicks with inline `onclick`. Escaping is done with the right helper in most
@@ -1236,6 +1268,14 @@ wait for: a DNS check on import (up to 500 lookups at 5 seconds each), an AI
 rewording (30-second limit), a Zoho call (15-second limit). **Fix:** move
 those waits off the request, the way the lead audit already runs on its own
 thread; or let the one worker handle requests on several threads. Effort: M.
+
+> ✅ **RESOLVED, Zoho part** — Plan 2, package 8. No request calls Zoho any
+> more: `zoho_calendar.py` and every route that used it are deleted.
+> Cal.com's webhook route never calls out (contract B), and the team
+> notifications (package 7) are sent by the scheduler, not by a request.
+> **Still open:** the DNS check on import and the AI rewording still hold
+> the worker. Checked: `tests/test_meetings.py` §5 (no `zoho_calendar`
+> module, the `/api/zoho/*` and `/zoho/*` routes answer 404).
 
 **B-18 · A push deploys with no tests run. (Medium · seen)** The deploy backs
 up the database, pulls, installs and restarts

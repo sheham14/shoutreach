@@ -155,7 +155,7 @@ def main():
         print("\n6. THE SCHEDULER RUNS IT, AND IT CAN'T STOP THE LOOP")
         import scheduler
         importlib.reload(scheduler)
-        src = open(scheduler.__file__).read()
+        src = open(scheduler.__file__, encoding="utf-8").read()
         check("the pass calls the job", "run_website_followups()" in src.split("def _one_pass")[1])
         real = db.run_website_followups
         db.run_website_followups = lambda now=None: (_ for _ in ()).throw(RuntimeError("boom"))
