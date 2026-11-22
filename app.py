@@ -200,6 +200,43 @@ def _is_worker_route() -> bool:
     return path == "/api/contacts/import" and _has_valid_worker_key()
 
 
+# The two doors in from outside (Plan 2). Neither has a session or a CSRF
+# token: the websites present their own key (X-API-Key, never a worker key)
+# and Cal.com signs the body. Listed by exact path -- never a prefix -- and
+# each route checks its own credential before reading anything.
+_INBOUND_PATHS = {"/api/inbound/website-lead", "/api/inbound/cal"}
+_WEBSITE_LEAD_MAX_BYTES = 32 * 1024
+_CAL_EVENT_MAX_BYTES = 256 * 1024
+_INBOUND_PER_MINUTE = 60
+_inbound_hits: "defaultdict[str, deque]" = defaultdict(deque)
+_inbound_hits_lock = threading.Lock()
+
+
+def _is_inbound_route() -> bool:
+    return request.path in _INBOUND_PATHS
+
+
+def _inbound_rate_limited(bucket: str) -> bool:
+    """At most _INBOUND_PER_MINUTE posts a minute per credential."""
+    now = _time.time()
+    with _inbound_hits_lock:
+        dq = _inbound_hits[bucket]
+        while dq and now - dq[0] > 60:
+            dq.popleft()
+        if len(dq) >= _INBOUND_PER_MINUTE:
+            return True
+        dq.append(now)
+        return False
+
+
+def _read_capped(limit: int):
+    """The raw body, or None if it's over `limit` bytes (read no further)."""
+    if request.content_length is not None and request.content_length > limit:
+        return None
+    raw = request.stream.read(limit + 1)
+    return None if len(raw) > limit else raw
+
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -359,6 +396,8 @@ def _require_login():
         return
     if _is_worker_route():
         return          # authenticated by X-API-Key in worker_auth_required
+    if _is_inbound_route():
+        return          # the website key or Cal.com's signature, in the route itself
     uid = session.get("user_id")
     # A signed cookie isn't enough on its own (audit B-3): the account must
     # still exist, and the cookie must carry the session version the account
@@ -386,6 +425,8 @@ def _check_csrf():
         return
     if _is_worker_route():
         return          # header auth, not cookie auth -- see _WORKER_PATHS
+    if _is_inbound_route():
+        return          # key or signature, not cookie -- see _INBOUND_PATHS
     # _require_login already redirected unauthed users; here we know there is
     # a session. Compare submitted token against the one bound to this session.
     submitted = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or ""
@@ -633,6 +674,124 @@ def api_get_worker_key():
 @login_required
 def api_rotate_worker_key():
     return jsonify({"key": db.rotate_worker_key(me())})
+
+
+# ── Website enquiries and Cal.com (Plan 2) ───────────────────────────────────
+
+def _public_base() -> str:
+    """The address outsiders reach this server at: the base URL set in Team
+    setup (also used for unsubscribe links), else this request's own."""
+    base = (db.get_settings().get("app_base_url") or "").strip().rstrip("/")
+    return base or request.url_root.rstrip("/")
+
+
+@app.route("/api/website-settings", methods=["GET"])
+@admin_required
+def api_get_website_settings():
+    """Team setup's "Website and bookings" card. Never returns the key or the
+    secret themselves -- only whether they're set."""
+    base = _public_base()
+    return jsonify({
+        **db.get_website_config(),
+        "has_website_key": db.has_website_key(),
+        "has_cal_secret": bool(db.get_cal_secret()),
+        "website_lead_url": f"{base}/api/inbound/website-lead",
+        "cal_webhook_url": f"{base}/api/inbound/cal",
+        "users": [{"id": u["id"], "username": u["username"]} for u in db.list_users()],
+        "sites_list": list(db.WEBSITE_SITES),
+    })
+
+
+@app.route("/api/website-settings", methods=["PUT"])
+@admin_required
+def api_save_website_settings():
+    try:
+        db.save_website_config(request.json or {})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/website-settings/key", methods=["POST"])
+@admin_required
+def api_rotate_website_key():
+    """A new website key, shown this once. The old one stops working now."""
+    key = db.rotate_website_key()
+    db.add_log("🔑 Website key replaced — the sites need the new one")
+    return jsonify({"ok": True, "key": key})
+
+
+@app.route("/api/website-settings/cal-secret", methods=["POST"])
+@admin_required
+def api_rotate_cal_secret():
+    """A new Cal.com webhook secret, shown this once, to paste into Cal.com."""
+    secret = db.rotate_cal_secret()
+    db.add_log("🔑 Cal.com webhook secret replaced — Cal.com needs the new one")
+    return jsonify({"ok": True, "secret": secret})
+
+
+@app.route("/api/website-followup", methods=["GET"])
+@login_required
+def api_get_website_followup():
+    return jsonify(db.get_website_followup(owner_id=me()))
+
+
+@app.route("/api/website-followup", methods=["PUT"])
+@login_required
+def api_save_website_followup():
+    d = request.json or {}
+    try:
+        prefs = db.save_website_followup(d.get("email_campaign_id"), d.get("wa_campaign_id"),
+                                         owner_id=me())
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, **prefs})
+
+
+@app.route("/api/inbound/website-lead", methods=["POST"])
+def api_inbound_website_lead():
+    """
+    Contract A (docs/plans/2): a website visitor reached the calendar. The
+    website key, then the size, then the shape -- and the reply never echoes
+    anything back.
+    """
+    if not db.website_key_valid(request.headers.get("X-API-Key", "")):
+        return jsonify({"ok": False, "error": "Invalid or missing website key"}), 401
+    if _inbound_rate_limited("website"):
+        return jsonify({"ok": False, "error": "Too many requests"}), 429
+    raw = _read_capped(_WEBSITE_LEAD_MAX_BYTES)
+    if raw is None:
+        return jsonify({"ok": False, "error": "Too large"}), 413
+    try:
+        enquiry = db.clean_website_enquiry(json.loads(raw.decode("utf-8")))
+    except (ValueError, UnicodeDecodeError) as exc:
+        msg = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) \
+            else "The body must be JSON"
+        return jsonify({"ok": False, "error": msg}), 400
+    db.record_website_enquiry(enquiry)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/inbound/cal", methods=["POST"])
+def api_inbound_cal():
+    """
+    Contract B: Cal.com reports a booking. The signature is checked on the
+    raw body, in constant time, before anything parses it; the verified body
+    is stored as received and the answer goes straight back. Nothing here
+    calls out to another service.
+    """
+    secret = db.get_cal_secret()
+    raw = _read_capped(_CAL_EVENT_MAX_BYTES)
+    if raw is None:
+        return jsonify({"ok": False, "error": "Too large"}), 413
+    sig = (request.headers.get("X-Cal-Signature-256") or "").strip().lower()
+    if sig.startswith("sha256="):
+        sig = sig[len("sha256="):]
+    expected = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest() if secret else ""
+    if not secret or not hmac.compare_digest(sig, expected):
+        return jsonify({"ok": False, "error": "Bad signature"}), 401
+    db.record_cal_event(raw)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/settings/test-smtp", methods=["POST"])

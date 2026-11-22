@@ -103,6 +103,27 @@
     <button class="btn btn-primary btn-sm" onclick="saveMeetingPrefs()">Save</button>
   </div>
 
+  <!-- Plan 2: people who reach the calendar on a website and don't book. -->
+  <div class="card" style="padding:24px;margin-top:24px">
+    <div class="card-title" style="margin-bottom:4px">Website enquiries that don't book</div>
+    <p class="text-muted text-small" style="margin-bottom:14px">When someone fills in the form on one of the
+      websites, reaches the calendar and doesn't book, they can be followed up from your campaigns:
+      one email sequence, and a place on your WhatsApp To do if they gave a number. Nothing sends a
+      WhatsApp by itself — you send it, as always. Leave either unset and that follow-up doesn't happen.
+      This only applies to enquiries from a site whose leads come to you (Team setup).</p>
+    <div class="responsive-grid-2" style="gap:16px">
+      <div class="form-group">
+        <label>Email campaign to enrol them in</label>
+        <select id="cfg-wf-email"><option value="">Don't email</option></select>
+      </div>
+      <div class="form-group">
+        <label>WhatsApp campaign to add them to</label>
+        <select id="cfg-wf-wa"><option value="">Don't add to WhatsApp</option></select>
+      </div>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="saveWebsiteFollowup()">Save</button>
+  </div>
+
   <div class="card" style="padding:24px;margin-top:24px">
     <div class="card-title" style="margin-bottom:4px">Your audit links</div>
     <p class="text-muted text-small" style="margin-bottom:10px">Tools you check every lead with, one click from any lead's panel.
@@ -267,6 +288,85 @@
         Shared by everyone on this server.</div>
     </div>
     <button class="btn btn-primary" onclick="saveSettings()" style="margin-bottom:22px">Save key</button>
+  </div>
+
+  <!-- Plan 2: the websites' booking form and Cal.com post here. -->
+  <div class="card" style="padding:24px;margin-top:24px">
+    <div class="card-title" style="margin-bottom:4px">Website and bookings</div>
+    <p class="text-muted text-small" style="margin-bottom:16px">The booking forms on hexiv.co.uk and hexiv.co send
+      each visitor who reaches the calendar here, and Cal.com tells ShoutReach about bookings, moves and
+      cancellations. Cal.com is the only thing that puts meetings on a calendar.</p>
+
+    <div class="form-group">
+      <label>Website key</label>
+      <div class="flex gap-2 items-center">
+        <span id="cfg-web-key-state" class="text-small" style="flex:1">…</span>
+        <button class="btn btn-ghost btn-sm" onclick="rotateWebsiteKey()" id="cfg-web-key-btn">Make a key</button>
+      </div>
+      <div class="form-hint">Each site's server sends this with every lead. It's shown once: put it in each site's
+        hosting as a server-only setting, never in anything the browser loads. A new key stops the old one at once.</div>
+    </div>
+    <div class="form-group">
+      <label>Address the sites post leads to</label>
+      <div class="flex gap-2">
+        <input id="cfg-web-lead-url" readonly class="mono" style="flex:1;font-size:12px" />
+        <button class="btn btn-ghost btn-sm" onclick="copyField('cfg-web-lead-url')">Copy</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Cal.com webhook — paste this address into Cal.com</label>
+      <div class="flex gap-2">
+        <input id="cfg-cal-url" readonly class="mono" style="flex:1;font-size:12px" />
+        <button class="btn btn-ghost btn-sm" onclick="copyField('cfg-cal-url')">Copy</button>
+      </div>
+      <div class="form-hint">Cal.com → Settings → Developer → Webhooks: this address, the secret below, and the
+        events booking created, rescheduled and cancelled.</div>
+    </div>
+    <div class="form-group">
+      <label>Cal.com webhook secret</label>
+      <div class="flex gap-2 items-center">
+        <span id="cfg-cal-secret-state" class="text-small" style="flex:1">…</span>
+        <button class="btn btn-ghost btn-sm" onclick="rotateCalSecret()" id="cfg-cal-secret-btn">Make a secret</button>
+      </div>
+      <div class="form-hint">Shown once, to paste into Cal.com. A new one means pasting it into Cal.com again.</div>
+    </div>
+
+    <div class="responsive-grid-2" style="gap:16px;margin-top:8px">
+      <div class="form-group">
+        <label>hexiv.co.uk — leads go to</label>
+        <select id="cfg-web-owner-hexiv.co.uk"></select>
+      </div>
+      <div class="form-group">
+        <label>hexiv.co.uk — country for local numbers</label>
+        <input id="cfg-web-country-hexiv.co.uk" maxlength="2" placeholder="GB" />
+      </div>
+      <div class="form-group">
+        <label>hexiv.co — leads go to</label>
+        <select id="cfg-web-owner-hexiv.co"></select>
+      </div>
+      <div class="form-group">
+        <label>hexiv.co — country for local numbers</label>
+        <input id="cfg-web-country-hexiv.co" maxlength="2" placeholder="Leave empty unless the site knows" />
+      </div>
+      <div class="form-group">
+        <label>Minutes before a non-booker joins WhatsApp To do</label>
+        <input id="cfg-web-wa-wait" type="number" min="0" />
+      </div>
+      <div class="form-group">
+        <label>Hours before a non-booker's first email</label>
+        <input id="cfg-web-email-wait" type="number" min="0" />
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label>Cal.com booking link</label>
+        <input id="cfg-web-cal-link" placeholder="https://cal.com/hexiv/free-strategy-call" />
+        <div class="form-hint">For "Copy booking link" on a lead, so a meeting arranged on a call or over WhatsApp is
+          booked on Cal.com too.</div>
+      </div>
+    </div>
+    <div class="form-hint" style="margin-bottom:12px">Who receives a site's leads gets them even if the other person
+      already has that business. Leads from a site set to nobody are kept here but filed for no one until it is set.</div>
+    <button class="btn btn-primary btn-sm" onclick="saveWebsiteSettings()">Save</button>
   </div>
 
   <!-- The app Zoho knows ShoutReach as. Registered once, in Zoho's API

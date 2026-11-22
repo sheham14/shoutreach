@@ -75,7 +75,112 @@ async function loadSettingsPage() {
   if (!admin) tab = 'mine';
   setTab('settings', tab);
   loadSettings();
-  if (admin) { loadAccounts(); loadUsers(); }
+  if (admin) { loadAccounts(); loadUsers(); loadWebsiteSettings(); }
+  loadWebsiteFollowup();
+}
+
+// ── Website and bookings (Plan 2) ────────────────────────────────────────────
+
+async function copyField(id) {
+  const input = document.getElementById(id);
+  try { await navigator.clipboard.writeText(input.value); toast('Copied'); }
+  catch (_) { input.select(); toast('Select and copy it by hand', 'err'); }
+}
+
+async function loadWebsiteSettings() {
+  const c = await api('/api/website-settings');
+  if (!c || c.error) return;
+  document.getElementById('cfg-web-lead-url').value = c.website_lead_url;
+  document.getElementById('cfg-cal-url').value = c.cal_webhook_url;
+  document.getElementById('cfg-web-key-state').textContent = c.has_website_key
+    ? 'Set. It was shown once, when it was made.' : 'Not made yet — the sites can\'t send leads.';
+  document.getElementById('cfg-web-key-btn').textContent = c.has_website_key ? 'Replace key' : 'Make a key';
+  document.getElementById('cfg-cal-secret-state').textContent = c.has_cal_secret
+    ? 'Set. It was shown once, when it was made.' : 'Not made yet — bookings can\'t be received.';
+  document.getElementById('cfg-cal-secret-btn').textContent = c.has_cal_secret ? 'Replace secret' : 'Make a secret';
+  for (const site of c.sites_list) {
+    const sel = document.getElementById(`cfg-web-owner-${site}`);
+    sel.innerHTML = '<option value="0">Nobody yet</option>' +
+      c.users.map(u => `<option value="${u.id}">${esc(u.username)}</option>`).join('');
+    sel.value = String(c.sites[site].owner_id || 0);
+    document.getElementById(`cfg-web-country-${site}`).value = c.sites[site].country || '';
+  }
+  document.getElementById('cfg-web-wa-wait').value = c.wa_wait_minutes;
+  document.getElementById('cfg-web-email-wait').value = c.email_wait_hours;
+  document.getElementById('cfg-web-cal-link').value = c.cal_booking_link || '';
+}
+
+async function saveWebsiteSettings() {
+  const sites = {};
+  for (const site of ['hexiv.co.uk', 'hexiv.co']) {
+    sites[site] = {
+      owner_id: +document.getElementById(`cfg-web-owner-${site}`).value || 0,
+      country: document.getElementById(`cfg-web-country-${site}`).value.trim(),
+    };
+  }
+  const res = await api('/api/website-settings', 'PUT', {
+    sites,
+    wa_wait_minutes: document.getElementById('cfg-web-wa-wait').value,
+    email_wait_hours: document.getElementById('cfg-web-email-wait').value,
+    cal_booking_link: document.getElementById('cfg-web-cal-link').value.trim(),
+  });
+  if (!res || res.error || res.ok === false) { toast((res && res.error) || 'Could not save', 'err'); return; }
+  toast('Saved');
+  loadWebsiteSettings();
+}
+
+// A key or secret is shown this once, in the app's own dialog, to copy.
+async function _showOnce(title, value, where) {
+  await chooseDialog({
+    title,
+    body: `<p class="text-small" style="margin-bottom:10px">${where} It won't be shown again.</p>
+      <div class="flex gap-2"><input id="once-value" readonly class="mono" style="flex:1;font-size:12px"
+        value="${esc(value)}" /><button class="btn btn-ghost btn-sm" onclick="copyField('once-value')">Copy</button></div>`,
+    confirm: 'Done',
+  });
+}
+
+async function rotateWebsiteKey() {
+  const had = document.getElementById('cfg-web-key-btn').textContent.startsWith('Replace');
+  if (had && !await chooseDialog({ title: 'Replace the website key?', danger: true, confirm: 'Replace',
+      body: '<p>The sites stop sending leads until each one has the new key.</p>' })) return;
+  const res = await api('/api/website-settings/key', 'POST');
+  if (!res || !res.key) { toast((res && res.error) || 'Could not make a key', 'err'); return; }
+  await _showOnce('Website key', res.key, 'Put this in each site\'s hosting as a server-only setting.');
+  loadWebsiteSettings();
+}
+
+async function rotateCalSecret() {
+  const had = document.getElementById('cfg-cal-secret-btn').textContent.startsWith('Replace');
+  if (had && !await chooseDialog({ title: 'Replace the Cal.com secret?', danger: true, confirm: 'Replace',
+      body: '<p>Bookings are refused until the new secret is pasted into Cal.com\'s webhook.</p>' })) return;
+  const res = await api('/api/website-settings/cal-secret', 'POST');
+  if (!res || !res.secret) { toast((res && res.error) || 'Could not make a secret', 'err'); return; }
+  await _showOnce('Cal.com webhook secret', res.secret, 'Paste this into the webhook in Cal.com.');
+  loadWebsiteSettings();
+}
+
+async function loadWebsiteFollowup() {
+  const [prefs, emailCamps, waCamps] = await Promise.all([
+    api('/api/website-followup'), api('/api/campaigns'), api('/api/wa/campaigns')]);
+  const fill = (id, none, list, chosen) => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    sel.innerHTML = `<option value="">${none}</option>` + (Array.isArray(list) ? list : [])
+      .map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+    sel.value = chosen ? String(chosen) : '';
+  };
+  fill('cfg-wf-email', "Don't email", emailCamps, prefs && prefs.email_campaign_id);
+  fill('cfg-wf-wa', "Don't add to WhatsApp", waCamps, prefs && prefs.wa_campaign_id);
+}
+
+async function saveWebsiteFollowup() {
+  const res = await api('/api/website-followup', 'PUT', {
+    email_campaign_id: document.getElementById('cfg-wf-email').value || null,
+    wa_campaign_id: document.getElementById('cfg-wf-wa').value || null,
+  });
+  if (!res || res.ok === false || res.error) { toast((res && res.error) || 'Could not save', 'err'); return; }
+  toast('Saved');
 }
 
 // From Activity log or Database, back to a Settings tab.
