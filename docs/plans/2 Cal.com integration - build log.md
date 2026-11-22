@@ -490,3 +490,36 @@ Replaying the fixtures by hand: start the app on a throwaway database
 then post each `tests/fixtures/cal_*.json` to `/api/inbound/cal` with
 `X-Cal-Signature-256` = hex HMAC-SHA256 of the exact bytes with that secret
 (`deliver()` in `tests/test_cal_bookings.py` does exactly this).
+
+
+## Follow-ups after the hand-back (2026-11-22, second pass)
+
+The operator asked for these fixes in one batch, for one review; testing
+items left for later. Each is its own commit on `plan-2-cal-com`; the
+suite passes after each.
+
+1. `913048e` — **date-dependent test.** `test_website_followups.py` fixed
+   the enquiry's arrival at 22 Nov 10:00 UTC; once the real clock passed
+   12:00 UTC the expected "hold until 12:00" was in the past and the test
+   failed with nothing wrong in the app. Arrival is now two days ahead of
+   the real clock and every expected time is computed from it.
+2. `0997911` — **open question 1 answered:** an enquiry alone no longer
+   reads "Booked". New built-in terminal stage `enquired_elsewhere`
+   ("Filled in the website form — not booked"); it moves up to
+   `booked_elsewhere` when a booking follows, never back down. Follow-ups
+   stop either way. Handover §3 updated. Tests in test_booked_elsewhere.py.
+3. `dd3715e` — **"Noticed" 1 fixed:** booking by hand (pipeline route, or a
+   "Meeting booked" call outcome) after a Cal.com cancellation deletes the
+   cancelled Cal.com meeting row (`clear_cancelled_cal_meeting`), so the
+   lead and Meetings show the new time. A live Cal.com meeting is never
+   touched. Tests: test_cal_bookings.py §5. Known edge left alone: booking
+   by hand while a Cal.com meeting is still on changes the stage's time,
+   but the panel's Cal.com box still shows Cal.com's time (Cal.com owns it).
+4. (this commit) — **"Noticed" 2 fixed:** the lead panel no longer crashes
+   on an audit saved before `engagement` existed; four list fields default
+   to empty. Verified on the harness (lead 41 threw before, renders after).
+5. Next: remove the unused imports ("Noticed" 4).
+
+Still for the operator to test later (unchanged): a booking made from
+"Copy booking link" (question 2); Cal.com's time zone (question 4);
+deleting the "Hevixxx" test booking after the merge (question 3).
