@@ -269,6 +269,11 @@ def main():
         check("a changed body -> 401", r.status_code == 401, str(r.status_code))
         r = anon.post("/api/inbound/cal", data=body)
         check("no signature -> 401", r.status_code == 401, str(r.status_code))
+        r = anon.post("/api/inbound/cal", data=body, headers={"X-Cal-Signature-256": "é" * 64})
+        check("a signature with non-ASCII characters -> 401, not 500 (review item 7)",
+              r.status_code == 401, str(r.status_code))
+        r = anon.post("/api/inbound/cal", data=body, headers={"X-Cal-Signature-256": "sha256=" + good.upper()})
+        check("the right signature, prefixed and upper-case, still -> 200", r.status_code == 200, str(r.status_code))
         r = anon.post("/api/inbound/cal", data=body, headers={"X-Cal-Signature-256": good})
         check("the right signature -> 200, no session or CSRF needed", r.status_code == 200, str(r.status_code))
         check("stored as received", q(path, "SELECT body FROM cal_events") == [(body.decode(),)])

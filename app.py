@@ -819,7 +819,10 @@ def api_inbound_cal():
     if sig.startswith("sha256="):
         sig = sig[len("sha256="):]
     expected = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest() if secret else ""
-    if not secret or not hmac.compare_digest(sig, expected):
+    # Compared as bytes: compare_digest refuses a str with non-ASCII
+    # characters, which turned a garbled header into a 500 (review of
+    # Plan 2, item 7). Any such header simply doesn't match.
+    if not secret or not hmac.compare_digest(sig.encode("utf-8", "replace"), expected.encode("ascii")):
         return jsonify({"ok": False, "error": "Bad signature"}), 401
     db.record_cal_event(raw)
     # Read it now: local database work only, nothing called out to. Anything
