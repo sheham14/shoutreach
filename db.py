@@ -3879,7 +3879,7 @@ def get_campaign_send_preview(campaign_id: int, owner_id=None) -> dict:
     return {"sendable": sendable, "enrollable": enrollable}
 
 
-def enroll_contacts_bulk(campaign_id, email_lead_ids, owner_id=None):
+def enroll_contacts_bulk(campaign_id, email_lead_ids, owner_id=None, not_before=None):
     """
     Enroll addresses, skipping any that would produce a duplicate approach.
 
@@ -3888,8 +3888,14 @@ def enroll_contacts_bulk(campaign_id, email_lead_ids, owner_id=None):
     address sitting in two campaigns at once and receiving two different cold
     pitches in overlapping windows, which reads as spam to the recipient and
     undoes the deliverability discipline the rest of the system maintains.
+
+    `not_before` ('YYYY-MM-DD HH:MM:SS', UTC like next_send_at) holds the
+    first send until then -- a website enquiry's email waits out the email
+    wait (Plan 2). Without it the first send is due now, as always.
     """
     now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    if not_before and str(not_before) > now:
+        now = str(not_before)[:19]
 
     # Every label the campaign defines, not just step 1's -- see
     # get_campaign_variants. One arm is not a test, so leave the label NULL and
@@ -9732,3 +9738,69 @@ def process_cal_events() -> int:
         ids = [r["id"] for r in conn.execute(
             "SELECT id FROM cal_events WHERE processed_at IS NULL ORDER BY id")]
     return sum(1 for i in ids if process_cal_event(i) != "waiting")
+
+
+
+# ── Following up people who reached the calendar and didn't book (package 4) ──
+
+def run_website_followups(now: datetime.datetime = None) -> dict:
+    """
+    One pass of the scheduler's job. Every filed enquiry older than the
+    WhatsApp wait, with no booking and no follow-up queued yet, gets -- once:
+
+      * if it has a phone and its owner chose a WhatsApp campaign: the lead
+        added to that campaign, ready to send. Ready to send is all: a person
+        still opens the chat and sends it. Nothing here sends a WhatsApp.
+      * if its address isn't suppressed and its owner chose an email
+        campaign: an enrolment whose first send waits until the enquiry's
+        arrival plus the email wait.
+
+    A business that booked in the meantime (on Cal.com, or set to booked by
+    hand) gets neither. Either way the enquiry is marked queued, so it is
+    looked at once. `now` is injectable for tests.
+    """
+    now = now or datetime.datetime.utcnow()
+    cfg = get_website_config()
+    wa_cutoff = (now - datetime.timedelta(minutes=int(cfg["wa_wait_minutes"]))).strftime("%Y-%m-%d %H:%M:%S")
+    counts = {"whatsapp": 0, "email": 0, "booked": 0, "none": 0}
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT e.id, e.owner_id, e.business_id, e.email, e.country, e.site, e.created_at,
+                   e.cal_booking_id, b.pipeline_stage, b.phone, b.do_not_contact
+              FROM website_enquiries e JOIN businesses b ON b.id = e.business_id
+             WHERE e.followup_queued_at IS NULL AND e.created_at <= ?
+             ORDER BY e.id
+        """, (wa_cutoff,)).fetchall()
+    for e in rows:
+        done = []
+        if e["cal_booking_id"] or e["pipeline_stage"] in ("booked", "booked_elsewhere"):
+            counts["booked"] += 1
+        elif not e["do_not_contact"]:
+            prefs = get_website_followup(owner_id=e["owner_id"])
+            if e["phone"] and prefs["wa_campaign_id"]:
+                country = e["country"] or (cfg["sites"].get(e["site"]) or {}).get("country") or ""
+                added = add_businesses_to_wa([e["business_id"]], country, owner_id=e["owner_id"],
+                                             wa_campaign_id=prefs["wa_campaign_id"])
+                if added.get("added"):
+                    done.append("whatsapp")
+            if prefs["email_campaign_id"] and not address_suppression(e["email"]):
+                with get_db() as conn:
+                    lead = conn.execute("SELECT id FROM email_leads WHERE business_id=? AND owner_id=? "
+                                        "AND lower(trim(email))=? AND status='active'",
+                                        (e["business_id"], e["owner_id"], e["email"])).fetchone()
+                if lead:
+                    arrived = datetime.datetime.strptime(e["created_at"][:19], "%Y-%m-%d %H:%M:%S")
+                    not_before = (arrived + datetime.timedelta(hours=int(cfg["email_wait_hours"])))
+                    enrolled, _skipped = enroll_contacts_bulk(
+                        prefs["email_campaign_id"], [lead["id"]], owner_id=e["owner_id"],
+                        not_before=not_before.strftime("%Y-%m-%d %H:%M:%S"))
+                    if enrolled:
+                        done.append("email")
+        for kind in done:
+            counts[kind] += 1
+        if not done and not (e["cal_booking_id"] or e["pipeline_stage"] in ("booked", "booked_elsewhere")):
+            counts["none"] += 1
+        with get_db() as conn:
+            conn.execute("UPDATE website_enquiries SET followup_queued_at=? WHERE id=? AND followup_queued_at IS NULL",
+                         (now.strftime("%Y-%m-%d %H:%M:%S"), e["id"]))
+    return counts
