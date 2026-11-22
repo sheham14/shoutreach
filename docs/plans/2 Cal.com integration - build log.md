@@ -21,7 +21,7 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
 |---|---|---|---|
 | 1 | Settings and the two doors | done | `e9d6607` |
 | 2 | An enquiry becomes a lead | done | `9a9625d` |
-| 3 | A booking updates the lead | **blocked: needs real Cal.com payloads** | |
+| 3 | A booking updates the lead | created + rescheduled done; **cancel waits for its payload** | `e046fc6` |
 | 4 | Following up people who didn't book | not started | |
 | 5 | One Meetings page | not started | |
 | 6 | The other operator's copy | not started | |
@@ -85,3 +85,35 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
   download back. Packages 3–8 not started. When the file arrives: scrub it
   into `tests/fixtures/cal_*.json`, compare `payload.metadata` with the
   handoff, then build package 3 on it.
+
+### Package 3 — created and rescheduled done (`e046fc6`); cancel pending
+
+- Payloads captured on the live route (ping 01:28, created 01:32, rescheduled
+  01:37 UTC, 22 Nov), scrubbed into `tests/fixtures/` (README there lists the
+  replacements). Signature check worked on real deliveries.
+- **Differences from the handoff:** metadata matches for hexiv.co.uk (site,
+  phone, website, businessType, challenge, source, volume, ads, businessName)
+  plus Cal.com's own `metadata.videoCallUrl`. The attendee's `phoneNumber` is
+  null; the phone only comes via metadata. A reschedule is a NEW booking (new
+  `uid`, new `bookingId`, new video link) with `rescheduleUid` /
+  `rescheduleId` / `rescheduleStartTime` naming the old one. The operator's
+  test phone had no `+` ("17097648718"), so it's read with the site's country.
+- Code (db.py, end): `_cal_booking` (the only place payload fields are read),
+  `_cal_booking_created`, `_cal_booking_rescheduled`, `process_cal_event(s)`,
+  `CalWaiting` (site has no owner → kept unprocessed, retried on settings
+  save). Meetings gained `source`, `cal_uid`, `state`, `starts_utc`.
+  `_end_email_enrolments` + `_stop_followups_on_booking`, called from
+  `set_business_pipeline` when the stage becomes booked; `log_call` uses the
+  first.
+- Choices: answers for a booking with no prior enquiry are parsed from the
+  site's "Label: answer" notes, leaving out the business/website/phone lines;
+  a booking whose metadata has no known site is recorded on the event as
+  "not filed" (package 5's signed reference covers bookings from a copied
+  link); a reschedule whose original never arrived is filed as a booking
+  marked moved.
+- Departure: package 3 lands in two commits, because the cancellation payload
+  hadn't been captured yet.
+- Note for the operator: the three real deliveries on the live server are
+  still unread; the first delivery or settings save after this deploys reads
+  them, so the test booking appears as a booked lead (delete it if unwanted).
+- Tests: tests/test_cal_bookings.py. Suite: 29 files pass.
