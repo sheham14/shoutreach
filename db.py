@@ -622,6 +622,48 @@ def init_db():
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            -- Someone who filled in the booking form on one of the websites
+            -- and reached the calendar (Plan 2). One open enquiry per
+            -- (site, email): a repeat post updates it. The business it
+            -- became is filed for the site's owner (a setting); ON DELETE
+            -- CASCADE so deleting the lead takes this with it and Recently
+            -- deleted brings it back (_cascade_children reads the schema).
+            CREATE TABLE IF NOT EXISTS website_enquiries (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id           INTEGER NOT NULL DEFAULT 0,
+                business_id        INTEGER REFERENCES businesses(id) ON DELETE CASCADE,
+                site               TEXT    NOT NULL,
+                email              TEXT    NOT NULL,
+                name               TEXT    NOT NULL DEFAULT '',
+                business_name      TEXT    NOT NULL DEFAULT '',
+                phone              TEXT    NOT NULL DEFAULT '',
+                website            TEXT    NOT NULL DEFAULT '',
+                country            TEXT    NOT NULL DEFAULT '',
+                locale             TEXT    NOT NULL DEFAULT '',
+                -- JSON object, question -> answer, as English labels.
+                answers            TEXT    NOT NULL DEFAULT '{}',
+                summary            TEXT    NOT NULL DEFAULT '',
+                -- Set once Cal.com reports a booking for this person.
+                cal_booking_id     TEXT    NOT NULL DEFAULT '',
+                -- When the non-booker follow-up was queued; NULL until then.
+                followup_queued_at TEXT    DEFAULT NULL,
+                created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+                updated_at         TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- Every Cal.com webhook whose signature checked out, stored as
+            -- received before anything reads it, so the route answers fast
+            -- and a delivery can be looked at (or re-run) later. The digest
+            -- of the body makes an identical retry a no-op.
+            CREATE TABLE IF NOT EXISTS cal_events (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                digest       TEXT    NOT NULL UNIQUE,
+                body         TEXT    NOT NULL,
+                received_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                processed_at TEXT    DEFAULT NULL,
+                error        TEXT    NOT NULL DEFAULT ''
+            );
+
             -- An operator's Zoho Calendar connection (zoho_calendar.py). Its
             -- own table, like worker_keys, so the refresh token never rides
             -- along in a row loaded or serialised for something else. One per
@@ -901,6 +943,7 @@ def init_db():
         try:
             _seed_pipeline_stages(conn)
             _migrate_pipeline_wants_time(conn)
+            _migrate_later_pipeline_stage(conn, "enquired")
         except Exception as exc:
             logger.warning("Pipeline stage seeding skipped: %s", exc)
 
@@ -4632,7 +4675,15 @@ _BUILTIN_PIPELINE_STAGES = {
     "not_interested": ("Not interested", True,  False, False, "bad",     60),
 }
 
-PIPELINE_CHANNELS = ("whatsapp", "call", "email")
+PIPELINE_CHANNELS = ("whatsapp", "call", "email", "website")
+
+# Built-ins added after the first set, each seeded by its own guarded
+# one-shot rather than by _seed_pipeline_stages, so a stage an operator has
+# changed or removed is never put back on a restart. Same tuple shape.
+_LATER_PIPELINE_STAGES = {
+    # Plan 2: someone filled in the booking form on a website.
+    "enquired": ("Enquired on the website", False, False, False, "info", 5),
+}
 
 # Settings marker for the one-shot below -- see _migrate_pipeline_wants_time.
 _PIPELINE_WANTS_TIME_MARKER = "_migrated_pipeline_wants_time"
@@ -4666,6 +4717,20 @@ def _migrate_pipeline_wants_time(conn):
     """)
     conn.execute("INSERT INTO settings(key, value) VALUES(?, '1')",
                  (_PIPELINE_WANTS_TIME_MARKER,))
+
+
+def _migrate_later_pipeline_stage(conn, key: str):
+    """Seed one of _LATER_PIPELINE_STAGES, once, guarded by its own marker."""
+    marker = f"_seeded_pipeline_stage_{key}"
+    if conn.execute("SELECT 1 FROM settings WHERE key=?", (marker,)).fetchone():
+        return
+    label, term, dated, timed, tone, order = _LATER_PIPELINE_STAGES[key]
+    conn.execute("""
+        INSERT OR IGNORE INTO pipeline_stages
+            (key, label, is_terminal, wants_date, wants_time, tone, sort_order, is_builtin)
+        VALUES(?,?,?,?,?,?,?,1)
+    """, (key, label, int(term), int(dated), int(timed), tone, order))
+    conn.execute("INSERT INTO settings(key, value) VALUES(?, '1')", (marker,))
 
 
 def get_pipeline_stages(include_archived=False, owner_id=None) -> dict:
@@ -8298,6 +8363,8 @@ def get_business_detail(business_id: int, owner_id=None):
     except (TypeError, ValueError):
         out["audit"] = None
     out["rating_context"] = get_rating_context(business_id, owner_id=owner)
+    # Plan 2: what they told the website, for the panel's "Website enquiry".
+    out["enquiries"] = get_business_enquiries(business_id, owner_id=owner)
     return out
 
 
@@ -9066,3 +9133,364 @@ def seed_admin_from_env():
             return
         create_user(username, password, is_admin=True)
         logger.info(f"Created admin user '{username}' from ADMIN_PASS env var")
+
+
+
+# ── Website enquiries and Cal.com bookings (Plan 2) ──────────────────────────
+#
+# Two doors in from outside: the websites post a lead when a visitor reaches
+# the calendar (a website key, X-API-Key), and Cal.com posts bookings (a signed
+# body). Install-wide configuration lives in underscore settings, which the
+# generic settings route never returns; it has its own admin-only route.
+
+WEBSITE_SITES = ("hexiv.co.uk", "hexiv.co")
+WEBSITE_DEFAULTS = {
+    "sites": {"hexiv.co.uk": {"owner_id": 0, "country": "GB"},
+              "hexiv.co":    {"owner_id": 0, "country": ""}},
+    # Decided: 30 minutes before WhatsApp To do, 24 hours before the email.
+    "wa_wait_minutes": 30,
+    "email_wait_hours": 24,
+    "cal_booking_link": "",
+}
+
+
+def _json_setting(conn, key, default):
+    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    if not row or not row["value"]:
+        return default
+    try:
+        value = json.loads(row["value"])
+    except ValueError:
+        return default
+    return value if isinstance(value, type(default)) else default
+
+
+def get_website_config() -> dict:
+    """The websites' setup, every key present (defaults filled in)."""
+    with get_db() as conn:
+        stored = _json_setting(conn, "_website_config", {})
+    cfg = json.loads(json.dumps(WEBSITE_DEFAULTS))
+    for k in ("wa_wait_minutes", "email_wait_hours", "cal_booking_link"):
+        if k in stored:
+            cfg[k] = stored[k]
+    for site in WEBSITE_SITES:
+        cfg["sites"][site].update((stored.get("sites") or {}).get(site) or {})
+    return cfg
+
+
+def save_website_config(data: dict) -> dict:
+    """Check and store the websites' setup. Raises ValueError with a sentence."""
+    cfg = get_website_config()
+    with get_db() as conn:
+        users = {r["id"] for r in conn.execute("SELECT id FROM users")}
+    for site in WEBSITE_SITES:
+        given = ((data or {}).get("sites") or {}).get(site)
+        if given is None:
+            continue
+        owner = int(given.get("owner_id") or 0)
+        if owner and owner not in users:
+            raise ValueError(f"Pick who receives leads from {site}.")
+        country = str(given.get("country") or "").strip().upper()
+        if country and not re.fullmatch(r"[A-Z]{2}", country):
+            raise ValueError(f"The default country for {site} must be a two-letter code, like GB.")
+        cfg["sites"][site] = {"owner_id": owner, "country": country}
+    for key, low, high, label in (("wa_wait_minutes", 0, 7 * 24 * 60, "The wait before WhatsApp To do"),
+                                  ("email_wait_hours", 0, 30 * 24, "The wait before the email")):
+        if key in (data or {}):
+            try:
+                value = int(str(data[key]).strip())
+            except ValueError:
+                raise ValueError(f"{label} must be a number.")
+            if not low <= value <= high:
+                raise ValueError(f"{label} must be between {low} and {high}.")
+            cfg[key] = value
+    if "cal_booking_link" in (data or {}):
+        link = str(data["cal_booking_link"] or "").strip()
+        if link and not re.fullmatch(r"https://[^\s]+", link):
+            raise ValueError("The booking link must start with https://")
+        cfg["cal_booking_link"] = link[:500]
+    with get_db() as conn:
+        conn.execute("INSERT INTO settings(key, value) VALUES('_website_config', ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(cfg),))
+    return cfg
+
+
+def _key_digest(key: str) -> str:
+    return hashlib.sha256((key or "").encode("utf-8")).hexdigest()
+
+
+def rotate_website_key() -> str:
+    """
+    A new key for the websites, returned once. Only its SHA-256 is stored, so
+    it can't be shown again or read out of a backup; rotating replaces it and
+    the sites stop until they get the new one.
+    """
+    key = "web_" + secrets.token_urlsafe(32)
+    with get_db() as conn:
+        conn.execute("INSERT INTO settings(key, value) VALUES('_website_key_sha256', ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (_key_digest(key),))
+    return key
+
+
+def website_key_valid(presented: str) -> bool:
+    """Constant-time check of a presented website key. A worker key never
+    matches: it was never stored here."""
+    if not presented:
+        return False
+    with get_db() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key='_website_key_sha256'").fetchone()
+    stored = row["value"] if row else ""
+    return bool(stored) and _hmac.compare_digest(_key_digest(presented), stored)
+
+
+def has_website_key() -> bool:
+    with get_db() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key='_website_key_sha256'").fetchone()
+    return bool(row and row["value"])
+
+
+def rotate_cal_secret() -> str:
+    """
+    A new Cal.com webhook secret, returned once to paste into Cal.com. Kept in
+    plain text because checking a signature needs the secret itself (B-13
+    covers encrypting stored secrets generally).
+    """
+    secret = secrets.token_urlsafe(32)
+    with get_db() as conn:
+        conn.execute("INSERT INTO settings(key, value) VALUES('_cal_webhook_secret', ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (secret,))
+    return secret
+
+
+def get_cal_secret() -> str:
+    with get_db() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key='_cal_webhook_secret'").fetchone()
+    return row["value"] if row else ""
+
+
+def get_website_followup(owner_id=None) -> dict:
+    """This operator's choice of campaigns for people who reach the calendar
+    and don't book. Either may be None: that follow-up doesn't happen."""
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        prefs = _json_setting(conn, f"website_followup:{owner}", {})
+    return {"email_campaign_id": prefs.get("email_campaign_id"),
+            "wa_campaign_id": prefs.get("wa_campaign_id")}
+
+
+def save_website_followup(email_campaign_id, wa_campaign_id, owner_id=None) -> dict:
+    """Ids come from a request body, so each must be this operator's own."""
+    def clean(value, kind):
+        if value in (None, "", 0, "0"):
+            return None
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            raise ValueError("Pick a campaign from the list.")
+        if not owns(kind, value, owner_id):
+            raise ValueError("Pick a campaign from the list.")
+        return value
+    prefs = {"email_campaign_id": clean(email_campaign_id, "campaign"),
+             "wa_campaign_id": clean(wa_campaign_id, "wa_campaign")}
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        conn.execute("INSERT INTO settings(key, value) VALUES(?, ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                     (f"website_followup:{owner}", json.dumps(prefs)))
+    return prefs
+
+
+# What a website may send (contract A), and how long each string may be.
+_ENQUIRY_FIELDS = {"name": 200, "email": 254, "business": 200, "phone": 50, "website": 500,
+                   "country": 2, "locale": 5, "summary": 5000}
+_ENQUIRY_ANSWERS_MAX = 40
+
+
+def clean_website_enquiry(data) -> dict:
+    """
+    Check a website's post against contract A. Returns the cleaned enquiry or
+    raises ValueError with a sentence. Unknown fields are ignored; every
+    string is cut to its limit; answers become {label: label}, at most 40.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("The body must be a JSON object")
+    site = str(data.get("site") or "").strip().lower()
+    if site not in WEBSITE_SITES:
+        raise ValueError("Unknown site")
+    out = {"site": site}
+    for key, limit in _ENQUIRY_FIELDS.items():
+        value = data.get(key)
+        out[key] = (value if isinstance(value, str) else "").strip()[:limit]
+    out["email"] = out["email"].lower()
+    if not out["name"]:
+        raise ValueError("name is required")
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", out["email"]):
+        raise ValueError("email is required")
+    out["country"] = out["country"].upper() if re.fullmatch(r"[A-Za-z]{2}", out["country"]) else ""
+    out["locale"] = out["locale"].lower() if out["locale"].lower() in ("en", "ar") else ""
+    answers = data.get("answers")
+    clean_answers = {}
+    if isinstance(answers, dict):
+        for q, a in list(answers.items())[:_ENQUIRY_ANSWERS_MAX]:
+            if isinstance(a, (list, tuple)):
+                a = ", ".join(str(x) for x in a)
+            if isinstance(q, str) and isinstance(a, (str, int, float)):
+                clean_answers[q.strip()[:200]] = str(a).strip()[:1000]
+    out["answers"] = clean_answers
+    return out
+
+
+def record_website_enquiry(enquiry: dict) -> int:
+    """
+    Store one cleaned enquiry, idempotently: the same email from the same
+    site, while it hasn't booked, updates that enquiry instead of adding a
+    second. Then files it as a lead (file_website_enquiry). Returns its id.
+    """
+    fields = {"name": enquiry["name"], "business_name": enquiry.get("business", ""),
+              "phone": enquiry.get("phone", ""), "website": enquiry.get("website", ""),
+              "country": enquiry.get("country", ""), "locale": enquiry.get("locale", ""),
+              # '' when there are none, so a repeat post without answers keeps
+              # the first one's (the update below skips empty values).
+              "answers": json.dumps(enquiry["answers"], ensure_ascii=False) if enquiry.get("answers") else "",
+              "summary": enquiry.get("summary", "")}
+    with get_db() as conn:
+        row = conn.execute("""
+            SELECT id FROM website_enquiries
+             WHERE site=? AND email=? AND cal_booking_id=''
+             ORDER BY id DESC LIMIT 1
+        """, (enquiry["site"], enquiry["email"])).fetchone()
+        if row:
+            # A field the second post leaves empty keeps what the first said.
+            sets = ", ".join(f"{k} = CASE WHEN ? != '' THEN ? ELSE {k} END" for k in fields)
+            args = [v for value in fields.values() for v in (value, value)]
+            conn.execute(f"UPDATE website_enquiries SET {sets}, updated_at=datetime('now') WHERE id=?",
+                         (*args, row["id"]))
+            enquiry_id = row["id"]
+        else:
+            cols = ["site", "email", *fields]
+            enquiry_id = conn.execute(
+                f"INSERT INTO website_enquiries({', '.join(cols)}) VALUES({', '.join('?' * len(cols))})",
+                (enquiry["site"], enquiry["email"], *fields.values())).lastrowid
+    file_website_enquiry(enquiry_id)
+    return enquiry_id
+
+
+def _website_batch_id(conn, owner: int, site: str) -> int:
+    """Each site's one named import for this operator, so the "From" filter
+    finds website leads on every Leads tab. Found by kind and site, so a
+    rename by the operator sticks."""
+    row = conn.execute("SELECT id FROM lead_batches WHERE owner_id=? AND kind='website' AND source=?",
+                       (owner, site)).fetchone()
+    if row:
+        return row["id"]
+    return conn.execute(
+        "INSERT INTO lead_batches(owner_id, kind, name, source, channel) VALUES(?, 'website', ?, ?, '')",
+        (owner, f"Website — {site}", site)).lastrowid
+
+
+def file_website_enquiry(enquiry_id: int):
+    """
+    Make an enquiry a lead for its site's owner (a Team setup setting): find
+    or create the business with the existing matcher -- with the country, so
+    "07700 900123" matches "+44 7700 900123" -- and its email as an email lead
+    with the person's first name. Creation goes through upsert_businesses, so
+    an address that unsubscribed or bounced arrives suppressed (Plan 1). The
+    enquiry is still recorded: they asked to be contacted about a booking.
+
+    Sets the stage to "Enquired on the website" unless the business already
+    has a stage: an enquiry never moves a deal backwards. Returns the
+    business id, or None while the site has no owner set.
+    """
+    with get_db() as conn:
+        e = conn.execute("SELECT * FROM website_enquiries WHERE id=?", (enquiry_id,)).fetchone()
+    if not e:
+        return None
+    site_cfg = get_website_config()["sites"].get(e["site"]) or {}
+    owner = int(site_cfg.get("owner_id") or 0)
+    if not owner:
+        return None
+    if e["business_id"] and e["owner_id"] and e["owner_id"] != owner:
+        owner = e["owner_id"]      # filed already; a later change of setting doesn't move it
+    first, _, last = (e["name"] or "").partition(" ")
+    row = {"company": e["business_name"] or e["name"], "email": e["email"],
+           "first_name": first, "last_name": last.strip(),
+           "phone": e["phone"], "website": e["website"],
+           "country": e["country"] or site_cfg.get("country") or ""}
+    with get_db() as conn:
+        newest = conn.execute("SELECT COALESCE(MAX(id), 0) FROM businesses").fetchone()[0]
+    _accepted, ids = upsert_businesses([row], owner_id=owner)
+    if not ids:
+        return None
+    bid = ids[0]
+    with get_db() as conn:
+        batch = _website_batch_id(conn, owner, e["site"])
+        conn.execute("INSERT OR IGNORE INTO lead_batch_members(batch_id, business_id, is_new) VALUES(?,?,?)",
+                     (batch, bid, 1 if bid > newest else 0))
+        conn.execute("UPDATE website_enquiries SET owner_id=?, business_id=?, updated_at=datetime('now') "
+                     "WHERE id=?", (owner, bid, enquiry_id))
+        stage = conn.execute("SELECT pipeline_stage FROM businesses WHERE id=?", (bid,)).fetchone()
+    if stage and not stage["pipeline_stage"]:
+        set_business_pipeline(bid, "enquired", "website", owner_id=owner)
+    return bid
+
+
+def file_waiting_enquiries() -> int:
+    """File every enquiry still waiting for its site's owner to be set.
+    Called when the website settings are saved."""
+    with get_db() as conn:
+        ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM website_enquiries WHERE business_id IS NULL ORDER BY id")]
+    return sum(1 for i in ids if file_website_enquiry(i))
+
+
+def get_business_enquiries(business_id: int, owner_id=None) -> list:
+    """The website enquiries behind one of this operator's businesses, newest
+    first, for the lead panel."""
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        rows = conn.execute("""
+            SELECT id, site, name, email, business_name, phone, website, locale,
+                   answers, summary, cal_booking_id, created_at, updated_at
+              FROM website_enquiries WHERE business_id=? AND owner_id=?
+             ORDER BY id DESC
+        """, (business_id, owner)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            answers = json.loads(d["answers"] or "{}")
+        except ValueError:
+            answers = {}
+        # A list of [question, answer] in the order the form asked them: a JSON
+        # object would come back with its keys sorted alphabetically.
+        d["answers"] = [[q, a] for q, a in answers.items()] if isinstance(answers, dict) else []
+        out.append(d)
+    return out
+
+
+def record_cal_event(body: bytes) -> bool:
+    """Keep a verified Cal.com delivery as received. False if this exact body
+    was already stored (Cal.com retries)."""
+    digest = hashlib.sha256(body).hexdigest()
+    with get_db() as conn:
+        cur = conn.execute("INSERT OR IGNORE INTO cal_events(digest, body) VALUES(?, ?)",
+                           (digest, body.decode("utf-8", "replace")))
+        return cur.rowcount == 1
+
+
+
+def get_cal_events(limit: int = 50) -> list:
+    """The most recent verified Cal.com deliveries, as received, newest first
+    -- for an admin to download and look at (and to capture real payloads)."""
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, received_at, processed_at, error, body FROM cal_events "
+                            "ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["body"] = json.loads(d["body"])
+        except ValueError:
+            pass
+        out.append(d)
+    return out
