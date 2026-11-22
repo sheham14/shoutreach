@@ -10,6 +10,11 @@ fix this file.
 
 ## 0. Read this first
 
+- **Where things stand on 2026-11-22:** Plans 1 and 2 from the full audit
+  are deployed (`bea9be1`, `3eed5be`, `4f5b303`; §1, §9). The status of
+  every plan, what Plan 2 left open and what the operator still has to set
+  up are in `docs/plans/README.md`. The bullets below are the history, oldest
+  first.
 - **Everything is deployed** as of 2026-09-16 (`bed7f2a`): per-account scrape
   workers, and the **channel redesign** — Contacts as every business, a Leads
   table and tabs on every channel, WhatsApp campaigns, explicit Calling
@@ -105,6 +110,9 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
+| `4f5b303` | 11-22 | Plan 2, packages 3–8 and the review fixes: Cal.com bookings update the lead, follow-up for people who don't book, the Meetings page, the other operator's copy, team emails, ShoutReach's Zoho booking removed (§9, `docs/plans/`) | Yes |
+| `3eed5be` | 11-22 | Plan 2, packages 1–2: the two inbound routes, website settings, an enquiry becomes a lead | Yes |
+| `bea9be1` | 11-22 | Plan 1 (Fix now): opt-outs permanent, sessions end on delete or password change, the sender survives errors, confirmations, a dozen visible faults | Yes |
 | `fa6ca7f` | 10-29 | Meetings on Zoho Calendar: connect per operator, shared calendar, invites, Zoho Meeting or own link, cancel | Yes, never connected. Retired by Plan 2 package 8 (§5f) |
 | `3ea7efd` | 10-11 | Follow-up sequences + long-term gap; Email To do; Get leads page; Settings split; sidebar regrouped | Yes |
 | `916dabb` | 10-10 | Deploys back up the database first | Yes |
@@ -286,8 +294,10 @@ visibility into anyone else's leads.
   holds it, no history line. Nothing is merged. **Only a copy with no stage
   is marked** (decided 2026-11-22, after review): a copy on any stage of its
   owner's — replied, proposal due with its date, booked, won, a custom one —
-  is left exactly as it is, and stays so after its owner moves it on; the one
-  move allowed is "Filled in the form" up to "Booked via the website".
+  is left exactly as it is, and stays so after its owner moves it to another
+  stage; the one move allowed is "Filled in the form" up to "Booked via the
+  website". A copy its owner clears to *no* stage has no stage again, so a
+  repeat post or the booking marks it again.
   `tests/test_booked_elsewhere.py`.
 - **Overlap between operators is advisory only** (`find_cross_owner_matches`).
   The import goes ahead; the notice shows business name, channel and date,
@@ -1172,8 +1182,8 @@ status block says what's done. It is mostly a front-end audit with a
 proposed redesign (§4) and a build order (§8), turned into three build plans
 in `docs/plans/`.
 
-**Plan 1 (Fix now) is built, on branch `claude/vibrant-archimedes-i2ilk9`,
-not merged or deployed** (2026-11-22). 16 of the audit's 19 fix-now items:
+**Plan 1 (Fix now) is deployed** (merged as `bea9be1`, live 2026-11-22
+00:59 UTC). 16 of the audit's 19 fix-now items:
 B-1 (opt-outs permanent: `suppressed_addresses`, §3), B-2 (Activity log
 admin-only; owners on log lines still open), B-3 (sessions end on delete or
 password change, §6), B-6 and B-23 (the sender survives errors and restarts
@@ -1181,7 +1191,7 @@ itself, §6), B-9 (Activate and Enroll All confirm with real counts), B-22
 (Calling → Reopen), and the visible faults F-9, F-20, F-21/F-33 (`fmtWhen`,
 §10), F-22, F-25, F-30, B-10, B-14, B-15. The record of the build, with every
 choice that differs from the plan, is `docs/plans/1 Fix now - build log.md`.
-**Deploying it** runs two additions on the live database, both rehearsed on
+**Its deploy** ran two additions on the live database, both rehearsed first on
 a database built by the previous code (`c92729a`): a `users.session_version`
 column (default 0, so open sessions keep working) and
 `_migrate_suppressed_addresses`, which copies existing opt-outs and bounces
@@ -1189,7 +1199,6 @@ column (default 0, so open sessions keep working) and
 left active (the other operator's import after an opt-out) becomes
 unsubscribed or bounced, and an unsubscribe marks its business do not
 contact. On the rehearsal database it changed only the one planted copy.
-Take a backup first anyway.
 
 Still open from the fix-now list:
 
@@ -1198,23 +1207,41 @@ Still open from the fix-now list:
 - **F-23, F-24:** WhatsApp → Booked — moved to Plan 2, where a Meetings page
   replaces that tab.
 
-Next: Plan 2 (Cal.com) and Plan 3 (redesign phase 1) both build on this.
+Plans 2 and 3 both build on this.
 
-**Plan 2 (Cal.com) is built on branch `plan-2-cal-com`.** Packages 1 and 2
-are merged and deployed; packages 3 to 8 are only on the branch. Package 8
-retires the Zoho booking (§5f). The record, with every choice that differs
+**Plan 2 (Cal.com) is deployed.** Packages 1 and 2 went live as `3eed5be`
+(2026-11-22 01:17 UTC); packages 3 to 8, the follow-ups below and nine
+review fixes went live as `4f5b303` (2026-11-22 20:54 UTC). Package 8
+retired the Zoho booking (§5f). The record, with every choice that differs
 from the plan, the operator's setup steps and the open questions, is
 `docs/plans/2 Cal.com integration - build log.md`. After the hand-back, a second
 pass (2026-11-22) answered open question 1 (an enquiry alone now marks the
 other operator's copy "Filled in the website form — not booked", see §3),
 let a hand booking replace a cancelled Cal.com meeting, fixed the lead
 panel crashing on an old saved audit, removed unused imports, and fixed a
-date-dependent test. Still for the operator to test before or after the
-merge: a booking from "Copy booking link", and Cal.com's time zone.
-**Next:** review and merge `plan-2-cal-com`; then Plan 4, back-end
-hardening (`docs/plans/4 Back-end hardening.md`, written 2026-11-22: it
-covers B-13 and everything below, and lists the choices the operator makes
-first). Plan 3 (the redesign) comes later, separately.
+date-dependent test. A review of the finished branch then led to nine more
+fixes (build log, "Review fixes"): a join link is only ever `https://`; a
+Cal.com delivery that fails is tried again, up to five times; deliveries are
+handled in whatever order they arrive; only a copy with no stage is marked
+as the other operator's website lead (§3); no follow-up for a lead that has
+moved on from "Enquired"; an enquiry ends its owner's own running email
+sequences. The second deploy added `cal_events.attempts`, four `meetings`
+columns, the `team_notifications` table and two built-in stages, and ran
+`_migrate_retire_zoho` once. It was rehearsed on a database built by
+`3eed5be`; a backup was taken by the deploy itself.
+
+What Plan 2 left open, what still has to be set up on the live site and what
+is still to be tested are in `docs/plans/README.md` ("Open after Plan 2" and
+"For the operator"). The two websites don't post enquiries yet, so today
+ShoutReach hears about bookings only.
+
+**Next.** `docs/plans/README.md` has the status of every plan. Plan 3
+(redesign, phase 1) is ready to build and was re-checked against `4f5b303`.
+Plan 4 (back-end hardening, `docs/plans/4 Back-end hardening.md`: B-13 and
+everything below) is a draft that has to be rewritten before it is built;
+its review notes sit beside it. An earlier version of this section put Plan
+4 before Plan 3. Which goes first is the operator's call, but only Plan 3
+can be built as it stands.
 
 Also still open and real: B-13 (secrets stored in plaintext — SMTP/IMAP
 passwords, AI keys, the Cal.com webhook secret, the session key — and in
