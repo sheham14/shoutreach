@@ -664,6 +664,22 @@ def init_db():
                 error        TEXT    NOT NULL DEFAULT ''
             );
 
+            -- Plan 2 package 7: a plain email to a member of the team when a
+            -- website lead or booking arrives. Queued here by the inbound
+            -- routes (which must never call out) and sent by the scheduler's
+            -- pass. Subject and business name only; the rest is in the app.
+            CREATE TABLE IF NOT EXISTS team_notifications (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id   INTEGER NOT NULL,
+                to_email   TEXT    NOT NULL,
+                subject    TEXT    NOT NULL,
+                body       TEXT    NOT NULL,
+                created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+                sent_at    TEXT    DEFAULT NULL,
+                attempts   INTEGER NOT NULL DEFAULT 0,
+                error      TEXT    NOT NULL DEFAULT ''
+            );
+
             -- An operator's Zoho Calendar connection (zoho_calendar.py). Its
             -- own table, like worker_keys, so the refresh token never rides
             -- along in a row loaded or serialised for something else. One per
@@ -9455,6 +9471,7 @@ def file_website_enquiry(enquiry_id: int):
            "first_name": first, "last_name": last.strip(),
            "phone": e["phone"], "website": e["website"],
            "country": e["country"] or site_cfg.get("country") or ""}
+    first_filing = not e["business_id"]
     with get_db() as conn:
         newest = conn.execute("SELECT COALESCE(MAX(id), 0) FROM businesses").fetchone()[0]
     _accepted, ids = upsert_businesses([row], owner_id=owner)
@@ -9471,6 +9488,8 @@ def file_website_enquiry(enquiry_id: int):
     if stage and not stage["pipeline_stage"]:
         set_business_pipeline(bid, "enquired", "website", owner_id=owner)
     mark_other_operators_copies(bid)
+    if first_filing:
+        queue_team_notification(owner, "enquiry", bid)
     return bid
 
 
@@ -9659,6 +9678,7 @@ def _cal_booking_created(b: dict, state: str = "booked") -> str:
                               next_action_at=b["starts_at"], owner_id=biz["owner_id"])
         with get_db() as conn:
             _cal_store_meeting(conn, business_id, b, state)
+        queue_team_notification(biz["owner_id"], "booking", business_id)
         return "booked"
     if b["site"] not in WEBSITE_SITES:
         return f"not filed: no known site in metadata ({b['site'] or 'none'})"
@@ -9678,6 +9698,7 @@ def _cal_booking_created(b: dict, state: str = "booked") -> str:
         _cal_store_meeting(conn, e["business_id"], b, state)
         conn.execute("UPDATE website_enquiries SET cal_booking_id=?, updated_at=datetime('now') WHERE id=?",
                      (b["uid"], enquiry_id))
+    queue_team_notification(e["owner_id"], "booking", e["business_id"])
     return "booked"
 
 
@@ -9989,3 +10010,92 @@ def mark_other_operators_copies(business_id: int) -> int:
             # No time: not even when it was marked.
             conn.execute("UPDATE businesses SET pipeline_at=NULL, next_action_at=NULL WHERE id=?", (other_id,))
     return len(targets)
+
+
+
+# ── Telling the team (Plan 2 package 7) ──────────────────────────────────────
+#
+# EmailJS emails the team from the websites today. Before it goes, ShoutReach
+# does it: each operator may give an address, and gets one plain email when a
+# website enquiry is filed for them and when a booking is made, sent through
+# an existing sending account by the scheduler's pass.
+
+def get_notify_email(owner_id=None) -> str:
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (f"notify_email:{owner}",)).fetchone()
+    return row["value"] if row else ""
+
+
+def save_notify_email(address: str, owner_id=None) -> str:
+    address = (address or "").strip()
+    if address and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", address):
+        raise ValueError("That isn't an email address")
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        conn.execute("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE "
+                     "SET value=excluded.value", (f"notify_email:{owner}", address[:254]))
+    return address
+
+
+_NOTIFY_SUBJECTS = {"enquiry": "New website enquiry: {name}", "booking": "Booked on Cal.com: {name}"}
+
+
+def queue_team_notification(owner_id: int, kind: str, business_id: int) -> bool:
+    """Queue one email for this operator, if they gave an address. Subject
+    and business name only -- no answers, no contact details."""
+    to = get_notify_email(owner_id=owner_id) if owner_id else ""
+    if not to or kind not in _NOTIFY_SUBJECTS:
+        return False
+    with get_db() as conn:
+        row = conn.execute("SELECT name FROM businesses WHERE id=?", (business_id,)).fetchone()
+        name = (row["name"] if row else "") or "a business"
+        base = (conn.execute("SELECT value FROM settings WHERE key='app_base_url'").fetchone() or {"value": ""})["value"]
+        subject = _NOTIFY_SUBJECTS[kind].format(name=name)[:200]
+        body = (f"{subject}\n\nThe details are in ShoutReach"
+                + (f": {base.rstrip('/')}/" if base else ".") + "\n")
+        conn.execute("INSERT INTO team_notifications(owner_id, to_email, subject, body) VALUES(?,?,?,?)",
+                     (int(owner_id), to, subject, body))
+    return True
+
+
+_NOTIFY_MAX_ATTEMPTS = 5
+
+
+def run_team_notifications(send=None) -> dict:
+    """
+    Send what's queued, through the first active sending account. A failure
+    is kept on the row and tried again on a later pass, up to five times.
+    `send(to, subject, body, settings, account)` is sender.send_notification;
+    passed in so tests never reach a real server.
+    """
+    counts = {"sent": 0, "failed": 0}
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM team_notifications WHERE sent_at IS NULL AND attempts < ? "
+                            "ORDER BY id", (_NOTIFY_MAX_ATTEMPTS,)).fetchall()
+    if not rows:
+        return counts
+    account = next((a for a in get_smtp_accounts() if a.get("status") == "active"), None)
+    if not account:
+        with get_db() as conn:
+            conn.execute("UPDATE team_notifications SET error='No active sending account' "
+                         "WHERE sent_at IS NULL")
+        return counts
+    if send is None:
+        import sender
+        send = sender.send_notification
+    settings = get_settings()
+    for r in rows:
+        try:
+            send(r["to_email"], r["subject"], r["body"], settings, account)
+        except Exception as exc:
+            counts["failed"] += 1
+            with get_db() as conn:
+                conn.execute("UPDATE team_notifications SET attempts=attempts+1, error=? WHERE id=?",
+                             (str(exc)[:300], r["id"]))
+            continue
+        counts["sent"] += 1
+        with get_db() as conn:
+            conn.execute("UPDATE team_notifications SET sent_at=datetime('now'), attempts=attempts+1, "
+                         "error='' WHERE id=?", (r["id"],))
+    return counts

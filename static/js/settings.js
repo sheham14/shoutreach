@@ -161,8 +161,10 @@ async function rotateCalSecret() {
 }
 
 async function loadWebsiteFollowup() {
-  const [prefs, emailCamps, waCamps] = await Promise.all([
-    api('/api/website-followup'), api('/api/campaigns'), api('/api/wa/campaigns')]);
+  const [prefs, emailCamps, waCamps, notify] = await Promise.all([
+    api('/api/website-followup'), api('/api/campaigns'), api('/api/wa/campaigns'), api('/api/notify-email')]);
+  const ne = document.getElementById('cfg-notify-email');
+  if (ne) ne.value = (notify && notify.email) || '';
   const fill = (id, none, list, chosen) => {
     const sel = document.getElementById(id);
     if (!sel) return;
@@ -175,11 +177,15 @@ async function loadWebsiteFollowup() {
 }
 
 async function saveWebsiteFollowup() {
-  const res = await api('/api/website-followup', 'PUT', {
-    email_campaign_id: document.getElementById('cfg-wf-email').value || null,
-    wa_campaign_id: document.getElementById('cfg-wf-wa').value || null,
-  });
-  if (!res || res.ok === false || res.error) { toast((res && res.error) || 'Could not save', 'err'); return; }
+  const [res, res2] = await Promise.all([
+    api('/api/website-followup', 'PUT', {
+      email_campaign_id: document.getElementById('cfg-wf-email').value || null,
+      wa_campaign_id: document.getElementById('cfg-wf-wa').value || null,
+    }),
+    api('/api/notify-email', 'PUT', { email: document.getElementById('cfg-notify-email').value.trim() }),
+  ]);
+  const bad = [res, res2].find(r => !r || r.ok === false || r.error);
+  if (bad) { toast((bad && bad.error) || 'Could not save', 'err'); return; }
   toast('Saved');
 }
 

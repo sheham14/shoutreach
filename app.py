@@ -764,6 +764,23 @@ def api_save_website_followup():
     return jsonify({"ok": True, **prefs})
 
 
+@app.route("/api/notify-email", methods=["GET"])
+@login_required
+def api_get_notify_email():
+    """Where this operator is told about new website leads and bookings."""
+    return jsonify({"email": db.get_notify_email(owner_id=me())})
+
+
+@app.route("/api/notify-email", methods=["PUT"])
+@login_required
+def api_save_notify_email():
+    try:
+        return jsonify({"ok": True, "email": db.save_notify_email((request.json or {}).get("email"),
+                                                                 owner_id=me())})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @app.route("/api/inbound/website-lead", methods=["POST"])
 def api_inbound_website_lead():
     """

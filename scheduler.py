@@ -304,6 +304,14 @@ def run_website_followups():
         logger.exception("Website follow-up job failed")
 
 
+def run_team_notifications():
+    """Email the team about new website leads and bookings (Plan 2 package 7)."""
+    try:
+        db.run_team_notifications()
+    except Exception:
+        logger.exception("Team notification job failed")
+
+
 def run_cal_events():
     """Read any Cal.com delivery left unread (normally the route reads them at once)."""
     try:
@@ -383,6 +391,7 @@ def _one_pass():
     # above: neither may stop the loop or the other.
     run_website_followups()
     run_cal_events()
+    run_team_notifications()
 
     if now - _last_log_prune > 86400:  # 24 hours
         run_log_prune()
