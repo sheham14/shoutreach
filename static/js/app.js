@@ -8,6 +8,9 @@ document.querySelectorAll('nav a').forEach(a => {
 });
 
 refreshDashboard();
+// The Meetings count is loaded with the app, not when the page is first
+// opened (audit F-23: the old Booked tab read 0 until you visited it).
+refreshMeetingCount();
 
 // Load current user info (sidebar username)
 api('/api/users/me').then(me => {

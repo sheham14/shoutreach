@@ -20,8 +20,6 @@ import email as emaillib
 import email.message
 import email.utils
 import re
-import time
-import random
 import secrets
 import datetime
 import hashlib
@@ -29,7 +27,6 @@ import hmac
 import base64
 import json
 import logging
-from typing import Optional
 
 import db
 
@@ -301,6 +298,34 @@ def get_smtp(settings: dict):
 
     server.login(user, pwd)
     return server
+
+
+def send_notification(to: str, subject: str, body: str, settings: dict, account: dict) -> None:
+    """
+    One plain email to a member of the team (Plan 2 package 7), through a
+    sending account. Not outreach: no unsubscribe footer, not counted against
+    any cap, not logged as a send. Raises on failure; the caller keeps the
+    error and tries again on a later pass.
+    """
+    cfg = settings.copy()
+    cfg.update({"smtp_host": account.get("smtp_host", ""), "smtp_port": account.get("smtp_port", 587),
+                "smtp_user": account.get("smtp_user", ""), "smtp_pass": account.get("smtp_pass", "")})
+    from_email = account.get("email", "")
+    msg = email.message.EmailMessage()
+    msg.set_content(body)
+    msg["Subject"] = subject
+    msg["From"] = email.utils.formataddr(("ShoutReach", from_email))
+    msg["To"] = to
+    msg["Date"] = email.utils.formatdate(localtime=False)
+    msg["Message-ID"] = email.utils.make_msgid(domain=(from_email.split("@")[-1] or "shoutreach.local"))
+    server = get_smtp(cfg)
+    try:
+        server.sendmail(from_email, [to], msg.as_string())
+    finally:
+        try:
+            server.quit()
+        except Exception:
+            pass
 
 
 def test_smtp(settings: dict) -> tuple[bool, str]:

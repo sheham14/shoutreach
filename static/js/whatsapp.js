@@ -32,7 +32,6 @@ function startOfLocalDay() {
 onTab('whatsapp', name => {
   if (name === 'todo') loadWaTodo();
   if (name === 'leads') { closeLeadPanel('wl-panel'); fillSourceSelect('wl-source'); LT.wl.load({ resetPage: true }); }
-  if (name === 'booked') { closeLeadPanel('wa-booked-panel'); renderWaBooked(); }
   if (name === 'campaigns') renderWaCampaigns();
   if (name === 'templates') renderWaTemplateEditor(_waFilter() || (_waCampaigns[0] && _waCampaigns[0].id));
 });
@@ -149,7 +148,8 @@ async function loadWhatsApp() {
   _waOpenNext = null;
   if (next && next.filter !== undefined) document.getElementById('wa-campaign-filter').value = String(next.filter);
   renderWaHeader();
-  const tab = next ? next.tab : currentTab('whatsapp', 'todo');
+  let tab = next ? next.tab : currentTab('whatsapp', 'todo');
+  if (tab === 'booked') tab = 'todo';   // remembered from before the tab moved to Meetings
   setTab('whatsapp', tab);
   if (tab !== 'todo') refreshWaCounts();
 }
@@ -982,117 +982,9 @@ function openWaLeadFromTable(r) {
   setTab('whatsapp', 'todo');
 }
 
-// ── Booked ───────────────────────────────────────────────────────────────────
-//
-// Which WhatsApp conversations turned into a meeting -- channel=whatsapp on
-// every request, on purpose. A meeting booked over a cold call is exactly as
-// "booked" as one booked over WhatsApp (see log_call's pipeline wiring), and
-// still shows that way wherever the business is opened -- its own lead panel
-// on every channel, Contacts -- but this tab answers a narrower, channel-
-// specific question, and mixing a cold-call booking into it would answer a
-// question nobody asked here. Not scoped to the campaign filter above the
-// tabs, though: a meeting from any WhatsApp campaign belongs in one list.
-//
-// next_action_at is the operator's own wall-clock time, typed in and read
-// back on their own device -- see db._clean_date. No timezone conversion
-// happens anywhere here on purpose; converting it would be solving a problem
-// that doesn't exist, since a lead is only ever seen by the one operator who
-// booked it.
-
-// A stored value as a real Date, treated as local wall-clock the whole way
-// through. new Date() on a bare "YYYY-MM-DD" is a well-known trap -- it's
-// parsed as UTC midnight, which can land on the wrong day once converted
-// back to local time for display. Padding a time onto it forces the local
-// parse path every engine agrees on.
-function _pipeDateObj(raw) {
-  const text = String(raw || '').trim();
-  if (!text) return null;
-  const iso = text.length <= 10 ? `${text}T00:00:00` : text.replace(' ', 'T');
-  const d = new Date(iso);
-  return isNaN(d) ? null : d;
-}
-
-function _waBookedGroup(d) {
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
-  const day = new Date(d); day.setHours(0, 0, 0, 0);
-  if (day < today) return 'Overdue';
-  if (day.getTime() === today.getTime()) return 'Today';
-  if (day.getTime() === tomorrow.getTime()) return 'Tomorrow';
-  return 'Later';
-}
-
-async function renderWaBooked() {
-  // channel=whatsapp on purpose: a meeting booked over a cold call is still
-  // "booked" wherever that business is opened (its own lead panel on every
-  // channel, Contacts), but this tab answers one specific question -- which
-  // WhatsApp conversations turned into a meeting -- so a cold-call booking
-  // has no business showing up here. See db.get_pipeline_board.
-  const rows = await api('/api/pipeline?stage=booked&channel=whatsapp&include_terminal=1') || [];
-  setTabCount('whatsapp', 'booked', rows.length, true);
-  const body = document.getElementById('wa-booked-body');
-  if (!body) return;
-  if (!rows.length) {
-    body.innerHTML = `<div class="empty-state"><p>No meetings booked yet. Set a business's
-      stage to <b>Meeting booked</b> from its lead panel, or from a row's ⋯ menu on Leads.</p></div>`;
-    return;
-  }
-  // A date-only row predates wants_time -- it was booked before this stage
-  // asked for an hour. Still shown, just without a time in it.
-  const withDates = rows.map(r => ({ ...r, _d: _pipeDateObj(r.next_action_at) }));
-  const groups = { Overdue: [], Today: [], Tomorrow: [], Later: [] };
-  withDates.forEach(r => groups[r._d ? _waBookedGroup(r._d) : 'Later'].push(r));
-
-  body.innerHTML = ['Overdue', 'Today', 'Tomorrow', 'Later']
-    .filter(g => groups[g].length)
-    .map(g => `
-      <div class="card-title" style="margin-top:14px">${g}
-        <span class="text-muted text-small">(${groups[g].length})</span></div>
-      <div class="table-wrap">
-        <table class="lead-table"><tbody>
-          ${groups[g].map(waBookedRowHtml).join('')}
-        </tbody></table>
-      </div>`)
-    .join('');
-}
-
-function waBookedRowHtml(r) {
-  const hasTime = r._d && String(r.next_action_at || '').length > 10;
-  const timeStr = r._d ? fmtWhen(r.next_action_at, 'wall', { dateOnly: !hasTime }) : 'No time set';
-  // No "via" tag here — every row on this tab is a WhatsApp booking by
-  // construction (the request asked for channel=whatsapp), so the only thing
-  // worth naming is which campaign it came from.
-  const tz = r.meeting_timezone && r.meeting_timezone !== browserTimezone()
-    ? ` <span class="text-muted">${esc(r.meeting_timezone.replace(/_/g, ' '))}</span>` : '';
-  // Whether it made it onto Zoho Calendar, and whether the client was invited.
-  let cal = '';
-  if (r.has_meeting) {
-    cal = r.meeting_sync_error ? '<span style="color:var(--red)">⚠ not on calendar</span>'
-      : r.meeting_event_uid ? '<span style="color:var(--green)">✓ on calendar</span>'
-      : '<span class="text-muted">not on a calendar</span>';
-    if (r.meeting_invited_at) cal += ` · invited ${esc(r.meeting_invite_email || '')}`;
-  }
-  return `<tr style="cursor:pointer" onclick="openWaBookedLead(${r.business_id})">
-      <td>
-        <span class="biz-name">${esc(r.company || 'Unnamed business')}</span>
-        <span class="sub mono">${esc(r.phone || '')}</span>
-      </td>
-      <td class="nowrap"><b>${esc(timeStr)}</b>${tz}
-        ${cal ? `<span class="sub">${cal}</span>` : ''}</td>
-      <td class="text-muted text-small">${r.wa_campaign_name ? esc(r.wa_campaign_name) : ''}</td>
-      <td class="nowrap" onclick="event.stopPropagation()">
-        ${r.meeting_join_url ? `<a class="btn btn-ghost btn-sm" href="${esc(r.meeting_join_url)}" target="_blank" rel="noopener">Join ↗</a>` : ''}
-        <a class="btn btn-ghost btn-sm" href="/api/businesses/${r.business_id}/ics" title="Download for any other calendar">.ics ↓</a>
-      </td>
-    </tr>`;
-}
-
-function openWaBookedLead(businessId) {
-  openLeadPanel(businessId, {
-    channel: 'whatsapp', panelId: 'wa-booked-panel', splitId: 'wa-booked-split',
-    onClose: () => renderWaBooked(),
-  });
-}
+// The Booked tab that lived here is gone (Plan 2, audit F-19/F-23/F-24):
+// every meeting, from any channel or the website, is on the Meetings page
+// (meetings.js).
 
 // ── Campaigns ────────────────────────────────────────────────────────────────
 

@@ -1,0 +1,148 @@
+{
+  "triggerEvent": "BOOKING_CREATED",
+  "createdAt": "2026-11-22T01:32:01.541Z",
+  "payload": {
+    "bookerUrl": "https://cal.com",
+    "bookerOrganizationId": null,
+    "title": "Free strategy call between Hexiv and Sam Booker",
+    "startTime": "2026-11-22T22:00:00.000Z",
+    "endTime": "2026-11-22T22:30:00.000Z",
+    "additionalNotes": "Business type: Something else\nMain challenge: Not enough new inquiries\nHow customers find them: Not sure\nEnquiries per month: 10–50\nRunning ads: Yes, we run them ourselves\nBusiness name: Booker Dental\nWebsite / Instagram: bookerdental.co.uk\nPhone / WhatsApp: 07700900123",
+    "type": "free-strategy-call",
+    "eventTypeTitle": "Free strategy call",
+    "description": "Online call",
+    "eventTypeId": 8017312,
+    "hideCalendarNotes": false,
+    "hideCalendarEventDetails": false,
+    "privateNoteEnabled": false,
+    "privateNoteMode": null,
+    "privateNoteTemplate": null,
+    "hideOrganizerEmail": false,
+    "schedulingType": null,
+    "seatsPerTimeSlot": null,
+    "seatsShowAttendees": true,
+    "seatsShowAvailabilityCount": true,
+    "customReplyToEmail": null,
+    "disableRescheduling": false,
+    "disableReschedulingScope": "HOST_AND_ATTENDEE",
+    "disableCancelling": false,
+    "disableCancellingScope": "HOST_AND_ATTENDEE",
+    "organizer": {
+      "id": 3508505,
+      "name": "Hexiv",
+      "email": "host@example.com",
+      "username": "hexiv",
+      "timeZone": "America/St_Johns",
+      "language": {
+        "locale": "en"
+      },
+      "timeFormat": "h:mma",
+      "utcOffset": -210
+    },
+    "attendees": [
+      {
+        "name": "Sam Booker",
+        "email": "sam.booker@example.com",
+        "timeZone": "America/St_Johns",
+        "language": {
+          "locale": "en"
+        },
+        "phoneNumber": null,
+        "bookingSeat": null,
+        "utcOffset": -210,
+        "firstName": "Sam",
+        "lastName": "Booker"
+      }
+    ],
+    "customInputs": {},
+    "responses": {
+      "name": {
+        "label": "your_name",
+        "value": "Sam Booker"
+      },
+      "email": {
+        "label": "email_address",
+        "value": "sam.booker@example.com"
+      },
+      "notes": {
+        "label": "notes",
+        "value": "Business type: Something else\nMain challenge: Not enough new inquiries\nHow customers find them: Not sure\nEnquiries per month: 10–50\nRunning ads: Yes, we run them ourselves\nBusiness name: Booker Dental\nWebsite / Instagram: bookerdental.co.uk\nPhone / WhatsApp: 07700900123"
+      },
+      "guests": {
+        "label": "guests",
+        "value": []
+      },
+      "location": {
+        "label": "location",
+        "value": {
+          "value": "integrations:daily",
+          "optionValue": ""
+        }
+      }
+    },
+    "userFieldsResponses": {},
+    "location": "integrations:daily",
+    "iCalUID": "nS7TnmRPambSkW5hz3UKr7@Cal.com",
+    "iCalSequence": 0,
+    "requiresConfirmation": false,
+    "oneTimePassword": null,
+    "platformClientId": "",
+    "platformRescheduleUrl": "",
+    "platformCancelUrl": "",
+    "platformBookingUrl": "",
+    "uid": "nS7TnmRPambSkW5hz3UKr7",
+    "organizationId": null,
+    "hashedLink": null,
+    "cancellationReason": null,
+    "rejectionReason": null,
+    "hideBranding": false,
+    "videoCallData": {
+      "type": "daily_video",
+      "id": "",
+      "password": "",
+      "url": "https://app.cal.com/video/nS7TnmRPambSkW5hz3UKr7"
+    },
+    "appsStatus": [
+      {
+        "appName": "CalDav (Beta)",
+        "type": "caldav_calendar",
+        "success": 1,
+        "failures": 0,
+        "errors": []
+      }
+    ],
+    "destinationCalendar": [
+      {
+        "id": 1828060,
+        "integration": "caldav_calendar",
+        "externalId": "https://calendar.zoho.sa/caldav/REDACTED/events/",
+        "primaryEmail": null,
+        "userId": 3508505,
+        "credentialId": 2932995,
+        "delegationCredentialId": null,
+        "customCalendarReminder": null
+      }
+    ],
+    "bookingId": 29254606,
+    "status": "ACCEPTED",
+    "eventTitle": "Free strategy call",
+    "eventDescription": "Online call",
+    "price": 0,
+    "currency": "usd",
+    "length": 30,
+    "assignmentReason": [],
+    "metadata": {
+      "ads": "Yes, we run them ourselves",
+      "site": "hexiv.co.uk",
+      "phone": "07700900123",
+      "source": "Not sure",
+      "volume": "10–50",
+      "website": "bookerdental.co.uk",
+      "challenge": "Not enough new inquiries",
+      "businessName": "Booker Dental",
+      "businessType": "Something else",
+      "videoCallUrl": "https://app.cal.com/video/nS7TnmRPambSkW5hz3UKr7"
+    },
+    "platformOAuthClientId": null
+  }
+}

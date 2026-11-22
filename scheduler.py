@@ -292,6 +292,34 @@ def run_bounce_check():
 LOG_RETENTION_DAYS = 60
 
 
+def run_website_followups():
+    """Queue the follow-up for website enquiries that didn't book (db.run_website_followups).
+    Adds leads to WhatsApp To do and enrols emails; sends nothing itself."""
+    try:
+        counts = db.run_website_followups()
+        if counts.get("whatsapp") or counts.get("email"):
+            db.add_log(f"🌐 Website enquiries followed up: {counts.get('whatsapp', 0)} to WhatsApp To do, "
+                       f"{counts.get('email', 0)} enrolled for email")
+    except Exception:
+        logger.exception("Website follow-up job failed")
+
+
+def run_team_notifications():
+    """Email the team about new website leads and bookings (Plan 2 package 7)."""
+    try:
+        db.run_team_notifications()
+    except Exception:
+        logger.exception("Team notification job failed")
+
+
+def run_cal_events():
+    """Read any Cal.com delivery left unread (normally the route reads them at once)."""
+    try:
+        db.process_cal_events()
+    except Exception:
+        logger.exception("Reading Cal.com deliveries failed")
+
+
 def run_log_prune():
     try:
         deleted = db.prune_logs(LOG_RETENTION_DAYS)
@@ -357,6 +385,13 @@ def _one_pass():
         run_reply_check()
         run_bounce_check()
         _last_reply_check = now
+
+    # Plan 2: website enquiries that didn't book, and any Cal.com delivery
+    # still waiting to be read. Each wrapped on its own, like the jobs
+    # above: neither may stop the loop or the other.
+    run_website_followups()
+    run_cal_events()
+    run_team_notifications()
 
     if now - _last_log_prune > 86400:  # 24 hours
         run_log_prune()

@@ -71,7 +71,8 @@ fix this file.
   against a fake Zoho only: **nothing has talked to real Zoho yet** — the
   API Console registration is the operator's next step (§9). Until then the
   feature is dormant: bookings save as before and the panel says "not on a
-  calendar".
+  calendar". **Retired by Plan 2 package 8 before it was ever connected
+  (§5f).**
 - **Deployed 2026-10-11 16:41 UTC (`3ea7efd`): the UI cleanup and follow-up sequences**
   (§5e). WhatsApp follow-ups are a list that cycles forever (a lead's own
   first, as many as it brought); Email has a To do for real replies; one
@@ -104,7 +105,7 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
-| `fa6ca7f` | 10-29 | Meetings on Zoho Calendar: connect per operator, shared calendar, invites, Zoho Meeting or own link, cancel | Yes (Zoho not yet connected) |
+| `fa6ca7f` | 10-29 | Meetings on Zoho Calendar: connect per operator, shared calendar, invites, Zoho Meeting or own link, cancel | Yes, never connected. Retired by Plan 2 package 8 (§5f) |
 | `3ea7efd` | 10-11 | Follow-up sequences + long-term gap; Email To do; Get leads page; Settings split; sidebar regrouped | Yes |
 | `916dabb` | 10-10 | Deploys back up the database first | Yes |
 | `8305454` | 10-10 | Country-aware phone matching; named imports + "From" filter everywhere; CSV-only scrapes; CSV download; full-screen tables; Recently deleted; account passwords no longer sent to campaign owners | Yes |
@@ -270,6 +271,24 @@ visibility into anyone else's leads.
     remembered there by address alone, even with no row to mark, and any copy
     of the address created, restored or re-addressed later is made to match
     (audit B-1). `tests/test_suppression.py`.
+- **One deliberate crossing: the other operator's copy of a website lead**
+  (Plan 2 package 6, decided 2026-11-21, `mark_other_operators_copies`).
+  When a website enquiry or Cal.com booking is filed for one operator (the
+  site's owner in Team setup) and the other holds the same business, the
+  other's copy is set to a built-in terminal stage that says what really
+  happened: `enquired_elsewhere`, "Filled in the website form — not booked",
+  for an enquiry alone; `booked_elsewhere`, "Booked via the website", once
+  there's a booking (an enquired copy moves up to it, never back down; the
+  operator asked for the two to be told apart, 2026-11-22). Either way its
+  follow-ups stop (email sequences end, unsent WhatsApp paused, messaged
+  WhatsApp marked replied). It reveals nothing else: no time (`pipeline_at`
+  and `next_action_at` stay empty), no answers, no contact details, not who
+  holds it, no history line. Nothing is merged. **Only a copy with no stage
+  is marked** (decided 2026-11-22, after review): a copy on any stage of its
+  owner's — replied, proposal due with its date, booked, won, a custom one —
+  is left exactly as it is, and stays so after its owner moves it on; the one
+  move allowed is "Filled in the form" up to "Booked via the website".
+  `tests/test_booked_elsewhere.py`.
 - **Overlap between operators is advisory only** (`find_cross_owner_matches`).
   The import goes ahead; the notice shows business name, channel and date,
   never contact details; nothing is merged. Matching is heuristic
@@ -788,7 +807,38 @@ built this myself I myself forget where to find certain options").
   syntax error there (fine on 3.12+, which is what's installed locally). One
   slipped in and was caught before commit; check new f-strings for it.
 
-## 5f. Meetings on Zoho Calendar — live 2026-10-29 (`fa6ca7f`), Zoho not yet connected
+## 5f. Meetings on Zoho Calendar — RETIRED (Plan 2 package 8)
+
+> **Retired 2026-11-22 by Plan 2 package 8** (branch `plan-2-cal-com`; not
+> deployed until that branch is merged). It was live from 2026-10-29
+> (`fa6ca7f`) but never connected to real Zoho. The operator decided on
+> 2026-11-21 that Cal.com is the only thing that creates, moves or cancels a
+> calendar event, and ShoutReach never emails an invite
+> ([Plan 2](plans/2%20Cal.com%20integration.md)).
+>
+> **Removed:** `zoho_calendar.py`; the `/api/zoho/*` and `/zoho/*` routes;
+> `/api/businesses/<id>/meeting/{sync,invite,cancel}` and
+> `/api/meetings/address-check`; `_book_meeting` and its two callers' use of
+> it (the pipeline route and `api_log_call`); the Team setup "Zoho Calendar"
+> and My settings "Meetings & calendar" cards; the booking dialog's calendar
+> fields; per-person meeting defaults (`meeting_prefs:<uid>`);
+> `tests/test_zoho_calendar.py`.
+>
+> **Kept:** the `meetings` table (Cal.com bookings live there, `source =
+> 'cal'`) and the `zoho_connections` table, which is emptied once by
+> `_migrate_retire_zoho` (marker `_retired_zoho_calendar`) along with the
+> `zoho_region`, `zoho_client_id`, `zoho_client_secret` and
+> `meeting_prefs:<uid>` settings, since they can hold tokens and a secret.
+> Tables are not dropped on the live database.
+>
+> **What booking by hand does now:** setting a lead to Meeting booked with a
+> time (lead panel, or a "Meeting booked" call outcome) saves the stage and
+> its time and stops follow-ups, as before. Nothing else. No calendar, no
+> invite, no `meetings` row. An old Zoho-era `meetings` row still shows in the
+> reduced meeting box: the time comes from the stage, and Join appears if the
+> row has a link. `tests/test_meetings.py` §5 checks all of this.
+>
+> The rest of this section is the historical record of what was built.
 
 Asked for by the operator: the Book step should reach a real calendar, and
 send the client an invite. Zoho because both operators' work email is Zoho
@@ -998,7 +1048,8 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-25 files, all passing as of §5f. `test_rendering.py` once
+32 files, all passing as of Plan 2 package 8 (which deleted
+`test_zoho_calendar.py`). `test_rendering.py` once
 failed with "database is locked" mid-suite and passed on its own and on a
 re-run — watch for it.
 
@@ -1055,27 +1106,6 @@ importing runs `init_db()` against `./outreach.db`.
 
 **Immediately:**
 
-000000. **Meetings on Zoho Calendar (§5f) are live** (`fa6ca7f`,
-       2026-10-29; backed up by the deploy) **but not connected to Zoho
-       yet.** To finish, in order:
-       1. ~~Merge and push.~~ Done 2026-10-29.
-       2. In Zoho's Saudi API Console (`api-console.zoho.sa`), signed in
-          as the operator: Add Client → **Server-based Applications**.
-          Homepage `https://shoutreach.hexiv.co`; Authorized Redirect URI
-          exactly as Settings → Team setup → Zoho Calendar shows it
-          (`https://shoutreach.hexiv.co/zoho/callback`).
-       3. Paste the Client ID and Client Secret into that Team setup card
-          and save. (Never into a chat.)
-       4. In Zoho Calendar, the cofounder creates the shared calendar and
-          shares it with the operator with edit rights.
-       5. Each person: My settings → Connect Zoho Calendar, then pick the
-          shared calendar under "Put my meetings on" and Save.
-       6. Book a test meeting on a lead with your own address as the
-          client's, and check every item in §5f's "Not yet proven" list:
-          it lands on the shared calendar at the right hour, has a Zoho
-          Meeting link, the invite arrives (and from whom), moving it with
-          the box ticked sends an update, and Cancel meeting removes it and
-          sends a cancellation.
 00000. **§5e is live** (`3ea7efd`, 2026-10-11; backed up by the deploy). Still to
       check by hand: WhatsApp → Messages shows "Follow-up 1" holding each
       campaign's old follow-up; Email → To do is empty (older replies start
@@ -1169,9 +1199,26 @@ Still open from the fix-now list:
   replaces that tab.
 
 Next: Plan 2 (Cal.com) and Plan 3 (redesign phase 1) both build on this.
+
+**Plan 2 (Cal.com) is built on branch `plan-2-cal-com`.** Packages 1 and 2
+are merged and deployed; packages 3 to 8 are only on the branch. Package 8
+retires the Zoho booking (§5f). The record, with every choice that differs
+from the plan, the operator's setup steps and the open questions, is
+`docs/plans/2 Cal.com integration - build log.md`. After the hand-back, a second
+pass (2026-11-22) answered open question 1 (an enquiry alone now marks the
+other operator's copy "Filled in the website form — not booked", see §3),
+let a hand booking replace a cancelled Cal.com meeting, fixed the lead
+panel crashing on an old saved audit, removed unused imports, and fixed a
+date-dependent test. Still for the operator to test before or after the
+merge: a booking from "Copy booking link", and Cal.com's time zone.
+**Next:** review and merge `plan-2-cal-com`; then Plan 4, back-end
+hardening (`docs/plans/4 Back-end hardening.md`, written 2026-11-22: it
+covers B-13 and everything below, and lists the choices the operator makes
+first). Plan 3 (the redesign) comes later, separately.
+
 Also still open and real: B-13 (secrets stored in plaintext — SMTP/IMAP
-passwords, AI keys, Zoho tokens, the session key — and in each deploy's
-backup), B-12 (the bounce scanner's memory use), B-4 and B-5 (the lead
+passwords, AI keys, the Cal.com webhook secret, the session key — and in
+each deploy's backup; the Zoho client secret and tokens are gone with §5f), B-12 (the bounce scanner's memory use), B-4 and B-5 (the lead
 audit fetching internal addresses or stalling on a hostile page).
 
 **Still deliberately deferred** (reasons in the WhatsApp handover §6): renaming
@@ -1244,8 +1291,10 @@ retired `contacts` table.
   page: `contacts.js` (businesses, "Add all to…"), `email_leads.js` (Email →
   Leads and suppression), `calling.js`, `whatsapp.js`, `dashboard.js`.
 - `audit.py` — the lead audit's automatic checks.
-- `zoho_calendar.py` — the only code that talks to Zoho: OAuth, calendars,
-  and putting a booked meeting on, moving it, inviting, cancelling (§5f).
+- No calendar code. `zoho_calendar.py` was removed by Plan 2 package 8
+  (§5f, retired). Cal.com is the only thing that writes to a calendar, and
+  its bookings arrive at `/api/inbound/cal` (`db._cal_booking` and the
+  functions after it).
 - `reset_password.py` — shell password reset.
 - `tests/test_ownership.py`, `tests/test_whatsapp.py`,
   `tests/test_worker_api.py` — the best description of intended behaviour.

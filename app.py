@@ -21,7 +21,6 @@ import hmac
 import logging
 import os
 import secrets as _secrets
-import sys
 import threading
 import time as _time
 from collections import defaultdict, deque
@@ -30,14 +29,13 @@ from functools import wraps
 from urllib.parse import urlparse
 from flask import (
     Flask, render_template, request, jsonify,
-    redirect, url_for, make_response, Response, session, abort, g
+    redirect, make_response, Response, session, abort, g
 )
 
 import audit
 import db
 import scheduler
 import sender as email_sender
-import zoho_calendar
 
 # The scraper deliberately does NOT run here. It needs a visible Chrome window
 # for CAPTCHA solving, which a headless server cannot provide -- on the GCP VM
@@ -709,8 +707,11 @@ def api_save_website_settings():
         db.save_website_config(request.json or {})
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
-    # Enquiries that arrived while a site was set to nobody are filed now.
-    return jsonify({"ok": True, "filed": db.file_waiting_enquiries()})
+    # Enquiries and bookings that arrived while a site was set to nobody are
+    # filed now.
+    filed = db.file_waiting_enquiries()
+    db.process_cal_events()
+    return jsonify({"ok": True, "filed": filed})
 
 
 @app.route("/api/website-settings/key", methods=["POST"])
@@ -761,6 +762,23 @@ def api_save_website_followup():
     return jsonify({"ok": True, **prefs})
 
 
+@app.route("/api/notify-email", methods=["GET"])
+@login_required
+def api_get_notify_email():
+    """Where this operator is told about new website leads and bookings."""
+    return jsonify({"email": db.get_notify_email(owner_id=me())})
+
+
+@app.route("/api/notify-email", methods=["PUT"])
+@login_required
+def api_save_notify_email():
+    try:
+        return jsonify({"ok": True, "email": db.save_notify_email((request.json or {}).get("email"),
+                                                                 owner_id=me())})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @app.route("/api/inbound/website-lead", methods=["POST"])
 def api_inbound_website_lead():
     """
@@ -801,9 +819,18 @@ def api_inbound_cal():
     if sig.startswith("sha256="):
         sig = sig[len("sha256="):]
     expected = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest() if secret else ""
-    if not secret or not hmac.compare_digest(sig, expected):
+    # Compared as bytes: compare_digest refuses a str with non-ASCII
+    # characters, which turned a garbled header into a 500 (review of
+    # Plan 2, item 7). Any such header simply doesn't match.
+    if not secret or not hmac.compare_digest(sig.encode("utf-8", "replace"), expected.encode("ascii")):
         return jsonify({"ok": False, "error": "Bad signature"}), 401
     db.record_cal_event(raw)
+    # Read it now: local database work only, nothing called out to. Anything
+    # that goes wrong is written on the event; Cal.com still gets its 200.
+    try:
+        db.process_cal_events()
+    except Exception:
+        logging.exception("Reading Cal.com deliveries failed")
     return jsonify({"ok": True})
 
 
@@ -2370,43 +2397,23 @@ def api_set_business_pipeline(bid):
     Move one business along. Setting a stage stops its WhatsApp cadence;
     clearing one deliberately does not restart it (see set_business_pipeline).
 
-    'booked' with a time also books the meeting: `meeting` carries the
-    dialog's calendar choices (timezone, length, link, the client's email and
-    whether to invite them). It's checked before anything is saved, so a bad
-    link refuses the whole save rather than half of it. Any other stage
-    leaves an existing meeting alone -- only Cancel meeting cancels one.
+    'booked' with a time is a meeting arranged some other way: the stage and
+    its time are saved and nothing else happens -- no calendar, no invite, no
+    `meetings` row (Plan 2: Cal.com is the only calendar writer, and its
+    bookings arrive at /api/inbound/cal). A `meeting` key, which the retired
+    Zoho dialog sent, is ignored.
     """
     d = request.json or {}
-    stage = d.get("stage") or ""
-    choices = {}
-    if stage == "booked":
-        try:
-            choices = zoho_calendar.clean_meeting_input(d.get("meeting") or {})
-        except ValueError as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 400
     result = db.set_business_pipeline(
-        bid, stage, channel=d.get("channel") or "",
+        bid, d.get("stage") or "", channel=d.get("channel") or "",
         next_action_at=d.get("next_action_at"), owner_id=me(),
     )
     if not result.get("ok"):
         return jsonify(result), 404 if result.get("error") == "Not found" else 400
-    if stage == "booked" and len(result.get("next_action_at") or "") > 10:
-        result.update(_book_meeting(bid, result["next_action_at"], choices))
+    if (d.get("stage") or "") == "booked":
+        # A meeting booked by hand after a Cal.com cancellation replaces it.
+        db.clear_cancelled_cal_meeting(bid)
     return jsonify(result)
-
-
-def _book_meeting(bid, starts_at, choices, fallback_timezone=""):
-    """Record and calendar a booking; what to tell the page about it."""
-    out = {}
-    if choices.get("save_email") and choices.get("invite_email"):
-        ok, err = db.add_business_email(bid, choices["invite_email"], owner_id=me())
-        out["email_saved"] = ok
-        if not ok:
-            out["email_error"] = err
-    meeting = zoho_calendar.book(bid, me(), starts_at, fallback_timezone=fallback_timezone,
-                                 **{k: v for k, v in choices.items() if k != "save_email"})
-    out["meeting"] = zoho_calendar.meeting_view(meeting)
-    return out
 
 
 @app.route("/api/pipeline", methods=["GET"])
@@ -2481,176 +2488,6 @@ def api_business_ics(bid):
     resp.headers["Content-Type"] = "text/calendar; charset=utf-8"
     resp.headers["Content-Disposition"] = f'attachment; filename="meeting-{bid}.ics"'
     return resp
-
-
-# ── API: meetings on Zoho Calendar ────────────────────────────────────────────
-#
-# Each operator connects their own Zoho login; see zoho_calendar.py. The
-# meeting itself is booked by setting a business to 'booked' (above) or by a
-# "Meeting booked" call outcome. These routes are the rest: retry, invite,
-# cancel, and the connection.
-
-@app.route("/api/businesses/<int:bid>/meeting/sync", methods=["POST"])
-@login_required
-@owned("business", "bid")
-def api_meeting_sync(bid):
-    """Put a meeting on the calendar that isn't there yet, or try again after
-    Zoho refused. Never emails the client."""
-    if not db.get_meeting(bid):
-        return jsonify({"ok": False, "error": "There's no meeting booked for this lead"}), 404
-    if not zoho_calendar.status(me())["connected"]:
-        return jsonify({"ok": False, "error": "Connect Zoho Calendar in Settings → My settings first"}), 400
-    m = zoho_calendar.sync_meeting(bid, me())
-    return jsonify({"ok": not m.get("sync_error"), "meeting": zoho_calendar.meeting_view(m),
-                    "error": m.get("sync_error") or None})
-
-
-@app.route("/api/businesses/<int:bid>/meeting/invite", methods=["POST"])
-@login_required
-@owned("business", "bid")
-def api_meeting_invite(bid):
-    d = request.json or {}
-    email = (d.get("email") or "").strip().lower()
-    out = {}
-    try:
-        m = zoho_calendar.invite(bid, me(), email)
-    except (zoho_calendar.ZohoError, ValueError) as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if d.get("save_email"):
-        ok, err = db.add_business_email(bid, email, owner_id=me())
-        out = {"email_saved": ok, "email_error": err}
-    return jsonify({"ok": True, "meeting": zoho_calendar.meeting_view(m), **out})
-
-
-@app.route("/api/businesses/<int:bid>/meeting/cancel", methods=["POST"])
-@login_required
-@owned("business", "bid")
-def api_meeting_cancel(bid):
-    """
-    The one way a meeting is cancelled. `notify` emails an invited client a
-    cancellation; `clear_stage` also takes the business off 'Meeting booked'.
-    """
-    d = request.json or {}
-    try:
-        m = zoho_calendar.cancel(bid, me(), notify=bool(d.get("notify")))
-    except zoho_calendar.ZohoError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if d.get("clear_stage") and (db.get_business(bid) or {}).get("pipeline_stage") == "booked":
-        db.set_business_pipeline(bid, "", owner_id=me())
-    return jsonify({"ok": True, "meeting": zoho_calendar.meeting_view(m)})
-
-
-@app.route("/api/meetings/address-check", methods=["GET"])
-@login_required
-def api_meeting_address_check():
-    """
-    A warning, never a refusal, for the address an invite is about to go to.
-    Suppression is checked across every operator on purpose -- an opt-out
-    binds everyone on the shared domain -- but the answer never says whose
-    list it was.
-    """
-    email = (request.args.get("email") or "").strip().lower()
-    warnings = []
-    status = db.address_suppression(email)
-    if status == "unsubscribed":
-        warnings.append("This address unsubscribed from our emails.")
-    elif status == "bounced":
-        warnings.append("Email to this address has bounced before — check it's right.")
-    try:
-        bid = int(request.args.get("business_id") or 0)
-    except ValueError:
-        bid = 0
-    if bid and db.owns("business", bid, me()) and (db.get_business(bid) or {}).get("do_not_contact"):
-        warnings.append("This business is marked do not contact.")
-    return jsonify({"warning": " ".join(warnings)})
-
-
-def _zoho_redirect_uri() -> str:
-    """
-    Where Zoho sends the operator back to. Built from the address they are
-    using right now, so Team setup shows exactly what to paste into Zoho's
-    API Console. nginx talks plain HTTP to the app, so the scheme comes from
-    X-Forwarded-Proto.
-    """
-    root = request.url_root.rstrip("/")
-    if request.headers.get("X-Forwarded-Proto", "").lower() == "https" and root.startswith("http://"):
-        root = "https://" + root[len("http://"):]
-    return root + "/zoho/callback"
-
-
-@app.route("/api/zoho/status", methods=["GET"])
-@login_required
-def api_zoho_status():
-    return jsonify({**zoho_calendar.status(me()), "redirect_uri": _zoho_redirect_uri(),
-                    "regions": zoho_calendar.REGIONS})
-
-
-@app.route("/api/zoho/calendars", methods=["GET"])
-@login_required
-def api_zoho_calendars():
-    try:
-        return jsonify({"ok": True, "calendars": zoho_calendar.list_calendars(me())})
-    except zoho_calendar.ZohoError as exc:
-        return jsonify({"ok": False, "error": str(exc), "calendars": []}), 400
-
-
-@app.route("/api/zoho/prefs", methods=["PUT"])
-@login_required
-def api_zoho_prefs():
-    """My settings → Meetings: the default calendar and meeting defaults."""
-    d = request.json or {}
-    try:
-        prefs = zoho_calendar.clean_prefs(d)
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    db.save_meeting_prefs(prefs, owner_id=me())
-    if d.get("calendar_uid") and db.get_zoho_connection(me()):
-        db.save_zoho_connection(me(), calendar_uid=str(d["calendar_uid"])[:200],
-                                calendar_name=str(d.get("calendar_name") or "")[:200])
-    return jsonify({"ok": True, **zoho_calendar.status(me())})
-
-
-@app.route("/api/zoho/disconnect", methods=["POST"])
-@login_required
-def api_zoho_disconnect():
-    zoho_calendar.disconnect(me())
-    return jsonify({"ok": True})
-
-
-@app.route("/zoho/connect", methods=["GET"])
-@login_required
-def zoho_connect():
-    """Off to Zoho to sign in and allow access. `state` ties the answer to
-    this browser session, so nobody can paste their own Zoho account into
-    someone else's."""
-    if not zoho_calendar.is_configured():
-        return redirect("/?zoho=not_configured")
-    state = _secrets.token_urlsafe(24)
-    session["zoho_state"] = state
-    return redirect(zoho_calendar.authorize_url(state, _zoho_redirect_uri()))
-
-
-@app.route("/zoho/callback", methods=["GET"])
-@login_required
-def zoho_callback():
-    expected = session.pop("zoho_state", "")
-    if not expected or not hmac.compare_digest(request.args.get("state", ""), expected):
-        return redirect("/?zoho=failed")
-    if request.args.get("error"):
-        return redirect("/?zoho=denied")
-    # Zoho says which data centre the account lives in. A token from any
-    # other is useless here, so say so instead of failing later.
-    server = request.args.get("accounts-server", "")
-    if server and server.rstrip("/") != zoho_calendar.accounts_host():
-        logging.warning("Zoho account is on %s, install is set to %s", server,
-                        zoho_calendar.accounts_host())
-        return redirect("/?zoho=wrong_region")
-    try:
-        zoho_calendar.finish_connect(me(), request.args.get("code", ""), _zoho_redirect_uri())
-    except zoho_calendar.ZohoError as exc:
-        logging.warning("Zoho connect failed for uid=%s: %s", me(), exc)
-        return redirect("/?zoho=failed")
-    return redirect("/?zoho=connected")
 
 
 @app.route("/api/call-outcomes", methods=["GET"])
@@ -2836,7 +2673,36 @@ def api_dashboard():
     scheduler.ensure_running()
     data = db.get_dashboard(owner_id=me(), since=request.args.get("since") or None)
     data["sender"] = scheduler.status()
+    # Plan 2: "From the website" -- recent enquiries and where each stands.
+    data["website"] = db.get_recent_enquiries(owner_id=me())
     return jsonify(data)
+
+
+@app.route("/api/meetings", methods=["GET"])
+@login_required
+def api_meetings():
+    """The Meetings page: every booked meeting of this operator's, from any
+    channel or the website."""
+    return jsonify(db.get_meetings(owner_id=me()))
+
+
+@app.route("/api/meetings/count", methods=["GET"])
+@login_required
+def api_meetings_count():
+    """For the sidebar, loaded with the app (F-23)."""
+    return jsonify({"count": db.count_meetings(owner_id=me())})
+
+
+@app.route("/api/businesses/<int:bid>/booking-link", methods=["GET"])
+@login_required
+@owned("business", "bid")
+def api_booking_link(bid):
+    """The Cal.com page prefilled for this lead, with a signed reference so the
+    booking that comes back lands on exactly this lead."""
+    url = db.booking_link_for(bid, channel=(request.args.get("channel") or ""), owner_id=me())
+    if not url:
+        return jsonify({"ok": False, "error": "No Cal.com booking link is set yet (Team setup → Website and bookings)."}), 400
+    return jsonify({"ok": True, "url": url})
 
 
 # ── API: Lead lists (one per import) ──────────────────────────────────────────
@@ -3271,15 +3137,9 @@ def api_log_call():
     db.add_log(f"☎ {label} — {(business or {}).get('name') or business_id}")
     if result["stopped_email"]:
         db.add_log(f"  ↳ email sequence stopped for {(business or {}).get('name') or business_id}")
-    # Booked on the phone: on the calendar too, the same as a booking made
-    # from the lead panel -- but no invite, since nobody typed an address.
-    # That's sent afterwards from the lead's panel. `timezone` is the
-    # browser's, for an operator who hasn't set one in My settings.
-    extra = {}
-    if outcome == "booked" and next_call_at:
-        extra = _book_meeting(business_id, next_call_at, {},
-                              fallback_timezone=d.get("timezone") or "")
-    return jsonify({"ok": True, **result, **extra})
+    # A "Meeting booked" outcome sets the shared stage and its time (in
+    # log_call) and nothing else: no calendar is touched (Plan 2).
+    return jsonify({"ok": True, **result})
 
 
 @app.route("/api/calls/contact/<int:cid>", methods=["GET"])
@@ -3330,11 +3190,8 @@ def api_save_call_script():
 @owned("business", "cid")
 def api_call_ics(cid):
     """
-    A calendar file for a booked call.
-
-    A booked meeting also goes on Zoho Calendar when the operator has
-    connected it (zoho_calendar.py, via log_call's booking); this download
-    is for any other calendar, and works with no connection at all.
+    A calendar file for a booked call, for the operator's own calendar.
+    ShoutReach itself never writes to a calendar (Plan 2: Cal.com does).
     """
     contact = db.get_call_lead_view(cid, owner_id=me())
     if not contact or not contact.get("next_call_at"):

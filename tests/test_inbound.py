@@ -127,6 +127,19 @@ def test_enquiry_becomes_lead(db, path, anon, ca, co, hdr, web, admin, other):
     check("an enquiry never moves a deal backwards",
           q(path, "SELECT pipeline_stage FROM businesses WHERE id=?", (bid,)) == [("proposal_sent",)])
 
+    print("   an enquiry on a business its owner already holds (review item 6)")
+    db.upsert_businesses([{"company": "Seq Clinic", "email": "info@seqclinic.co.uk", "phone": "+44 7700 900500",
+                           "country": "GB"}], owner_id=other)
+    seq_lead = q(path, "SELECT id FROM email_leads WHERE email='info@seqclinic.co.uk'")[0][0]
+    seq_camp = db.create_campaign("Cold seq", owner_id=other)
+    db.enroll_contacts_bulk(seq_camp, [seq_lead], owner_id=other)
+    anon.post("/api/inbound/website-lead", headers=web, json={**LEAD, "email": "owner@seqclinic.co.uk",
+              "name": "Seq Owner", "business": "Seq Clinic", "phone": "07700 900500"})
+    check("it lands on that business", q(path, "SELECT b.name FROM website_enquiries e JOIN businesses b "
+          "ON b.id=e.business_id WHERE e.email='owner@seqclinic.co.uk'") == [("Seq Clinic",)])
+    check("and its running email sequence ends",
+          q(path, "SELECT status FROM enrollments WHERE email_lead_id=?", (seq_lead,)) == [("completed",)])
+
     print("   a site set to nobody, then set")
     anon.post("/api/inbound/website-lead", json={**LEAD, "site": "hexiv.co", "email": "ali@clinic.ae",
               "name": "Ali", "business": "Ali Clinic", "locale": "ar"}, headers=web)
@@ -256,6 +269,11 @@ def main():
         check("a changed body -> 401", r.status_code == 401, str(r.status_code))
         r = anon.post("/api/inbound/cal", data=body)
         check("no signature -> 401", r.status_code == 401, str(r.status_code))
+        r = anon.post("/api/inbound/cal", data=body, headers={"X-Cal-Signature-256": "é" * 64})
+        check("a signature with non-ASCII characters -> 401, not 500 (review item 7)",
+              r.status_code == 401, str(r.status_code))
+        r = anon.post("/api/inbound/cal", data=body, headers={"X-Cal-Signature-256": "sha256=" + good.upper()})
+        check("the right signature, prefixed and upper-case, still -> 200", r.status_code == 200, str(r.status_code))
         r = anon.post("/api/inbound/cal", data=body, headers={"X-Cal-Signature-256": good})
         check("the right signature -> 200, no session or CSRF needed", r.status_code == 200, str(r.status_code))
         check("stored as received", q(path, "SELECT body FROM cal_events") == [(body.decode(),)])
