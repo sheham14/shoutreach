@@ -270,6 +270,16 @@ visibility into anyone else's leads.
     remembered there by address alone, even with no row to mark, and any copy
     of the address created, restored or re-addressed later is made to match
     (audit B-1). `tests/test_suppression.py`.
+- **One deliberate crossing: "Booked via the website"** (Plan 2 package 6,
+  decided 2026-11-21, `mark_other_operators_copies`). When a website enquiry
+  or Cal.com booking is filed for one operator (the site's owner in Team
+  setup) and the other holds the same business, the other's copy is set to
+  the built-in terminal stage `booked_elsewhere` and its follow-ups stop
+  (email sequences end, unsent WhatsApp paused, messaged WhatsApp marked
+  replied). It reveals nothing else: no time (`pipeline_at` and
+  `next_action_at` stay empty), no answers, no contact details, not who
+  holds it, no history line. Nothing is merged. A copy already booked by its
+  owner, or on a terminal stage, is left alone. `tests/test_booked_elsewhere.py`.
 - **Overlap between operators is advisory only** (`find_cross_owner_matches`).
   The import goes ahead; the notice shows business name, channel and date,
   never contact details; nothing is merged. Matching is heuristic
