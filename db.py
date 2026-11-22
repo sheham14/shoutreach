@@ -10162,7 +10162,9 @@ def _queue_team_notification(conn, owner_id: int, kind: str, business_id: int) -
     if not to or kind not in _NOTIFY_SUBJECTS:
         return False
     biz = conn.execute("SELECT name FROM businesses WHERE id=?", (business_id,)).fetchone()
-    name = (biz["name"] if biz else "") or "a business"
+    # One line: a line break in a subject is refused by the mail library, so
+    # the email used to fail five times and stop (review of Plan 2, item 9).
+    name = " ".join(((biz["name"] if biz else "") or "").split()) or "a business"
     base = conn.execute("SELECT value FROM settings WHERE key='app_base_url'").fetchone()
     base = base["value"] if base else ""
     subject = _NOTIFY_SUBJECTS[kind].format(name=name)[:200]

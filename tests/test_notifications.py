@@ -113,6 +113,31 @@ def main():
         db.run_team_notifications(send=fake_send)
         check("each is sent once", len(sent) == 2)
 
+        print("   a business name with line breaks (review item 9)")
+        with db.get_db() as conn:
+            conn.execute("INSERT INTO businesses(owner_id, name) VALUES(?, ?)", (anas, "Bad\r\nBcc: x@evil.example\nName"))
+            odd = conn.execute("SELECT MAX(id) FROM businesses").fetchone()[0]
+        db.queue_team_notification(anas, "enquiry", odd)
+        subj = q(path, "SELECT subject FROM team_notifications ORDER BY id DESC LIMIT 1")[0][0]
+        check("the subject is one line", "\n" not in subj and "\r" not in subj
+              and subj == "New website enquiry: Bad Bcc: x@evil.example Name", subj)
+        import sender as real_sender
+        importlib.reload(real_sender)
+        captured = {}
+
+        class Capture:
+            def sendmail(self, frm, to, text):
+                captured["text"] = text
+
+            def quit(self):
+                pass
+        real_sender.get_smtp = lambda cfg: Capture()
+        db.run_team_notifications(send=real_sender.send_notification)
+        check("and the real sender sends it (it used to fail five times and stop)",
+              "New website enquiry: Bad Bcc" in captured.get("text", "")
+              and q(path, "SELECT sent_at IS NOT NULL FROM team_notifications ORDER BY id DESC LIMIT 1") == [(1,)])
+        check("no header was injected", "\nBcc:" not in captured.get("text", ""))
+
         print("\n4. FAILURES ARE RETRIED, THEN LEFT")
         db.queue_team_notification(anas, "enquiry", q(path, "SELECT id FROM businesses")[0][0])
 
