@@ -1,0 +1,30 @@
+{
+  "triggerEvent": "PING",
+  "createdAt": "2026-11-22T01:28:43.559Z",
+  "payload": {
+    "type": "Test",
+    "title": "Test trigger event",
+    "startTime": "2026-11-22T01:28:43.559Z",
+    "endTime": "2026-11-22T01:28:43.559Z",
+    "attendees": [
+      {
+        "email": "jdoe@example.com",
+        "name": "John Doe",
+        "timeZone": "Europe/London",
+        "language": {
+          "locale": "en"
+        },
+        "utcOffset": 0
+      }
+    ],
+    "organizer": {
+      "name": "Cal",
+      "email": "no-reply@cal.com",
+      "timeZone": "Europe/London",
+      "language": {
+        "locale": "en"
+      },
+      "utcOffset": 0
+    }
+  }
+}

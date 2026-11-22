@@ -709,8 +709,11 @@ def api_save_website_settings():
         db.save_website_config(request.json or {})
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
-    # Enquiries that arrived while a site was set to nobody are filed now.
-    return jsonify({"ok": True, "filed": db.file_waiting_enquiries()})
+    # Enquiries and bookings that arrived while a site was set to nobody are
+    # filed now.
+    filed = db.file_waiting_enquiries()
+    db.process_cal_events()
+    return jsonify({"ok": True, "filed": filed})
 
 
 @app.route("/api/website-settings/key", methods=["POST"])
@@ -804,6 +807,12 @@ def api_inbound_cal():
     if not secret or not hmac.compare_digest(sig, expected):
         return jsonify({"ok": False, "error": "Bad signature"}), 401
     db.record_cal_event(raw)
+    # Read it now: local database work only, nothing called out to. Anything
+    # that goes wrong is written on the event; Cal.com still gets its 200.
+    try:
+        db.process_cal_events()
+    except Exception:
+        logging.exception("Reading Cal.com deliveries failed")
     return jsonify({"ok": True})
 
 

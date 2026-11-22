@@ -738,6 +738,16 @@ def init_db():
         # across. Adding a column to a new table means editing its CREATE and
         # adding one line here, nothing else.
         for _col_sql in [
+            # Plan 2: a meeting can come from Cal.com. `source` 'cal' (else ''
+            # for the retired Zoho booking or a time set by hand), Cal.com's
+            # booking uid (a reschedule makes a new one, naming the old in
+            # rescheduleUid), the state the panel shows ('booked', 'moved',
+            # 'cancelled'), and the instant Cal.com sent, kept beside the
+            # wall-clock starts_at it was converted to.
+            "ALTER TABLE meetings ADD COLUMN source TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE meetings ADD COLUMN cal_uid TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE meetings ADD COLUMN state TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE meetings ADD COLUMN starts_utc TEXT DEFAULT NULL",
             # Bumped by a password change, so every session signed in before
             # it stops working (audit B-3). A session carries the version it
             # was issued with; one with none counts as 0.
@@ -4841,6 +4851,28 @@ def delete_pipeline_stage(key: str, owner_id=None) -> bool:
     return True
 
 
+def _end_email_enrolments(conn, business_id: int) -> int:
+    """End every email sequence still running for this business. The one
+    place that does it: a call outcome that stops email, and a booking."""
+    return conn.execute("""
+        UPDATE enrollments SET status='completed'
+         WHERE email_lead_id IN (SELECT id FROM email_leads WHERE business_id = ?)
+           AND status NOT IN ('completed','replied','unsubscribed','bounced')
+    """, (business_id,)).rowcount
+
+
+def _stop_followups_on_booking(conn, business_id: int):
+    """
+    A meeting is booked: stop chasing them (Plan 2). Any email sequence ends,
+    and a WhatsApp lead that hasn't been messaged yet is paused, so it leaves
+    To do. (One already messaged is marked replied by set_business_pipeline.)
+    Nothing is sent, on any channel.
+    """
+    _end_email_enrolments(conn, business_id)
+    conn.execute("UPDATE wa_leads SET paused=1 WHERE business_id=? AND sent_date IS NULL AND replied=0",
+                 (business_id,))
+
+
 def set_business_pipeline(business_id: int, stage: str, channel: str = "",
                           next_action_at=None, owner_id=None) -> dict:
     """
@@ -4886,6 +4918,10 @@ def set_business_pipeline(business_id: int, stage: str, channel: str = "",
                 UPDATE wa_leads SET replied=1, wa_status='replied'
                  WHERE business_id=? AND replied=0 AND sent_date IS NOT NULL
             """, (business_id,))
+            # A booking, from any channel, also stops email and unsent
+            # WhatsApp (Plan 2) -- a stage alone used to stop neither.
+            if stage == "booked":
+                _stop_followups_on_booking(conn, business_id)
         else:
             conn.execute("""
                 UPDATE businesses SET pipeline_stage='', pipeline_channel='',
@@ -5487,20 +5523,13 @@ def log_call(call_lead_id: int, outcome: str, notes: str = "", next_call_at: str
              WHERE id = ?
         """, (outcome, (next_call_at or None) if keeps_date else None, call_lead_id))
 
-        if stops_email:
-            conn.execute("""
-                UPDATE enrollments SET status='completed'
-                 WHERE email_lead_id IN (
-                        SELECT el.id FROM email_leads el
-                         WHERE el.business_id = (SELECT business_id FROM call_leads WHERE id=?)
-                       )
-                   AND status NOT IN ('completed','replied','unsubscribed','bounced')
-            """, (call_lead_id,))
-
         row = conn.execute(
             "SELECT business_id FROM call_leads WHERE id=?", (call_lead_id,)
         ).fetchone()
         business_id = row["business_id"] if row else None
+
+        if stops_email and business_id:
+            _end_email_enrolments(conn, business_id)
 
         # "Do not call" is a request about contact, not about the phone. Set on
         # the business so it suppresses email and WhatsApp too -- honouring it
@@ -9494,3 +9523,188 @@ def get_cal_events(limit: int = 50) -> list:
             pass
         out.append(d)
     return out
+
+
+# ── Reading Cal.com deliveries (Plan 2 package 3) ────────────────────────────
+#
+# Every field name below was read off real deliveries, captured 2026-11-22 and
+# kept (scrubbed) in tests/fixtures/cal_*.json. Body: {"triggerEvent",
+# "createdAt", "payload": {...}}. In the payload: `uid` is the booking (a
+# reschedule makes a NEW booking with a new uid and names the old one in
+# `rescheduleUid`); `startTime`/`endTime` are UTC instants; `length` minutes;
+# `organizer.timeZone` is the host's zone; `attendees[0]` has name, email,
+# firstName, lastName; `metadata` is what the site attached (site, phone,
+# website, the answers by id, businessName or clinic) plus Cal.com's own
+# `videoCallUrl`; `videoCallData.url` is the join link; `responses.notes.value`
+# (= `additionalNotes`) is the site's "Label: answer" summary.
+
+CAL_CREATED, CAL_RESCHEDULED, CAL_CANCELLED = "BOOKING_CREATED", "BOOKING_RESCHEDULED", "BOOKING_CANCELLED"
+
+
+class CalWaiting(Exception):
+    """A delivery that can't be filed yet (its site has no owner): kept
+    unprocessed and tried again when the website settings are saved."""
+
+
+def _cal_wall_clock(instant: str, tz_name: str):
+    """A UTC instant from Cal.com as the host's wall-clock time, in the
+    'YYYY-MM-DD HH:MM:SS' shape next_action_at holds (Handover §5c). Converted
+    once, here, on arrival."""
+    from zoneinfo import ZoneInfo
+    moment = datetime.datetime.fromisoformat(instant.replace("Z", "+00:00"))
+    try:
+        zone = ZoneInfo(tz_name) if tz_name else datetime.timezone.utc
+    except Exception:
+        zone = datetime.timezone.utc
+    utc = moment.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return moment.astimezone(zone).strftime("%Y-%m-%d %H:%M:%S"), utc
+
+
+_CAL_CONTACT_LABELS = {"business name", "clinic name", "website / instagram", "phone / whatsapp"}
+
+
+def _cal_answers(notes: str) -> dict:
+    """The site's "Label: answer" summary back into answers, leaving out the
+    contact lines (business, website, phone), which have fields of their own."""
+    out = {}
+    for line in (notes or "").splitlines():
+        label, sep, answer = line.partition(":")
+        if sep and label.strip() and answer.strip() and label.strip().lower() not in _CAL_CONTACT_LABELS:
+            out[label.strip()[:200]] = answer.strip()[:1000]
+    return out
+
+
+def _cal_booking(p: dict) -> dict:
+    """What package 3 needs from one booking payload."""
+    attendee = (p.get("attendees") or [{}])[0] or {}
+    meta = p.get("metadata") or {}
+    notes = ((p.get("responses") or {}).get("notes") or {}).get("value") or p.get("additionalNotes") or ""
+    tz = (p.get("organizer") or {}).get("timeZone") or ""
+    wall, utc = _cal_wall_clock(p["startTime"], tz)
+    return {
+        "uid": p.get("uid") or "",
+        "previous_uid": p.get("rescheduleUid") or "",
+        "site": str(meta.get("site") or "").strip().lower(),
+        "name": attendee.get("name") or "",
+        "email": (attendee.get("email") or "").strip().lower(),
+        "business": meta.get("businessName") or meta.get("clinic") or "",
+        "phone": meta.get("phone") or attendee.get("phoneNumber") or "",
+        "website": meta.get("website") or "",
+        "locale": meta.get("locale") or "",
+        "answers": _cal_answers(notes),
+        "summary": notes,
+        "starts_at": wall, "starts_utc": utc, "timezone": tz,
+        "minutes": int(p.get("length") or 30),
+        "join_url": (p.get("videoCallData") or {}).get("url") or meta.get("videoCallUrl") or "",
+        "title": p.get("title") or "",
+    }
+
+
+def _cal_meeting_for(conn, uid: str):
+    return conn.execute("SELECT m.business_id, m.cal_uid, b.owner_id, b.pipeline_stage FROM meetings m "
+                        "JOIN businesses b ON b.id = m.business_id WHERE m.cal_uid = ?", (uid,)).fetchone()
+
+
+def _cal_store_meeting(conn, business_id: int, b: dict, state: str):
+    conn.execute("""
+        INSERT INTO meetings(business_id, starts_at, timezone, minutes, title, link_kind, join_url,
+                             source, cal_uid, state, starts_utc, cancelled_at, updated_at)
+        VALUES(?, ?, ?, ?, ?, 'none', ?, 'cal', ?, ?, ?, NULL, datetime('now'))
+        ON CONFLICT(business_id) DO UPDATE SET
+            starts_at=excluded.starts_at, timezone=excluded.timezone, minutes=excluded.minutes,
+            title=excluded.title, link_kind='none', join_url=excluded.join_url, source='cal',
+            cal_uid=excluded.cal_uid, state=excluded.state, starts_utc=excluded.starts_utc,
+            cancelled_at=NULL, updated_at=datetime('now')
+    """, (business_id, b["starts_at"], b["timezone"], b["minutes"], b["title"], b["join_url"],
+          b["uid"], state, b["starts_utc"]))
+
+
+def _cal_booking_created(b: dict, state: str = "booked") -> str:
+    """
+    A new booking: the enquiry it came from (by attendee email and site, made
+    now if the booking arrived without one) is filed as a lead, set to
+    booked via the website with the meeting's time, and the meeting recorded.
+    Through set_business_pipeline directly -- never the pipeline route, which
+    reaches for a calendar. Returns what happened, for the event log.
+    """
+    with get_db() as conn:
+        if _cal_meeting_for(conn, b["uid"]):
+            return "already recorded"
+    if b["site"] not in WEBSITE_SITES:
+        return f"not filed: no known site in metadata ({b['site'] or 'none'})"
+    enquiry_id = record_website_enquiry({
+        "site": b["site"], "name": b["name"] or b["email"], "email": b["email"],
+        "business": b["business"], "phone": b["phone"], "website": b["website"], "country": "",
+        "locale": b["locale"] if b["locale"] in ("en", "ar") else "",
+        "answers": b["answers"], "summary": b["summary"][:5000]})
+    with get_db() as conn:
+        e = conn.execute("SELECT business_id, owner_id FROM website_enquiries WHERE id=?",
+                         (enquiry_id,)).fetchone()
+    if not e or not e["business_id"]:
+        raise CalWaiting(f"{b['site']} has no one set to receive its leads yet")
+    set_business_pipeline(e["business_id"], "booked", "website", next_action_at=b["starts_at"],
+                          owner_id=e["owner_id"])
+    with get_db() as conn:
+        _cal_store_meeting(conn, e["business_id"], b, state)
+        conn.execute("UPDATE website_enquiries SET cal_booking_id=?, updated_at=datetime('now') WHERE id=?",
+                     (b["uid"], enquiry_id))
+    return "booked"
+
+
+def _cal_booking_rescheduled(b: dict) -> str:
+    """The same meeting at a new time. Cal.com sends it as a new booking that
+    names the old one; the meeting moves to the new uid, time and link, and
+    reads "moved". The stage isn't touched, only its time while it's booked."""
+    with get_db() as conn:
+        if _cal_meeting_for(conn, b["uid"]):
+            return "already recorded"
+        old = _cal_meeting_for(conn, b["previous_uid"]) if b["previous_uid"] else None
+        if old:
+            _cal_store_meeting(conn, old["business_id"], b, "moved")
+            conn.execute("UPDATE website_enquiries SET cal_booking_id=? WHERE cal_booking_id=?",
+                         (b["uid"], b["previous_uid"]))
+            if old["pipeline_stage"] == "booked":
+                conn.execute("UPDATE businesses SET next_action_at=? WHERE id=?",
+                             (b["starts_at"], old["business_id"]))
+            return "moved"
+    # Its original never reached us: file it as a booking in its own right.
+    return _cal_booking_created(b, state="moved")
+
+
+def process_cal_event(event_id: int) -> str:
+    """Read one stored delivery and act on it. Never raises: whatever goes
+    wrong is written on the event and the next one is still read."""
+    with get_db() as conn:
+        row = conn.execute("SELECT body FROM cal_events WHERE id=?", (event_id,)).fetchone()
+    if not row:
+        return "missing"
+    try:
+        body = json.loads(row["body"])
+        trigger = body.get("triggerEvent") or ""
+        payload = body.get("payload") or {}
+        if trigger == CAL_CREATED:
+            outcome = _cal_booking_created(_cal_booking(payload))
+        elif trigger == CAL_RESCHEDULED:
+            outcome = _cal_booking_rescheduled(_cal_booking(payload))
+        else:
+            outcome = f"ignored ({trigger or 'no triggerEvent'})"
+    except CalWaiting as exc:
+        with get_db() as conn:
+            conn.execute("UPDATE cal_events SET error=? WHERE id=?", (str(exc), event_id))
+        return "waiting"
+    except Exception as exc:     # a malformed delivery must not stop the next
+        logger.exception("Cal.com event %s failed", event_id)
+        outcome = f"error: {exc}"
+    with get_db() as conn:
+        conn.execute("UPDATE cal_events SET processed_at=datetime('now'), error=? WHERE id=?",
+                     ("" if outcome in ("booked", "moved", "already recorded") else outcome[:500], event_id))
+    return outcome
+
+
+def process_cal_events() -> int:
+    """Every delivery not yet read, oldest first -- a reschedule after its
+    booking. Returns how many were read."""
+    with get_db() as conn:
+        ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM cal_events WHERE processed_at IS NULL ORDER BY id")]
+    return sum(1 for i in ids if process_cal_event(i) != "waiting")
