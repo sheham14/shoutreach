@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-10-29 (meetings on Zoho Calendar deployed as `fa6ca7f`; Zoho Console setup still to do) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-11-22 (Plan 1 · Fix now built on `claude/vibrant-archimedes-i2ilk9`, not yet merged — §9) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -1138,40 +1138,37 @@ importing runs `init_db()` against `./outreach.db`.
 **From the full audit** — `docs/audits/Full Audit 2026-11-21.md` (the repo is
 private, and has to stay so: it describes unfixed holes). It replaces both
 older audits, whose open items it re-checked and carries in its §7; its
-status block says what's done. Nothing in it has been built yet. It is mostly
-a front-end audit with a proposed redesign (§4, not yet agreed with the
-operator) and a build order (§8). Its fix-now list (§2) is independent of the
-redesign; the biggest items:
+status block says what's done. It is mostly a front-end audit with a
+proposed redesign (§4) and a build order (§8), turned into three build plans
+in `docs/plans/`.
 
-- **B-1:** an opt-out is only a status on whichever rows exist at the time.
-  An address that unsubscribed or bounced is sendable again if the other
-  operator imports it later, if its lead is restored from Recently deleted,
-  or if `status` is edited back — each reproduced as far as the send loop's
-  due list. This is a gap in the suppression rule of §3, not a change to it:
-  the fix is a suppressed-addresses table checked on create, on restore and
-  in `get_due_enrollments`.
-- **B-3:** sessions are trusted from the cookie alone, so deleting a user or
-  changing a password doesn't end an open session.
-- **B-6:** the send loop wraps every operator's campaigns in one try/except,
-  so an error in one campaign stops all the campaigns after it.
-- **B-22:** Calling → Reopen 404s: `@owned("call_lead", "cid")` on a route
-  that is sent a business id.
-- **B-23:** `_run_loop` has no outer try, and the jobs' own error handlers
-  call `add_log`; when that write hits "database is locked" the scheduler
-  thread ends and nothing restarts it. Reproduced with an 11-second lock.
-- **B-24:** the only backups are the deploy's own, on the VM's disk.
-- **B-2:** `GET /api/logs` has no admin check; the log holds both operators'
-  recipient addresses and subjects.
-- **B-9:** activating a campaign, and "Enroll All Active", start real sending
-  with no confirmation or count.
-- **B-13:** secrets stored in plaintext — SMTP/IMAP passwords, AI keys, Zoho
-  tokens, the session key — and now also in each deploy's database backup.
-- **B-12:** the bounce scanner downloads whole messages with no cap — an
-  out-of-memory risk on a 1 GB server.
-- **F-23, F-24:** WhatsApp → Booked — the count reads 0 until the tab is
-  opened, and on a phone the meeting time is cut off. Decide these together
-  with `docs/Cal.com Booking Handoff.md`: that plan may replace this Booked
-  list and the Zoho booking behind it.
+**Plan 1 (Fix now) is built, on branch `claude/vibrant-archimedes-i2ilk9`,
+not merged or deployed** (2026-11-22). 16 of the audit's 19 fix-now items:
+B-1 (opt-outs permanent: `suppressed_addresses`, §3), B-2 (Activity log
+admin-only; owners on log lines still open), B-3 (sessions end on delete or
+password change, §6), B-6 and B-23 (the sender survives errors and restarts
+itself, §6), B-9 (Activate and Enroll All confirm with real counts), B-22
+(Calling → Reopen), and the visible faults F-9, F-20, F-21/F-33 (`fmtWhen`,
+§10), F-22, F-25, F-30, B-10, B-14, B-15. The record of the build, with every
+choice that differs from the plan, is `docs/plans/1 Fix now - build log.md`.
+**Deploying it** runs two additions on the live database, both rehearsed on
+a database built by the previous code (`c92729a`): a `users.session_version`
+column (default 0, so open sessions keep working) and
+`_migrate_suppressed_addresses` (copies existing opt-outs and bounces; no row
+changes). Take a backup first anyway.
+
+Still open from the fix-now list:
+
+- **B-24:** the only backups are the deploy's own, on the VM's disk — the
+  operator's job, no code (see `docs/plans/README.md`).
+- **F-23, F-24:** WhatsApp → Booked — moved to Plan 2, where a Meetings page
+  replaces that tab.
+
+Next: Plan 2 (Cal.com) and Plan 3 (redesign phase 1) both build on this.
+Also still open and real: B-13 (secrets stored in plaintext — SMTP/IMAP
+passwords, AI keys, Zoho tokens, the session key — and in each deploy's
+backup), B-12 (the bounce scanner's memory use), B-4 and B-5 (the lead
+audit fetching internal addresses or stalling on a hostile page).
 
 **Still deliberately deferred** (reasons in the WhatsApp handover §6): renaming
 the `/api/contacts/*` URLs (the worker posts to them), `.xlsx` import, a

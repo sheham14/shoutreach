@@ -24,7 +24,7 @@ operator's go-ahead). Nothing is pushed to `master`.
 | 4 Sender resilience | B-6, B-23 | done | `21bfe79` |
 | 5 Calling → Reopen | B-22 | done | `7b9ea95` |
 | 6 Confirm before sending | B-9 | done | `a1344fe` |
-| 7 Visible faults | F-20, F-21/33, F-22, F-25, F-30, F-9, B-10, B-14, B-15 | not started | |
+| 7 Visible faults | F-20, F-21/33, F-22, F-25, F-30, F-9, B-10, B-14, B-15 | done | `ebcc86c` |
 
 ## Log
 
@@ -120,3 +120,102 @@ operator's go-ahead). Nothing is pushed to `master`.
 - Browser script: `/tmp/claude-0/b9.py` (Chromium is at
   `/opt/pw-browsers/chromium-1243/chrome-linux64/chrome`; call functions that
   open chooseDialog as `() => { fn(); }` or evaluate waits forever).
+
+### Package 7 — visible faults — done (`ebcc86c`)
+
+- F-20: `td.m-only` (phone-only cell) in main.css; Email To do uses it.
+- F-21/F-33: `fmtWhen(value, kind, opts)` in tables.js ('utc' converts,
+  'wall' never does); `whenLocal`/`shortDate`/`localDateTime` call it; all
+  display chops replaced. `_clock` uses a no-break space before am/pm.
+  `pipelineOverdue` compares with the local date.
+- F-22: `body.drawer-open` hides `.sidebar-toggle` (utils.js + main.css).
+- F-25: `#run-now-btn` starts `hidden`; app.js shows it for admins.
+- F-30: 16px `!important` on inputs/selects/textareas in the phone block.
+- F-9: `_renderWaQueue` — no Campaign column when one is picked, `.cell-clip`
+  (150px) otherwise, Version only if used; `.wa-queue-table` lets names wrap
+  and trims padding so the number fits at 1280.
+- B-10: `get_stats` `today` = own sends (SQL, UTC); `all_accounts_today` /
+  `all_accounts_limit`; `#dash-cap` line. Test: test_ownership.py §7b.
+- B-14: `_scraperPollEvery`/`stopScraperPoll`; `showSection` stops it; 2 s
+  busy, 15 s idle (deviation: plan said poll only while busy).
+- B-15: `refreshWaTotals` fetches with `since`, `refreshWaCounts` reuses it
+  within 2 s. 7 requests, no repeats.
+- Harness gotcha: serve.py caches Jinja templates — restart it after editing
+  templates, or screenshots show the old markup.
+
+### Follow-up fix (`c1eeb61`)
+
+- Rehearsed the upgrade on a database built by `c92729a`: only
+  `suppressed_addresses` (6 rows = every opted-out address) and two settings
+  markers change; a second `init_db()` changes nothing; sessions version 0.
+- Found: the min ≤ max delay check ran on every save, so a campaign stored
+  with min > max could no longer be paused, activated or auto-paused. Now it
+  runs only when a save changes a delay. Test in test_resilience.py §7.
+- All changed .py files compile under Python 3.11.
+
+## Hand-back
+
+**Built:** all seven packages. 16 of the audit's 19 fix-now items; the other
+three are B-24 (operator's backup job) and F-23/F-24 (moved to Plan 2).
+Suite: 27 test files, all pass (two new: test_suppression.py,
+test_sessions.py; sections added to test_ownership, test_security,
+test_calling, test_resilience).
+
+**Check scripts after the fix** (all seven in tools/audit/checks):
+suppression_db / suppression_routes / security_findings S-1a, S-1c — the
+address ends suppressed and off the due list on every path; S-3 — a deleted
+admin's session gets 401; S-6 — "lots" refused with 400; scheduler_shared_loop
+— the other campaign still sends; scheduler_thread_death — alive after 16 s
+locked; nonadmin_access — /api/logs 403, cofounder's "today" 0; calling_reopen
+— 6/6 reopen. Still failing, out of scope: S-10 (B-8, backslash in a name),
+S-4 (B-4, the audit fetching internal addresses).
+
+**Chosen differently from the plan, and why:**
+
+1. B-14: idle Get leads polls every 15 s instead of stopping, so "Worker
+   connected" stays true when no scrape runs (the page's own stated design).
+2. B-23: `last_pass_at` is also stamped at the start of a pass and before each
+   pause; one pass with sends due can exceed the 10-minute warning.
+3. B-1: a later bounce no longer overwrites "unsubscribed" (unsubscribed wins,
+   as the plan says for the table); `add_business_email` now also sets
+   do-not-contact for an unsubscribed address, like any late copy.
+4. B-9: when no one enrolled is sendable, Activate still asks, with a sentence
+   saying nothing will go out yet. Enroll All with nothing to add just says
+   so in a toast.
+5. Branch: `claude/vibrant-archimedes-i2ilk9` instead of `plan-1-fix-now`
+   (session setup; the operator agreed).
+
+**Surprises:** the audit check `suppression_db.py` calls
+`db.delete_contacts_bulk`, which doesn't exist (its bulk-delete step never
+ran). `measure.py` opens WhatsApp with showSection *and* setTab, which
+double-loads the To do tab — that, not the app, is most of its "11 requests".
+`test_email_checking_toggle.py` read `_run_loop`'s source; it now reads
+`_one_pass` too. Section 13 of test_calling.py only passed because ids
+coincided — §25 now pins B-22 with differing ids.
+
+**Checked by eye** (Chromium, harness data): Email To do at 1440×900 and
+390×844; WhatsApp To do at 1440×900 and 1280×720 (and campaign picked);
+Dashboard at 1440×900; phone menu open at 390×844; Calling To do at 1440×900;
+Activate and Enroll All dialogs at 1280×860; non-admin sidebar. Not checked:
+a real iPhone (F-30).
+
+**Reviewer commands:**
+
+    for f in tests/test_*.py; do python "$f" || echo "FAIL $f"; done
+    for c in suppression_db suppression_routes security_findings scheduler_shared_loop scheduler_thread_death; do python tools/audit/checks/$c.py; done
+    python tools/audit/serve.py seed && python tools/audit/serve.py &   # then:
+    python tools/audit/checks/nonadmin_access.py; python tools/audit/checks/calling_reopen.py
+
+**Suggestions beyond the plan** (not built):
+
+- The Dashboard's sender warning tells the operator to reload; the watchdog
+  already restarts the thread on that load, so the line could say "restarted"
+  when `ensure_running()` returns True.
+- `enroll_contacts_bulk` doesn't check `suppressed_addresses` itself (the due
+  list does). Harmless now, but enrolling a suppressed address shows it as
+  "queued" in the campaign until the loop skips it; refusing at enrol would be
+  clearer.
+- Log lines still carry no owner (the other half of B-2) — worth doing with
+  the Settings redesign, as the audit says.
+- Before deploying: take a manual backup and confirm `timedatectl` on the VM
+  says UTC (Handover §6a), since "Sent today" now compares in SQL.
