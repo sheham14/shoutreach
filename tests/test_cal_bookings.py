@@ -422,6 +422,43 @@ def test_failed_delivery_retried(work):
           == [(1, "unreadable: no payload")])
 
 
+def test_out_of_order(work):
+    print("\n8. DELIVERIES IN ANY ORDER (review item 3)")
+    orders = {
+        "no owner yet: created, moved, cancelled, then the owner is set": (["C", "M", "X"], True),
+        "no owner yet: cancelled first, then created, moved, then the owner": (["X", "C", "M"], True),
+        "owner set: the cancellation arrives first": (["X", "C", "M"], False),
+        "owner set: the reschedule arrives before its original (3b)": (["M", "C", "X"], False),
+        "owner set: reschedule, cancellation, then the original": (["M", "X", "C"], False),
+    }
+    bodies = {"C": CREATED, "M": MOVED, "X": CANCELLED}
+    for i, (label, (seq, owner_later)) in enumerate(orders.items()):
+        db, path, a, b, deliver, app_mod = boot(work, f"order{i}.db")
+        if not owner_later:
+            db.save_website_config({"sites": {"hexiv.co.uk": {"owner_id": b, "country": "GB"}}})
+        for k in seq:
+            deliver(bodies[k])
+        if owner_later:
+            db.save_website_config({"sites": {"hexiv.co.uk": {"owner_id": b, "country": "GB"}}})
+            db.file_waiting_enquiries()
+            db.process_cal_events()
+        bid = biz_for(path, EMAIL)
+        m = q(path, "SELECT cal_uid, state, starts_at FROM meetings WHERE business_id=?", (bid,))
+        check(f"{label}: the rescheduled meeting, cancelled",
+              m == [(NEW_UID, "cancelled", "2026-11-22 20:00:00")], str(m))
+        check(f"{label}: nothing left unread, one lead",
+              q(path, "SELECT COUNT(*) FROM cal_events WHERE processed_at IS NULL")[0][0] == 0
+              and q(path, "SELECT COUNT(*) FROM businesses")[0][0] == 1,
+              str(q(path, "SELECT id, processed_at, error FROM cal_events")))
+    db, path, a, b, deliver, app_mod = boot(work, "orderlast.db")
+    db.save_website_config({"sites": {"hexiv.co.uk": {"owner_id": b, "country": "GB"}}})
+    deliver(MOVED)
+    deliver(CREATED)
+    check("an original after its reschedule is skipped, said so on the event",
+          q(path, "SELECT error FROM cal_events ORDER BY id DESC LIMIT 1") == [("superseded by its reschedule",)]
+          and q(path, "SELECT cal_uid, state FROM meetings") == [(NEW_UID, "moved")])
+
+
 def main():
     work = tempfile.mkdtemp(prefix="cal_bookings_")
     try:
@@ -432,6 +469,7 @@ def main():
         test_rebooked_by_hand(work)
         test_join_link_https_only(work)
         test_failed_delivery_retried(work)
+        test_out_of_order(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print()

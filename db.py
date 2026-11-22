@@ -9642,6 +9642,10 @@ def _cal_booking_created(b: dict, state: str = "booked") -> str:
         if not b.get("ref"):
             mark_other_operators_copies(done["business_id"], booked=True)
         return "already recorded"
+    if state == "booked" and _cal_events_naming(b["uid"], "rescheduleUid", trigger=CAL_RESCHEDULED):
+        # Its own reschedule arrived first and is stored: that is the meeting
+        # now. Filing this original would put it back to the old uid and time.
+        return "superseded by its reschedule"
     ref = read_booking_ref(b["ref"]) if b.get("ref") else None
     if ref:
         # Booked from a link copied off a lead: exactly that lead, whoever
@@ -9657,6 +9661,7 @@ def _cal_booking_created(b: dict, state: str = "booked") -> str:
         # not at all, so a retry after a failure can't double either.
         with get_db() as conn:
             _cal_store_meeting(conn, business_id, b, state)
+            _cal_apply_known_cancellation(conn, business_id, b["uid"])
             _queue_team_notification(conn, biz["owner_id"], "booking", business_id)
         return "booked"
     if b["site"] not in WEBSITE_SITES:
@@ -9678,6 +9683,7 @@ def _cal_booking_created(b: dict, state: str = "booked") -> str:
     # to run again; the cross-operator marking after it is too.
     with get_db() as conn:
         _cal_store_meeting(conn, e["business_id"], b, state)
+        _cal_apply_known_cancellation(conn, e["business_id"], b["uid"])
         conn.execute("UPDATE website_enquiries SET cal_booking_id=?, updated_at=datetime('now') WHERE id=?",
                      (b["uid"], enquiry_id))
         _queue_team_notification(conn, e["owner_id"], "booking", e["business_id"])
@@ -9695,6 +9701,7 @@ def _cal_booking_rescheduled(b: dict) -> str:
         old = _cal_meeting_for(conn, b["previous_uid"]) if b["previous_uid"] else None
         if old:
             _cal_store_meeting(conn, old["business_id"], b, "moved")
+            _cal_apply_known_cancellation(conn, old["business_id"], b["uid"])
             conn.execute("UPDATE website_enquiries SET cal_booking_id=? WHERE cal_booking_id=?",
                          (b["uid"], b["previous_uid"]))
             if old["pipeline_stage"] == "booked":
@@ -9705,7 +9712,40 @@ def _cal_booking_rescheduled(b: dict) -> str:
     return _cal_booking_created(b, state="moved")
 
 
-def _cal_booking_cancelled(p: dict) -> str:
+def _cal_events_naming(uid: str, field: str = "uid", trigger: str = None, unread_only=False,
+                       exclude_id=None) -> list:
+    """Stored deliveries whose payload names this booking uid in `field`
+    ('uid', or 'rescheduleUid' for a reschedule of it). Deliveries can arrive
+    in any order (review of Plan 2, item 3), so the readers check each other."""
+    if not uid:
+        return []
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, body, processed_at FROM cal_events WHERE instr(body, ?) > 0"
+            + (" AND processed_at IS NULL" if unread_only else ""), (uid,)).fetchall()
+    out = []
+    for r in rows:
+        if exclude_id and r["id"] == exclude_id:
+            continue
+        try:
+            body = json.loads(r["body"])
+            payload = body.get("payload") or {}
+        except (ValueError, AttributeError):
+            continue
+        if payload.get(field) == uid and (trigger is None or body.get("triggerEvent") == trigger):
+            out.append({"id": r["id"], "trigger": body.get("triggerEvent"), "read": r["processed_at"] is not None})
+    return out
+
+
+def _cal_apply_known_cancellation(conn, business_id: int, uid: str):
+    """A cancellation for this booking may have arrived before the booking
+    did: if one is stored, the meeting is recorded cancelled straight away."""
+    if _cal_events_naming(uid, "uid", trigger=CAL_CANCELLED):
+        conn.execute("UPDATE meetings SET state='cancelled', cancelled_at=COALESCE(cancelled_at, datetime('now')) "
+                     "WHERE business_id=? AND cal_uid=?", (business_id, uid))
+
+
+def _cal_booking_cancelled(p: dict, event_id=None) -> str:
     """The meeting is marked cancelled and the lead says so. The stage is
     NOT changed: the operator decides what happens next. A reason, if the
     person gave one, is kept on the event."""
@@ -9713,8 +9753,18 @@ def _cal_booking_cancelled(p: dict) -> str:
     reason = str(p.get("cancellationReason") or "").strip()
     with get_db() as conn:
         m = _cal_meeting_for(conn, uid) if uid else None
-        if not m:
-            return "cancelled booking not on record"
+    if not m:
+        # Its booking (or the reschedule that made it) may be stored but
+        # not filed yet -- a site with no owner, a failure being retried.
+        # Wait for it; once it is filed it sees this cancellation
+        # (_cal_apply_known_cancellation). With nothing waiting, it's done.
+        waiting = [e for e in _cal_events_naming(uid, "uid", unread_only=True, exclude_id=event_id)
+                   if e["trigger"] in (CAL_CREATED, CAL_RESCHEDULED)]
+        waiting += _cal_events_naming(uid, "rescheduleUid", unread_only=True, exclude_id=event_id)
+        if waiting:
+            raise CalWaiting("waiting for the booking it cancels to be filed")
+        return "cancelled booking not on record"
+    with get_db() as conn:
         conn.execute("""
             UPDATE meetings SET state='cancelled', cancelled_at=COALESCE(cancelled_at, datetime('now')),
                    updated_at=datetime('now')
@@ -9766,7 +9816,7 @@ def process_cal_event(event_id: int) -> str:
         elif trigger == CAL_RESCHEDULED:
             outcome = _cal_booking_rescheduled(_cal_booking(payload))
         elif trigger == CAL_CANCELLED:
-            outcome = _cal_booking_cancelled(payload)
+            outcome = _cal_booking_cancelled(payload, event_id=event_id)
         else:
             outcome = f"ignored ({trigger or 'no triggerEvent'})"
     except CalWaiting as exc:
