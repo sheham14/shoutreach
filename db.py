@@ -764,6 +764,9 @@ def init_db():
             "ALTER TABLE meetings ADD COLUMN cal_uid TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE meetings ADD COLUMN state TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE meetings ADD COLUMN starts_utc TEXT DEFAULT NULL",
+            # Review of Plan 2, item 2: how many times reading a Cal.com
+            # delivery has failed unexpectedly; it is retried until 5.
+            "ALTER TABLE cal_events ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
             # Bumped by a password change, so every session signed in before
             # it stops working (audit B-3). A session carries the version it
             # was issued with; one with none counts as 0.
@@ -9631,8 +9634,14 @@ def _cal_booking_created(b: dict, state: str = "booked") -> str:
     reaches for a calendar. Returns what happened, for the event log.
     """
     with get_db() as conn:
-        if _cal_meeting_for(conn, b["uid"]):
-            return "already recorded"
+        done = _cal_meeting_for(conn, b["uid"])
+    if done:
+        # Recorded before -- perhaps by a run that failed after its last
+        # write. The cross-operator marking is the one step after it; it is
+        # idempotent, so run it again rather than risk it never happening.
+        if not b.get("ref"):
+            mark_other_operators_copies(done["business_id"], booked=True)
+        return "already recorded"
     ref = read_booking_ref(b["ref"]) if b.get("ref") else None
     if ref:
         # Booked from a link copied off a lead: exactly that lead, whoever
@@ -9644,9 +9653,11 @@ def _cal_booking_created(b: dict, state: str = "booked") -> str:
             return "not filed: the lead it was booked for has been deleted"
         set_business_pipeline(business_id, "booked", channel or "website",
                               next_action_at=b["starts_at"], owner_id=biz["owner_id"])
+        # One transaction: the meeting and the team email land together or
+        # not at all, so a retry after a failure can't double either.
         with get_db() as conn:
             _cal_store_meeting(conn, business_id, b, state)
-        queue_team_notification(biz["owner_id"], "booking", business_id)
+            _queue_team_notification(conn, biz["owner_id"], "booking", business_id)
         return "booked"
     if b["site"] not in WEBSITE_SITES:
         return f"not filed: no known site in metadata ({b['site'] or 'none'})"
@@ -9662,12 +9673,15 @@ def _cal_booking_created(b: dict, state: str = "booked") -> str:
         raise CalWaiting(f"{b['site']} has no one set to receive its leads yet")
     set_business_pipeline(e["business_id"], "booked", "website", next_action_at=b["starts_at"],
                           owner_id=e["owner_id"])
+    # One transaction for what must not be half-done: the meeting, the
+    # enquiry's booking id and the team email. Everything before it is safe
+    # to run again; the cross-operator marking after it is too.
     with get_db() as conn:
         _cal_store_meeting(conn, e["business_id"], b, state)
         conn.execute("UPDATE website_enquiries SET cal_booking_id=?, updated_at=datetime('now') WHERE id=?",
                      (b["uid"], enquiry_id))
+        _queue_team_notification(conn, e["owner_id"], "booking", e["business_id"])
     mark_other_operators_copies(e["business_id"], booked=True)
-    queue_team_notification(e["owner_id"], "booking", e["business_id"])
     return "booked"
 
 
@@ -9709,17 +9723,44 @@ def _cal_booking_cancelled(p: dict) -> str:
     return f"cancelled: {reason}" if reason else "cancelled"
 
 
+CAL_MAX_ATTEMPTS = 5
+_CAL_DONE = ("booked", "moved", "cancelled", "already recorded")
+
+
 def process_cal_event(event_id: int) -> str:
-    """Read one stored delivery and act on it. Never raises: whatever goes
-    wrong is written on the event and the next one is still read."""
+    """
+    Read one stored delivery and act on it. Never raises.
+
+    A body that can never be read (not JSON, no payload) is marked read at
+    once with the reason. Anything else that goes wrong is a failure of THIS
+    attempt -- a locked database, say -- so the delivery stays unread and the
+    next pass tries again (review of Plan 2, item 2): marking it read would
+    lose it for good, since Cal.com's identical redelivery is dropped by its
+    digest. After CAL_MAX_ATTEMPTS it is given up on, with the error kept and
+    one Activity-log line. A booking that failed halfway is safe to run
+    again: its last writes are one transaction (_cal_booking_created).
+    """
     with get_db() as conn:
-        row = conn.execute("SELECT body FROM cal_events WHERE id=?", (event_id,)).fetchone()
+        row = conn.execute("SELECT body, attempts FROM cal_events WHERE id=?", (event_id,)).fetchone()
     if not row:
         return "missing"
+
+    def mark_read(note: str):
+        with get_db() as conn:
+            conn.execute("UPDATE cal_events SET processed_at=datetime('now'), error=? WHERE id=?",
+                         (note[:500], event_id))
+
     try:
         body = json.loads(row["body"])
-        trigger = body.get("triggerEvent") or ""
-        payload = body.get("payload") or {}
+    except ValueError:
+        mark_read("unreadable: not JSON")
+        return "unreadable"
+    if not isinstance(body, dict) or not isinstance(body.get("payload"), dict):
+        mark_read("unreadable: no payload")
+        return "unreadable"
+    trigger = body.get("triggerEvent") or ""
+    payload = body["payload"]
+    try:
         if trigger == CAL_CREATED:
             outcome = _cal_booking_created(_cal_booking(payload))
         elif trigger == CAL_RESCHEDULED:
@@ -9730,15 +9771,23 @@ def process_cal_event(event_id: int) -> str:
             outcome = f"ignored ({trigger or 'no triggerEvent'})"
     except CalWaiting as exc:
         with get_db() as conn:
-            conn.execute("UPDATE cal_events SET error=? WHERE id=?", (str(exc), event_id))
+            conn.execute("UPDATE cal_events SET error=? WHERE id=?", (str(exc)[:500], event_id))
         return "waiting"
-    except Exception as exc:     # a malformed delivery must not stop the next
+    except Exception as exc:
         logger.exception("Cal.com event %s failed", event_id)
-        outcome = f"error: {exc}"
-    with get_db() as conn:
-        conn.execute("UPDATE cal_events SET processed_at=datetime('now'), error=? WHERE id=?",
-                     ("" if outcome in ("booked", "moved", "cancelled", "already recorded")
-                      else outcome[:500], event_id))
+        attempts = int(row["attempts"] or 0) + 1
+        if attempts >= CAL_MAX_ATTEMPTS:
+            with get_db() as conn:
+                conn.execute("UPDATE cal_events SET attempts=?, processed_at=datetime('now'), error=? "
+                             "WHERE id=?", (attempts, f"gave up after {attempts} attempts: {exc}"[:500], event_id))
+            add_log(f"⚠ A Cal.com delivery (#{event_id}, {trigger or 'unknown'}) couldn't be read after "
+                    f"{attempts} attempts and was given up: {str(exc)[:200]}", "WARN")
+            return "given up"
+        with get_db() as conn:
+            conn.execute("UPDATE cal_events SET attempts=?, error=? WHERE id=?",
+                         (attempts, f"error (attempt {attempts} of {CAL_MAX_ATTEMPTS}): {exc}"[:500], event_id))
+        return "retry"
+    mark_read("" if outcome in _CAL_DONE else outcome)
     return outcome
 
 
@@ -9748,7 +9797,7 @@ def process_cal_events() -> int:
     with get_db() as conn:
         ids = [r["id"] for r in conn.execute(
             "SELECT id FROM cal_events WHERE processed_at IS NULL ORDER BY id")]
-    return sum(1 for i in ids if process_cal_event(i) != "waiting")
+    return sum(1 for i in ids if process_cal_event(i) not in ("waiting", "retry"))
 
 
 
@@ -10026,18 +10075,26 @@ _NOTIFY_SUBJECTS = {"enquiry": "New website enquiry: {name}", "booking": "Booked
 def queue_team_notification(owner_id: int, kind: str, business_id: int) -> bool:
     """Queue one email for this operator, if they gave an address. Subject
     and business name only -- no answers, no contact details."""
-    to = get_notify_email(owner_id=owner_id) if owner_id else ""
+    with get_db() as conn:
+        return _queue_team_notification(conn, owner_id, kind, business_id)
+
+
+def _queue_team_notification(conn, owner_id: int, kind: str, business_id: int) -> bool:
+    """The same, inside a transaction the caller already holds."""
+    setting = conn.execute("SELECT value FROM settings WHERE key=?",
+                           (f"notify_email:{int(owner_id or 0)}",)).fetchone()
+    to = setting["value"] if setting and owner_id else ""
     if not to or kind not in _NOTIFY_SUBJECTS:
         return False
-    with get_db() as conn:
-        row = conn.execute("SELECT name FROM businesses WHERE id=?", (business_id,)).fetchone()
-        name = (row["name"] if row else "") or "a business"
-        base = (conn.execute("SELECT value FROM settings WHERE key='app_base_url'").fetchone() or {"value": ""})["value"]
-        subject = _NOTIFY_SUBJECTS[kind].format(name=name)[:200]
-        body = (f"{subject}\n\nThe details are in ShoutReach"
-                + (f": {base.rstrip('/')}/" if base else ".") + "\n")
-        conn.execute("INSERT INTO team_notifications(owner_id, to_email, subject, body) VALUES(?,?,?,?)",
-                     (int(owner_id), to, subject, body))
+    biz = conn.execute("SELECT name FROM businesses WHERE id=?", (business_id,)).fetchone()
+    name = (biz["name"] if biz else "") or "a business"
+    base = conn.execute("SELECT value FROM settings WHERE key='app_base_url'").fetchone()
+    base = base["value"] if base else ""
+    subject = _NOTIFY_SUBJECTS[kind].format(name=name)[:200]
+    body = (f"{subject}\n\nThe details are in ShoutReach"
+            + (f": {base.rstrip('/')}/" if base else ".") + "\n")
+    conn.execute("INSERT INTO team_notifications(owner_id, to_email, subject, body) VALUES(?,?,?,?)",
+                 (int(owner_id), to, subject, body))
     return True
 
 

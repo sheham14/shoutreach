@@ -358,6 +358,70 @@ def test_join_link_https_only(work):
               not re.search(r"href=\"\$\{esc\(m\.join_url\)\}", code) and "httpsOnly(m.join_url)" in code)
 
 
+def test_failed_delivery_retried(work):
+    print("\n7. A DELIVERY THAT FAILS IS TRIED AGAIN (review item 2)")
+    db, path, a, b, deliver, app_mod = boot(work, "retry.db")
+    db.save_website_config({"sites": {"hexiv.co.uk": {"owner_id": b, "country": "GB"}}})
+    db.save_notify_email("anas@hexiv.co", owner_id=b)
+    real_store = db._cal_store_meeting
+    fails = {"left": 1}
+
+    def flaky(conn, *args, **kw):
+        if fails["left"]:
+            fails["left"] -= 1
+            raise sqlite3.OperationalError("database is locked")
+        return real_store(conn, *args, **kw)
+    db._cal_store_meeting = flaky
+    try:
+        deliver(CREATED)          # the route reads it at once: this attempt fails
+        deliver(CREATED)          # Cal.com's identical redelivery: dropped by its digest
+        for _ in range(3):
+            db.process_cal_events()
+    finally:
+        db._cal_store_meeting = real_store
+    bid = biz_for(path, EMAIL)
+    check("the booking is complete: stage AND its meeting row",
+          q(path, "SELECT pipeline_stage FROM businesses WHERE id=?", (bid,)) == [("booked",)]
+          and q(path, "SELECT cal_uid FROM meetings WHERE business_id=?", (bid,)) == [(OLD_UID,)])
+    check("the delivery is read now, its error cleared, one failed attempt counted",
+          q(path, "SELECT processed_at IS NOT NULL, error, attempts FROM cal_events") == [(1, "", 1)],
+          str(q(path, "SELECT processed_at, error, attempts FROM cal_events")))
+    check("one team email, not two (the half-done run left nothing behind)",
+          q(path, "SELECT COUNT(*) FROM team_notifications WHERE subject LIKE 'Booked%'")[0][0] == 1)
+    check("one enquiry, booked", q(path, "SELECT COUNT(*), MAX(cal_booking_id) FROM website_enquiries")
+          == [(1, OLD_UID)])
+    deliver(MOVED)
+    deliver(CANCELLED)
+    check("its later reschedule and cancellation land on it",
+          q(path, "SELECT cal_uid, state FROM meetings WHERE business_id=?", (bid,)) == [(NEW_UID, "cancelled")])
+
+    print("   given up after five")
+    broken = json.loads(json.dumps(CREATED))
+    broken["payload"]["uid"] = "always-fails"
+    broken["payload"]["attendees"][0]["email"] = "broken@example.com"
+    db._cal_store_meeting = lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O error"))
+    try:
+        deliver(broken)
+        for _ in range(6):
+            db.process_cal_events()
+    finally:
+        db._cal_store_meeting = real_store
+    row = q(path, "SELECT processed_at IS NOT NULL, attempts, error FROM cal_events ORDER BY id DESC LIMIT 1")[0]
+    check("after five failed attempts it is given up, the error kept", row[0] == 1 and row[1] == 5
+          and row[2].startswith("gave up after 5 attempts") and "disk I/O error" in row[2], str(row))
+    check("with one Activity-log line", sum("given up" in l["message"] for l in db.get_logs(50)) == 1)
+
+    print("   unreadable bodies are marked at once")
+    deliver(b"this is not json")
+    check("not JSON: read at once, said why",
+          q(path, "SELECT processed_at IS NOT NULL, attempts, error FROM cal_events ORDER BY id DESC LIMIT 1")
+          == [(1, 0, "unreadable: not JSON")])
+    deliver({"triggerEvent": "BOOKING_CREATED"})
+    check("no payload: read at once, said why",
+          q(path, "SELECT processed_at IS NOT NULL, error FROM cal_events ORDER BY id DESC LIMIT 1")
+          == [(1, "unreadable: no payload")])
+
+
 def main():
     work = tempfile.mkdtemp(prefix="cal_bookings_")
     try:
@@ -367,6 +431,7 @@ def main():
         test_awkward_deliveries(work)
         test_rebooked_by_hand(work)
         test_join_link_https_only(work)
+        test_failed_delivery_retried(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print()
