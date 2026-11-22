@@ -575,7 +575,10 @@ not marked done:
 4. **done `c7b9761`** — `mark_other_operators_copies` marks only a copy with
    no stage (or enquired_elsewhere → booked_elsewhere). Handover §3 updated.
    Test: test_booked_elsewhere.py §4.
-5. todo — non-booker follow-up skipped if the business left "enquired".
+5. **done `1e8a824`** — `run_website_followups` follows up only a business still
+   on `enquired` (or no stage); counts the rest as `moved_on`. Also fixed the
+   test's shared-domain addresses (they collapsed into one business, so some
+   package 4 checks tested the same lead).
 6. todo — filing an enquiry on a business the owner holds ends its email
    sequences.
 7. todo — non-ASCII signature header → 401 (compare bytes).
