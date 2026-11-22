@@ -329,7 +329,7 @@ async function loadUsers() {
     <tr>
       <td style="font-weight:500">${esc(u.username)}</td>
       <td>${u.is_admin ? '<span class="badge badge-blue">Admin</span>' : '<span class="badge">User</span>'}</td>
-      <td class="mono text-muted" style="font-size:11px">${esc(fmtWhen(u.created_at, 'utc', { dateOnly: true }))}</td>
+      <td class="tnum text-muted" style="font-size:11px">${esc(fmtWhen(u.created_at, 'utc', { dateOnly: true }))}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-ghost btn-sm" onclick="openChangePasswordModal(${u.id}, '${escj(u.username)}')">Change password</button>
         ${u.id !== me.id ? `<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id}, '${escj(u.username)}')">✕</button>` : ""}
@@ -441,8 +441,8 @@ async function loadAccounts() {
       return `
     <tr>
       <td>${esc(a.name)}</td>
-      <td class="mono" style="font-size:12px">${esc(a.email)}</td>
-      <td class="mono text-muted" style="font-size:11px">${esc(a.smtp_host)}</td>
+      <td class="tnum" style="font-size:12px">${esc(a.email)}</td>
+      <td class="tnum text-muted" style="font-size:11px">${esc(a.smtp_host)}</td>
       <td>${paused ? '<span class="badge badge-gray">paused</span>' : '<span class="badge badge-green">active</span>'}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-ghost btn-sm" onclick="testAccountSMTPById(${a.id})">Test</button>
@@ -452,7 +452,7 @@ async function loadAccounts() {
         </button>
         <button class="btn btn-ghost btn-sm" onclick="openEditAccountModal(${a.id})">✎</button>
         <button class="btn btn-danger btn-sm" onclick="deleteAccount(${a.id})">✕</button>
-        <span id="acct-row-result-${a.id}" class="mono" style="font-size:11px;margin-left:8px"></span>
+        <span id="acct-row-result-${a.id}" class="tnum" style="font-size:11px;margin-left:8px"></span>
       </td>
     </tr>
   `;
@@ -592,11 +592,11 @@ async function testAccountSMTP() {
   const p = _accountPayload();
   if (!p.smtp_host) {
     el.textContent = "Enter an SMTP host first";
-    el.style.color = "var(--red)";
+    el.style.color = "var(--danger)";
     return;
   }
   el.textContent = "Testing...";
-  el.style.color = "var(--muted)";
+  el.style.color = "var(--text-2)";
   const res = await api("/api/accounts/test-smtp", "POST", {
     id: _accountEditId,
     smtp_host: p.smtp_host,
@@ -605,7 +605,7 @@ async function testAccountSMTP() {
     smtp_pass: p.smtp_pass,
   });
   el.textContent = res.message || res.error || "No response";
-  el.style.color = res.ok ? "var(--green)" : "var(--red)";
+  el.style.color = res.ok ? "var(--success)" : "var(--danger)";
 }
 
 // Tests a saved account from the list. This used to write its result into the
@@ -616,14 +616,14 @@ async function testAccountSMTPById(id) {
   const el = document.getElementById(`acct-row-result-${id}`);
   if (el) {
     el.textContent = "testing…";
-    el.style.color = "var(--muted)";
+    el.style.color = "var(--text-2)";
   }
   const res = await api(`/api/accounts/${id}/test-smtp`, "POST");
   const ok = !!(res && res.ok);
   const msg = (res && (res.message || res.error)) || "No response";
   if (el) {
     el.textContent = ok ? "✓ SMTP ok" : "✕ failed";
-    el.style.color = ok ? "var(--green)" : "var(--red)";
+    el.style.color = ok ? "var(--success)" : "var(--danger)";
     // Clear the marker after a while so a stale ✓ is never mistaken for the
     // result of a later change.
     setTimeout(() => {
@@ -650,11 +650,11 @@ async function testAccountIMAP() {
   const p = _accountPayload();
   if (!p.imap_host) {
     el.textContent = "Enter an IMAP host first";
-    el.style.color = "var(--red)";
+    el.style.color = "var(--danger)";
     return;
   }
   el.textContent = "Testing...";
-  el.style.color = "var(--muted)";
+  el.style.color = "var(--text-2)";
   const res = await api("/api/accounts/test-imap", "POST", {
     id: _accountEditId,
     imap_host: p.imap_host,
@@ -662,7 +662,7 @@ async function testAccountIMAP() {
     imap_pass: p.imap_pass,
   });
   el.textContent = res.message || res.error || "No response";
-  el.style.color = res.ok ? "var(--green)" : "var(--red)";
+  el.style.color = res.ok ? "var(--success)" : "var(--danger)";
 }
 
 // ── Lead scraper worker key ──────────────────────────────────────────────────

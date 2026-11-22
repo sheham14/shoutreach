@@ -31,8 +31,8 @@
                   id="var-panel-toggle">⊞ Insert variable</button>
           <span class="text-muted text-small" id="var-panel-scope"></span>
         </div>
-        <div id="var-panel" style="display:none;border:1px solid var(--border2);border-radius:8px;
-                                   padding:4px 0;max-height:260px;overflow-y:auto;background:var(--bg2)"></div>
+        <div id="var-panel" style="display:none;border:1px solid var(--line);border-radius:8px;
+                                   padding:4px 0;max-height:260px;overflow-y:auto;background:var(--surface)"></div>
         {# The panel lists every variable with live coverage, so the hint only
            has to cover the one thing it cannot show: the fallback syntax. #}
         {% raw %}
@@ -42,7 +42,7 @@
           </summary>
           <div class="form-hint" style="margin-top:4px">
             <span class="mono">{{first_name|there}}</span> sends
-            <span class="mono">Hi there,</span> when a contact has no first
+            <span class="tnum">Hi there,</span> when a contact has no first
             name. Scraped leads never have one — Maps lists businesses, not
             people — so lean on <span class="mono">{{company}}</span>.
             Campaign variables live under Edit Settings → Variables.
@@ -52,15 +52,15 @@
       </div>
 
       <div id="var-gap-warning"
-           style="display:none;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);
-                  border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--amber)"></div>
+           style="display:none;background:var(--warning-soft);border:1px solid var(--warning-edge);
+                  border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--warning)"></div>
     </div>
 
-    <div id="spam-warning" style="display:none;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--amber)">
+    <div id="spam-warning" style="display:none;background:var(--warning-soft);border:1px solid var(--warning-edge);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--warning)">
       ⚠ Potential spam trigger words detected: <span id="spam-words"></span>
     </div>
 
-    <div style="margin:16px 0;border-top:1px solid var(--border);padding-top:16px">
+    <div style="margin:16px 0;border-top:1px solid var(--line);padding-top:16px">
       <div class="flex items-center gap-2" style="margin-bottom:12px">
         <span style="font-size:13px;font-weight:600">A/B Variants</span>
         <button class="btn btn-ghost btn-sm" onclick="addStepVariant()">+ Add Variant</button>
@@ -80,14 +80,14 @@
            single arm, since there is nothing to choose between. -->
       <select id="copy-target" onchange="dismissAIRewrite()"
               title="Which variant Preview and AI Review use"
-              style="display:none;background:var(--bg3);border:1px solid var(--border2);
+              style="display:none;background:var(--raised);border:1px solid var(--line-strong);
                      border-radius:6px;padding:6px 10px;color:var(--text);font-size:12px;
                      font-family:var(--font);cursor:pointer"></select>
       <button class="btn btn-ghost" onclick="closeModal('modal-step')">Cancel</button>
     </div>
 
-    <div id="ai-review-panel" style="display:none;margin-top:16px;padding:14px 16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;font-size:13px">
-      <div id="ai-review-loading" style="display:none;color:var(--muted)">Reviewing…</div>
+    <div id="ai-review-panel" style="display:none;margin-top:16px;padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:8px;font-size:13px">
+      <div id="ai-review-loading" style="display:none;color:var(--text-2)">Reviewing…</div>
       <div id="ai-review-result"></div>
     </div>
   </div>

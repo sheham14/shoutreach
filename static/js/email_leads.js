@@ -64,7 +64,7 @@ async function loadEmailReplies() {
         : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();emailReplyDone(${r.id}, true)">Done</button>`;
       return `<tr class="clickable" onclick="openEmailReply(${r.id})">
         <td><span class="biz-name">${esc(r.company || r.email)}</span>
-            <span class="sub mono">${esc(r.reply_from || r.email)}${who ? ` · ${esc(who)}` : ''}</span></td>
+            <span class="sub tnum">${esc(r.reply_from || r.email)}${who ? ` · ${esc(who)}` : ''}</span></td>
         <td>${r.reply_subject ? esc(r.reply_subject) : '<span class="text-muted">(no subject)</span>'}
             ${r.pipeline_label ? ` ${pill(r.pipeline_label, 'green')}` : ''}</td>
         <td>${esc(r.campaign_name || '')}</td>
@@ -119,7 +119,7 @@ createLeadTable({
   }),
   columns: [
     { key: 'email', label: 'Email', sort: true, cls: 'nowrap',
-      render: r => `<span class="mono" style="font-size:12px">${esc(r.email || '—')}</span>` },
+      render: r => `<span class="tnum" style="font-size:12px">${esc(r.email || '—')}</span>` },
     { key: 'company', label: 'Business', sort: true,
       render: r => `<span class="biz-name">${esc(r.company || '—')}</span>${
         r.first_name || r.last_name ? `<span class="sub">${esc([r.first_name, r.last_name].filter(Boolean).join(' '))}</span>` : ''}` },
@@ -136,7 +136,7 @@ createLeadTable({
   ],
   mobile: r => {
     const e = (r.enrollments || [])[0];
-    return mCard(`<span class="mono" style="font-size:12.5px;color:#fff;word-break:break-all">${esc(r.email || '—')}</span>`,
+    return mCard(`<span class="tnum" style="font-size:12.5px;color:var(--text);word-break:break-all">${esc(r.email || '—')}</span>`,
       esc(r.company || ''),
       (e ? `${esc(e.campaign)} ${pill(e.status === 'queued' ? `step ${e.current_step}` : e.status, _ENROLL_TONE[e.status] || '')}`
          : 'Not in a campaign') + (r.status !== 'active' ? ` ${pill(r.status, _EMAIL_STATUS_TONE[r.status] || '')}` : ''));
@@ -246,10 +246,10 @@ async function loadUnsubscribed() {
     return;
   }
   tbody.innerHTML = _unsubscribed.map(c => `<tr>
-    <td class="mono" style="font-size:12px">${esc(c.email || '—')}</td>
+    <td class="tnum" style="font-size:12px">${esc(c.email || '—')}</td>
     <td>${esc([c.first_name, c.last_name].filter(Boolean).join(' ') || '—')}</td>
     <td>${esc(c.company || '—')}</td>
-    <td class="mono text-muted" style="font-size:11px">${esc(fmtWhen(c.created_at, 'utc', { dateOnly: true }))}</td>
+    <td class="tnum text-muted" style="font-size:11px">${esc(fmtWhen(c.created_at, 'utc', { dateOnly: true }))}</td>
   </tr>`).join('');
 }
 
@@ -284,10 +284,10 @@ async function loadInvalidMx() {
     return;
   }
   tbody.innerHTML = _invalidMx.map(c => `<tr>
-    <td class="mono" style="font-size:12px">${esc(c.email || '—')}</td>
+    <td class="tnum" style="font-size:12px">${esc(c.email || '—')}</td>
     <td>${esc(c.company || '—')}</td>
-    <td class="mono text-muted" style="font-size:12px">${esc(c.website || '—')}</td>
-    <td class="mono text-muted" style="font-size:11px">${esc(fmtWhen(c.created_at, 'utc', { dateOnly: true }))}</td>
+    <td class="tnum text-muted" style="font-size:12px">${esc(c.website || '—')}</td>
+    <td class="tnum text-muted" style="font-size:11px">${esc(fmtWhen(c.created_at, 'utc', { dateOnly: true }))}</td>
   </tr>`).join('');
 }
 
@@ -384,15 +384,15 @@ function renderEnrollList(contacts, total = 0) {
     return;
   }
   const truncated = total > contacts.length
-    ? `<div class="text-muted" style="padding:8px 14px;font-size:11px;border-bottom:1px solid var(--border)">
+    ? `<div class="text-muted" style="padding:8px 14px;font-size:11px;border-bottom:1px solid var(--line)">
          Showing ${contacts.length} of ${total} — search to narrow, or use Enroll All.
        </div>`
     : '';
   el.innerHTML = truncated + contacts.map(c => `
-    <label style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer">
+    <label style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer">
       <input type="checkbox" value="${c.id}" class="enroll-cb" />
       <div>
-        <div style="font-size:13px">${esc(c.first_name)} ${esc(c.last_name)} <span class="text-muted mono" style="font-size:11px">${esc(c.email)}</span></div>
+        <div style="font-size:13px">${esc(c.first_name)} ${esc(c.last_name)} <span class="text-muted tnum" style="font-size:11px">${esc(c.email)}</span></div>
         ${c.company ? `<div class="text-muted" style="font-size:11px">${esc(c.company)}</div>` : ''}
       </div>
     </label>

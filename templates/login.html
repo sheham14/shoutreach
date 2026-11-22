@@ -5,152 +5,45 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Sign In — ShoutReach</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📣</text></svg>">
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg:      #080c10;
-    --bg2:     #0e1419;
-    --bg3:     #141c24;
-    --border:  #1e2c38;
-    --border2: #243444;
-    --text:    #c8d8e8;
-    --text2:   #8aa8c0;
-    --muted:   #5a7a90;
-    --accent:  #3b9eff;
-    --green:   #00e87a;
-    --red:     #ff4d4d;
-    --font:    'Space Grotesk', sans-serif;
-    --mono:    'JetBrains Mono', monospace;
-  }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--font);
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .login-box {
-    width: 100%;
-    max-width: 380px;
-    padding: 0 20px;
-  }
-  .logo {
-    text-align: center;
-    margin-bottom: 36px;
-  }
-  .logo-mark {
-    font-family: var(--mono);
-    font-size: 13px;
-    color: var(--green);
-    letter-spacing: .12em;
-    text-transform: uppercase;
-    margin-bottom: 6px;
-  }
-  .logo h1 {
-    font-size: 28px;
-    font-weight: 700;
-    color: var(--text);
-    letter-spacing: -.5px;
-  }
-  .card {
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 32px;
-  }
-  h2 {
-    font-size: 17px;
-    font-weight: 600;
-    margin-bottom: 24px;
-    color: var(--text);
-  }
-  .form-group { margin-bottom: 18px; }
-  label {
-    display: block;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: .07em;
-    margin-bottom: 6px;
-  }
-  input {
-    width: 100%;
-    background: var(--bg3);
-    border: 1px solid var(--border2);
-    border-radius: 8px;
-    padding: 10px 14px;
-    color: var(--text);
-    font-size: 14px;
-    font-family: var(--font);
-    outline: none;
-    transition: border-color .15s;
-  }
-  input:focus { border-color: var(--accent); }
-  .btn {
-    width: 100%;
-    padding: 11px;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 600;
-    font-family: var(--font);
-    cursor: pointer;
-    margin-top: 8px;
-    transition: opacity .15s;
-  }
-  .btn:hover { opacity: .88; }
-  .error {
-    background: rgba(255,77,77,.08);
-    border: 1px solid rgba(255,77,77,.25);
-    border-radius: 8px;
-    padding: 10px 14px;
-    color: var(--red);
-    font-size: 13px;
-    margin-bottom: 18px;
-  }
-</style>
+<!-- The app's own stylesheet and fonts: /static/css, /static/img and
+     /static/fonts load without a session (Plan 3); /static/js does not. -->
+<link rel="preload" href="{{ url_for('static', filename='fonts/InterVariable.woff2') }}" as="font" type="font/woff2" crossorigin />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}" />
 </head>
-<body>
+<body class="login-page">
   <div class="login-box">
     <div class="logo">
       <h1>ShoutReach</h1>
       <div class="logo-mark">◈ Powered by Hexiv</div>
     </div>
-    <div class="card">
+    <div class="card login-card">
       {% if first_run %}
         <h2>Create admin account</h2>
-        <p style="font-size:13px;color:var(--text2);margin-bottom:20px">First time setup — paste the setup token from the server startup logs, then create your admin account.</p>
+        <p class="text-small" style="color:var(--text-2);margin-bottom:20px">First time setup — paste the setup token from the server startup logs, then create your admin account.</p>
       {% else %}
         <h2>Sign in</h2>
       {% endif %}
       {% if error %}
-        <div class="error">{{ error }}</div>
+        <div class="error-box">{{ error }}</div>
       {% endif %}
       <form method="POST" action="/login">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
         {% if first_run %}
         <div class="form-group">
-          <label>Setup token</label>
-          <input type="text" name="setup_token" autocomplete="off" required />
-          <div style="font-size:11px;color:var(--muted);margin-top:6px">Printed in the server's startup logs on a fresh install.</div>
+          <label for="login-setup-token">Setup token</label>
+          <input id="login-setup-token" type="text" name="setup_token" autocomplete="off" required />
+          <div class="form-hint">Printed in the server's startup logs on a fresh install.</div>
         </div>
         {% endif %}
         <div class="form-group">
-          <label>Username</label>
-          <input type="text" name="username" autocomplete="username" autofocus required />
+          <label for="login-username">Username</label>
+          <input id="login-username" type="text" name="username" autocomplete="username" autofocus required />
         </div>
         <div class="form-group">
-          <label>Password{% if first_run %} <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">(min 12 characters)</span>{% endif %}</label>
-          <input type="password" name="password" autocomplete="{% if first_run %}new-password{% else %}current-password{% endif %}" required />
+          <label for="login-password">Password{% if first_run %} <span style="color:var(--text-2);font-weight:400">(min 12 characters)</span>{% endif %}</label>
+          <input id="login-password" type="password" name="password" autocomplete="{% if first_run %}new-password{% else %}current-password{% endif %}" required />
         </div>
-        <button type="submit" class="btn">{% if first_run %}Create account & sign in{% else %}Sign in{% endif %}</button>
+        <button type="submit" class="btn btn-primary login-submit">{% if first_run %}Create account & sign in{% else %}Sign in{% endif %}</button>
       </form>
     </div>
   </div>

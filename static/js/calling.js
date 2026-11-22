@@ -100,7 +100,7 @@ function _renderCampaignCards() {
       <div class="text-muted" style="font-size:12px;line-height:1.8">
         <div><strong style="color:var(--text)">${c.remaining}</strong> left of ${c.total}</div>
         <div>${c.due} due now · ${c.uncalled} never called</div>
-        <div><span style="color:var(--green)">${c.booked} booked</span> · ${c.not_interested} not interested</div>
+        <div><span style="color:var(--success)">${c.booked} booked</span> · ${c.not_interested} not interested</div>
       </div>
       <div class="flex gap-2" style="margin-top:12px;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" onclick="workCallCampaign(${c.id})">☎ Work it</button>
@@ -211,7 +211,7 @@ createLeadTable({
   mobile: r => mCard(`<span class="biz-name">${esc(r.company || 'Unnamed business')}</span>`,
     `${r.do_not_contact ? pill('Do not contact', 'red') + ' ' : ''}${callStatusBadge(r.call_status)}${
       (r.campaigns || []).length ? ` ${esc(r.campaigns.map(c => c.name).join(', '))}` : ''}`,
-    [r.phone && `<span class="mono">${esc(r.phone)}</span>`,
+    [r.phone && `<span class="tnum">${esc(r.phone)}</span>`,
      r.next_call_at && `next call ${esc(fmtWhen(r.next_call_at, 'wall'))}`].filter(Boolean).join(' · ')),
   onRowClick: r => openLeadPanel(r.id, {
     channel: 'calling', panelId: 'cl-panel', splitId: 'cl-split',
@@ -375,7 +375,7 @@ function _aclRenderTable(total) {
       <td><input type="checkbox" ${_aclSelected.has(c.id) ? 'checked' : ''}
                  onclick="event.stopPropagation();aclToggle(${c.id})" style="cursor:pointer" /></td>
       <td>${esc(c.company || c.email || '—')}${contactSignalPill(c)}</td>
-      <td class="mono" style="font-size:12px">${c.phone ? esc(c.phone) : '<span class="text-muted">no phone</span>'}</td>
+      <td class="tnum" style="font-size:12px">${c.phone ? esc(c.phone) : '<span class="text-muted">no phone</span>'}</td>
       <td>${callStatusBadge(c.call_status)}</td>
     </tr>`).join('');
 }
@@ -510,20 +510,20 @@ function _renderCallTable() {
   tbody.innerHTML = _callLeads.map(l => {
     const due = l.next_call_at ? esc(fmtWhen(l.next_call_at, 'wall')) : '—';
     const over = l.call_attempts >= _attemptLimit;
-    return `<tr style="cursor:pointer${_callLead && _callLead.id === l.id ? ';background:rgba(96,165,250,.08)' : ''}"
+    return `<tr style="cursor:pointer${_callLead && _callLead.id === l.id ? ';background:var(--accent-soft)' : ''}"
                 onclick="openCallLead(${l.id}, true)">
       <td>${esc(l.company || l.email || '—')}${contactSignalPill(l)}</td>
-      <td class="mono" style="font-size:12px">${esc(l.phone || '—')}</td>
-      <td class="mono" style="font-size:12px${over ? ';color:var(--amber)' : ''}"
+      <td class="tnum" style="font-size:12px">${esc(l.phone || '—')}</td>
+      <td class="tnum" style="font-size:12px${over ? ';color:var(--warning)' : ''}"
           ${over ? `title="Past ${_attemptLimit} attempts — probably time to let it go"` : ''}>${l.call_attempts}</td>
-      <td class="mono text-muted" style="font-size:11px">${due}</td>
+      <td class="tnum text-muted" style="font-size:11px">${due}</td>
       <td>${_callBucket === 'worked'
             ? `${callStatusBadge(l.call_status)} <button class="btn btn-ghost btn-sm"
                  onclick="event.stopPropagation();reopenCallLead(${l.id})"
                  title="Put this lead back in the queue">↩ Reopen</button>`
             : `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openCallLead(${l.id}, true)">Open</button>`}</td>
       <td class="m-card">${mCard(`<span class="biz-name">${esc(l.company || l.email || '—')}</span>${contactSignalPill(l)}`,
-        [l.phone && `<span class="mono">${esc(l.phone)}</span>`,
+        [l.phone && `<span class="tnum">${esc(l.phone)}</span>`,
          `${l.call_attempts} attempt${l.call_attempts === 1 ? '' : 's'}`,
          l.next_call_at && `due ${due}`].filter(Boolean).join(' · '),
         _callBucket === 'worked' ? `${callStatusBadge(l.call_status)} <button class="btn btn-ghost btn-sm"
@@ -548,8 +548,8 @@ async function openCallLead(id, show = false) {
   document.getElementById('cq-lead-pills').innerHTML = contactSignalPill(c);
 
   const bits = [];
-  if (c.phone)        bits.push(`<a href="tel:${esc(c.phone)}" style="color:var(--blue)">${esc(c.phone)}</a>`);
-  if (c.website)      bits.push(`<a href="${esc(c.website)}" target="_blank" rel="noopener" style="color:var(--blue)">${esc(c.website)}</a>`);
+  if (c.phone)        bits.push(`<a href="tel:${esc(c.phone)}" style="color:var(--accent)">${esc(c.phone)}</a>`);
+  if (c.website)      bits.push(`<a href="${esc(c.website)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(c.website)}</a>`);
   if (c.email)        bits.push(esc(c.email));
   if (c.address)      bits.push(esc(c.address));
   if (c.rating != null) bits.push(`${esc(c.rating)}★ (${esc(c.review_count ?? 0)})`);
@@ -594,15 +594,16 @@ function _renderOutcomeButtons(selected) {
     const on = o.key === selected;
     // Colour comes from the outcome's own tone so custom ones look deliberate
     // rather than defaulting to the same blue as everything else.
-    const colour = { good: 'var(--green)', bad: 'var(--red)',
-                     info: 'var(--blue)', neutral: 'var(--muted)' }[o.tone]
-                || (o.terminal ? 'var(--red)' : 'var(--blue)');
+    // Good, bad: the state colours. Anything else is just "selected": teal.
+    const colour = { good: 'var(--success)', bad: 'var(--danger)',
+                     info: 'var(--accent)', neutral: 'var(--text-2)' }[o.tone]
+                || (o.terminal ? 'var(--danger)' : 'var(--accent)');
     return `<button type="button" onclick="chooseOutcome('${esc(o.key)}')"
       title="${o.stops_email ? 'Also stops any email sequence for this contact' : ''}"
       style="padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;font-family:var(--font);
-             border:1px solid ${on ? colour : 'var(--border2)'};
-             background:${on ? 'rgba(96,165,250,.12)' : 'transparent'};
-             color:${on ? colour : 'var(--muted)'}">${esc(o.label)}</button>`;
+             border:1px solid ${on ? colour : 'var(--line)'};
+             background:${on ? 'var(--raised)' : 'transparent'};
+             color:${on ? colour : 'var(--text-2)'}">${esc(o.label)}</button>`;
   }).join('');
 }
 
@@ -705,8 +706,8 @@ function _renderCallHistory(history) {
   el.innerHTML =
     `<div class="text-muted text-small" style="margin-bottom:6px">Previous calls</div>` +
     history.map(h => `
-      <div style="padding:6px 0;border-top:1px solid var(--border);font-size:12px">
-        <span class="mono text-muted" style="font-size:11px">${esc(fmtWhen(h.called_at, 'utc'))}</span>
+      <div style="padding:6px 0;border-top:1px solid var(--line);font-size:12px">
+        <span class="tnum text-muted" style="font-size:11px">${esc(fmtWhen(h.called_at, 'utc'))}</span>
         &nbsp;<span class="badge badge-gray">${esc(labels[h.outcome] || h.outcome)}</span>
         ${h.notes ? `<div class="text-muted" style="margin-top:3px;white-space:pre-wrap">${esc(h.notes)}</div>` : ''}
       </div>`).join('');
@@ -743,19 +744,19 @@ async function _renderOutcomeEditor() {
       </div>
       <div class="flex gap-2" style="flex-wrap:wrap;align-items:center">
         <input id="oc-new-label" placeholder="New outcome, e.g. Follow up later"
-               style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border2);
+               style="flex:1;min-width:200px;background:var(--raised);border:1px solid var(--line-strong);
                       border-radius:6px;padding:7px 12px;color:var(--text);font-size:13px;
                       font-family:var(--font)" />
-        <select id="oc-new-tone" style="background:var(--bg3);border:1px solid var(--border2);
+        <select id="oc-new-tone" style="background:var(--raised);border:1px solid var(--line-strong);
                 border-radius:6px;padding:7px 10px;color:var(--text);font-size:13px;
                 font-family:var(--font);cursor:pointer">
           ${OUTCOME_TONES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}
         </select>
-        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)">
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-2)">
           <input type="checkbox" id="oc-new-date" /> Needs date</label>
-        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)">
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-2)">
           <input type="checkbox" id="oc-new-terminal" /> Ends lead</label>
-        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)">
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-2)">
           <input type="checkbox" id="oc-new-stops" /> Stops email</label>
         <button class="btn btn-primary btn-sm" onclick="createOutcome()">Add</button>
       </div>
@@ -767,20 +768,20 @@ function _outcomeRow(o) {
   return `<tr${o.archived ? ' style="opacity:.5"' : ''}>
     <td>
       <input value="${esc(o.label)}" onchange="renameOutcome('${esc(o.key)}', this.value)"
-             style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+             style="background:var(--raised);border:1px solid var(--line-strong);border-radius:6px;
                     padding:5px 8px;color:var(--text);font-size:12px;font-family:var(--font);width:100%" />
       ${o.is_builtin ? '<span class="text-muted" style="font-size:10px">built-in</span>' : ''}
       ${o.archived ? '<span class="badge badge-gray" style="font-size:10px">archived</span>' : ''}
     </td>
     <td><select onchange="setOutcomeTone('${esc(o.key)}', this.value)"
-          style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+          style="background:var(--raised);border:1px solid var(--line-strong);border-radius:6px;
                  padding:4px 6px;color:var(--text);font-size:12px;font-family:var(--font)">
       ${OUTCOME_TONES.map(([v, l]) =>
         `<option value="${v}" ${o.tone === v ? 'selected' : ''}>${l}</option>`).join('')}
     </select></td>
-    <td class="mono" style="font-size:12px">${yes(o.requires_date)}</td>
-    <td class="mono" style="font-size:12px">${yes(o.is_terminal)}</td>
-    <td class="mono" style="font-size:12px">${yes(o.stops_email)}</td>
+    <td class="tnum" style="font-size:12px">${yes(o.requires_date)}</td>
+    <td class="tnum" style="font-size:12px">${yes(o.is_terminal)}</td>
+    <td class="tnum" style="font-size:12px">${yes(o.stops_email)}</td>
     <td>${o.is_builtin
         ? '<span class="text-muted" style="font-size:11px">—</span>'
         : `<button class="btn btn-danger btn-sm" onclick="deleteOutcome('${esc(o.key)}')">✕</button>`}</td>
@@ -863,9 +864,9 @@ function _renderScriptFor(contact) {
   // Each section collapses independently: mid-call you need to reach the right
   // objection in a second, not scroll a wall of text.
   body.innerHTML = sections.map((s, i) => `
-    <details ${i === 0 ? 'open' : ''} style="margin-bottom:8px;border:1px solid var(--border);border-radius:6px">
+    <details ${i === 0 ? 'open' : ''} style="margin-bottom:8px;border:1px solid var(--line);border-radius:6px">
       <summary style="cursor:pointer;padding:8px 12px;font-size:13px;font-weight:600;list-style:revert">${esc(s.title || 'Section')}</summary>
-      <div style="padding:0 12px 10px;font-size:13px;line-height:1.55;white-space:pre-wrap;color:var(--text2)">${
+      <div style="padding:0 12px 10px;font-size:13px;line-height:1.55;white-space:pre-wrap;color:var(--text-2)">${
         s.body ? esc(_fillScript(s.body, contact))
                : '<span class="text-muted">Empty — add your words under Script &amp; outcomes.</span>'}</div>
     </details>`).join('');
@@ -894,10 +895,10 @@ function _renderScriptEditor() {
 
 function _scriptSectionRow(s, i) {
   return `
-    <div class="cq-script-row" style="border:1px solid var(--border2);border-radius:8px;padding:12px">
+    <div class="cq-script-row" style="border:1px solid var(--line);border-radius:8px;padding:12px">
       <div class="flex gap-2" style="margin-bottom:8px">
         <input class="cq-sec-title" value="${esc(s.title || '')}" placeholder="Section name"
-               style="flex:1;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+               style="flex:1;background:var(--raised);border:1px solid var(--line-strong);border-radius:6px;
                       padding:6px 10px;color:var(--text);font-size:13px;font-family:var(--font)" />
         <button class="btn btn-danger btn-sm" onclick="this.closest('.cq-script-row').remove()">✕</button>
       </div>

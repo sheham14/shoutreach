@@ -204,7 +204,7 @@ function statusBadge(s) {
 
 function enrollBadge(s) {
   const map = {
-    queued: 'badge-blue', completed: 'badge-green', replied: 'badge-purple',
+    queued: 'badge-blue', completed: 'badge-green', replied: 'badge-green',
     bounced: 'badge-red', unsubscribed: 'badge-gray'
   };
   return `<span class="badge ${map[s]||'badge-gray'}">${s}</span>`;

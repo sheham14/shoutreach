@@ -266,8 +266,8 @@ function meetingWhenText(m) {
 // offers to -- and a cancelled one stays visible, saying so.
 function calMeetingBoxHtml(d, m) {
   const state = m.state === 'cancelled'
-    ? '<span style="color:var(--red)">Cancelled on Cal.com</span>'
-    : m.state === 'moved' ? '<span style="color:var(--amber)">Moved on Cal.com</span>' : 'Booked on Cal.com';
+    ? '<span style="color:var(--danger)">Cancelled on Cal.com</span>'
+    : m.state === 'moved' ? '<span style="color:var(--warning)">Moved on Cal.com</span>' : 'Booked on Cal.com';
   const site = (d.enquiries || []).map(e => e.site)[0];
   const from = typeof meetingFrom === 'function'
     ? meetingFrom({ pipeline_channel: d.pipeline_channel, site }) : '';
@@ -275,7 +275,7 @@ function calMeetingBoxHtml(d, m) {
       <div><b>📅 ${esc(meetingWhenText(m))}</b></div>
       <div>${state}${from ? ` · ${esc(from)}` : ''}</div>
       ${httpsOnly(m.join_url) && m.state !== 'cancelled'
-        ? `<div><a href="${esc(httpsOnly(m.join_url))}" target="_blank" rel="noopener" style="color:var(--blue)">Join ↗</a></div>` : ''}
+        ? `<div><a href="${esc(httpsOnly(m.join_url))}" target="_blank" rel="noopener" style="color:var(--accent)">Join ↗</a></div>` : ''}
       <div class="text-muted text-small">Moving or cancelling it happens on Cal.com.</div>
     </div>`;
 }
@@ -294,7 +294,7 @@ function meetingBoxHtml(d, opts) {
   return `<div class="meeting-box">
       <div><b>📅 ${esc(fmtWhen(d.next_action_at, 'wall'))}</b></div>
       ${from ? `<div class="text-muted">${esc(from)}</div>` : ''}
-      ${join ? `<div><a href="${esc(join)}" target="_blank" rel="noopener" style="color:var(--blue)">Join ↗</a></div>` : ''}
+      ${join ? `<div><a href="${esc(join)}" target="_blank" rel="noopener" style="color:var(--accent)">Join ↗</a></div>` : ''}
       <div class="text-muted text-small">Arranged outside Cal.com — to move it, change the stage's time.
         Booking on Cal.com instead? Use Copy booking link.</div>
     </div>`;
@@ -342,7 +342,7 @@ function waConfirmHtml(id, kind, openedAt, number, panelId = null) {
       <button class="btn btn-ghost" onclick="markNotOnWhatsApp([${id}], ${pid})">Not on WhatsApp</button>
       <button class="btn btn-ghost" onclick="waDidntSend(${id}, ${pid})">Didn't send</button>
     </div>
-    <a class="text-small" style="color:var(--blue);cursor:pointer;display:inline-block;margin-top:8px"
+    <a class="text-small" style="color:var(--accent);cursor:pointer;display:inline-block;margin-top:8px"
        onclick="reopenWaChat(${id}, '${esc(number || '')}', ${pid})">Open the chat again</a>
   </div>`;
 }
@@ -437,12 +437,12 @@ function _score(label, value) {
 }
 
 function _yes(ok, yes, no) {
-  return ok ? `<span style="color:var(--green)">✓</span> ${esc(yes)}` : `<span style="color:var(--amber)">✗</span> ${esc(no)}`;
+  return ok ? `<span style="color:var(--success)">✓</span> ${esc(yes)}` : `<span style="color:var(--warning)">✗</span> ${esc(no)}`;
 }
 
 function auditResultsHtml(a, ctx) {
   if (!a) return '';
-  if (a.error) return `<div class="text-small" style="color:var(--amber)">${esc(a.error)}</div>`;
+  if (a.error) return `<div class="text-small" style="color:var(--warning)">${esc(a.error)}</div>`;
   const rows = [];
   const ps = a.pagespeed || {};
   if (ps.ok) {
@@ -469,17 +469,17 @@ function auditResultsHtml(a, ctx) {
       ${_yes(site.mobile_viewport, 'Set up for phones', 'Not set up for phone screens')}<br>
       ${_yes(site.title && site.description, 'Title and description set', site.title ? 'No description for Google' : 'No page title')}<br>
       ${_yes(site.schema_types.length, `Structured data: ${site.schema_types.join(', ')}`, 'No structured data (helps Google and AI answers)')}
-      ${site.copyright_year && site.copyright_year < new Date().getFullYear() - 1 ? `<br><span style="color:var(--amber)">Footer still says © ${site.copyright_year}</span>` : ''}
+      ${site.copyright_year && site.copyright_year < new Date().getFullYear() - 1 ? `<br><span style="color:var(--warning)">Footer still says © ${site.copyright_year}</span>` : ''}
     </div></div>`);
     rows.push(`<div class="audit-row"><span class="k">Tracking</span><div>${site.tracking.length
-      ? esc(site.tracking.join(', ')) : '<span style="color:var(--amber)">No analytics or ad pixels found</span>'}</div></div>`);
+      ? esc(site.tracking.join(', ')) : '<span style="color:var(--warning)">No analytics or ad pixels found</span>'}</div></div>`);
     if (site.engagement.length) rows.push(`<div class="audit-row"><span class="k">On the site</span><div>${esc(site.engagement.join(', '))}</div></div>`);
     const socials = Object.entries(site.socials || {});
     rows.push(`<div class="audit-row"><span class="k">Socials linked</span><div>${socials.length
-      ? socials.map(([k, v]) => `<a href="${esc(v)}" target="_blank" rel="noopener" style="color:var(--blue)">${esc(k)} ↗</a>`).join(' · ')
+      ? socials.map(([k, v]) => `<a href="${esc(v)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(k)} ↗</a>`).join(' · ')
       : '<span class="text-muted">None linked from the homepage</span>'}</div></div>`);
   } else if (site.error) {
-    rows.push(`<div class="audit-row"><span class="k">Website</span><div style="color:var(--amber)">${esc(site.error)}</div></div>`);
+    rows.push(`<div class="audit-row"><span class="k">Website</span><div style="color:var(--warning)">${esc(site.error)}</div></div>`);
   }
   const email = a.email || {};
   if (email.ok) rows.push(`<div class="audit-row"><span class="k">Email</span><div>${esc(email.provider)}</div></div>`);
@@ -576,8 +576,8 @@ function historyHtml(d) {
 function whereItIsHtml(d) {
   const where = [];
   (d.enrollments || []).slice(0, 3).forEach(e =>
-    where.push(`<div>${pill('Email', 'green')} ${esc(e.campaign)} — ${esc(e.status === 'queued' ? `step ${e.current_step}` : e.status)}</div>`));
-  if ((d.emails || []).length && !(d.enrollments || []).length) where.push(`<div>${pill('Email', 'green')} not in a campaign yet</div>`);
+    where.push(`<div>${pill('Email')} ${esc(e.campaign)} — ${esc(e.status === 'queued' ? `step ${e.current_step}` : e.status)}</div>`));
+  if ((d.emails || []).length && !(d.enrollments || []).length) where.push(`<div>${pill('Email')} not in a campaign yet</div>`);
   if (d.call && !d.call.removed_at) {
     const camps = (d.call.campaigns || []).map(c => esc(c.name)).join(', ');
     where.push(`<div>${pill('Calling', 'blue')} ${esc(callOutcomeLabel(d.call.call_status))}${
@@ -628,19 +628,19 @@ async function copyBookingLink(businessId, channel) {
 function pipelineRowHtml(d, opts) {
   const channel = _PANEL_TO_PIPE_CHANNEL[opts.channel] || '';
   const set = `setPipelineStage(${d.id}, '${channel}', () => refreshLeadPanel('${opts.panelId}'))`;
-  const book = `<a class="text-small" style="color:var(--blue);cursor:pointer"
+  const book = `<a class="text-small" style="color:var(--accent);cursor:pointer"
       onclick="copyBookingLink(${d.id}, '${channel}')">Copy booking link</a>`;
   if (!d.pipeline_stage) {
     return `<div class="flex items-center gap-2" style="margin-top:8px;flex-wrap:wrap">
-      <a class="text-small" style="color:var(--blue);cursor:pointer" onclick="${set}">+ Set a stage</a>
+      <a class="text-small" style="color:var(--accent);cursor:pointer" onclick="${set}">+ Set a stage</a>
       <span class="text-muted text-small">·</span> ${book}
     </div>`;
   }
   const overdue = pipelineOverdue(d)
-    ? ` <span style="color:var(--red)">overdue</span>` : '';
+    ? ` <span style="color:var(--danger)">overdue</span>` : '';
   return `<div class="flex items-center gap-2" style="margin-top:8px;flex-wrap:wrap">
       ${pipelinePill(d)}${overdue}
-      <a class="text-small" style="color:var(--blue);cursor:pointer" onclick="${set}">Change</a>
+      <a class="text-small" style="color:var(--accent);cursor:pointer" onclick="${set}">Change</a>
       ${d.pipeline_stage === 'booked' ? '' : `<span class="text-muted text-small">·</span> ${book}`}
     </div>`;
 }
@@ -706,8 +706,8 @@ async function openLeadPanel(businessId, opts) {
   if (opts.channel === 'email') channelHtml = _emailPanelSection(d);
 
   const links = [];
-  if (d.phone) links.push(`<a href="tel:${esc(d.phone)}" style="color:var(--blue)">${esc(d.phone)}</a>`);
-  if (d.website) links.push(`<a href="${esc(d.website.startsWith('http') ? d.website : 'https://' + d.website)}" target="_blank" rel="noopener" style="color:var(--blue)">${esc(d.domain || d.website)} ↗</a>`);
+  if (d.phone) links.push(`<a href="tel:${esc(d.phone)}" style="color:var(--accent)">${esc(d.phone)}</a>`);
+  if (d.website) links.push(`<a href="${esc(d.website.startsWith('http') ? d.website : 'https://' + d.website)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(d.domain || d.website)} ↗</a>`);
   const facts = [d.category, d.city || d.address, d.rating != null ? `${d.rating}★ (${d.review_count ?? 0})` : '']
     .filter(Boolean).map(esc).join(' · ');
 
@@ -730,7 +730,7 @@ async function openLeadPanel(businessId, opts) {
     ${_addToChannelButtons(d, opts.channel)}
     ${!opts.channel && (d.emails || []).length ? `<span class="field-label">Email addresses</span>
       <div style="display:flex;flex-direction:column;gap:4px">${d.emails.map(e =>
-        `<div class="text-small"><span class="mono">${esc(e.email)}</span> ${
+        `<div class="text-small"><span class="tnum">${esc(e.email)}</span> ${
           e.status !== 'active' ? pill(e.status, 'red') : ''}${e.duplicate_of ? ' <span class="text-muted">(backup)</span>' : ''}</div>`).join('')}</div>` : ''}
     <div style="margin-top:12px">${sharedSectionsHtml(d, { open: opts.open || 'notes' })}</div>`;
 }
@@ -808,7 +808,7 @@ async function _waPanelSection(d) {
                 >${esc(kind === 'opener' ? (w.message || '') : (w.followup_message || ''))}</textarea>
       ${kind === 'opener' && w.message_edited ? `<div class="text-muted text-small">${
         WA_SOURCE_LABELS[w.message_source] || (w.paraphrased ? WA_SOURCE_LABELS.ai : WA_SOURCE_LABELS.manual)} ·
-        <a style="color:var(--blue);cursor:pointer" onclick="resetWaMessage(${w.id}, '${panelId}')">Reset to template</a></div>` : ''}
+        <a style="color:var(--accent);cursor:pointer" onclick="resetWaMessage(${w.id}, '${panelId}')">Reset to template</a></div>` : ''}
       ${kind === 'followup' ? `<div class="text-muted text-small">${where.own
         ? 'Clear the box to go back to the campaign\'s follow-up.'
         : 'Edit it and this lead keeps your version for this follow-up.'}</div>` : ''}
@@ -823,7 +823,7 @@ async function _waPanelSection(d) {
       </div>`;
   } else if (stage === 'replied') {
     body = `<div class="text-small" style="margin-top:8px">${pill('Replied', 'green')} No more follow-ups.
-      <a style="color:var(--blue);cursor:pointer" onclick="waMarkReplied(${w.id}, false)">Undo</a></div>`;
+      <a style="color:var(--accent);cursor:pointer" onclick="waMarkReplied(${w.id}, false)">Undo</a></div>`;
   } else if (stage === 'no_whatsapp') {
     body = `<div class="text-small" style="margin-top:8px;line-height:1.55">Marked not on WhatsApp ${esc(whenLocal(w.no_whatsapp_at))}.
         It's out of every queue until you move it off.</div>
@@ -834,13 +834,13 @@ async function _waPanelSection(d) {
   }
   const on = !['moved', 'removed'].includes(stage);
   return `<span class="field-label">WhatsApp</span>
-    <div class="text-small">${waStagePill(stage)} <span class="mono">${esc(prettyWaNumber(w.wa_number))}</span>
+    <div class="text-small">${waStagePill(stage)} <span class="tnum">${esc(prettyWaNumber(w.wa_number))}</span>
       · ${w.campaign_name ? esc(w.campaign_name) : pill('No campaign', 'amber')}</div>
     ${body}
     ${on ? `<div class="flex gap-2" style="flex-wrap:wrap;margin-top:8px">
       <button class="btn btn-ghost btn-sm" onclick="moveWaLeadsToCampaign([${w.id}])">Move campaign</button>
       ${stage !== 'no_whatsapp' ? `<button class="btn btn-ghost btn-sm" onclick="markNotOnWhatsApp([${w.id}])">Not on WhatsApp</button>` : ''}
-      <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="removeWaLeads([${w.id}])">Take off</button>
+      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="removeWaLeads([${w.id}])">Take off</button>
     </div>` : ''}`;
 }
 
@@ -856,7 +856,7 @@ function _callPanelSection(d) {
       <button class="btn btn-primary btn-sm" onclick="openInDialler(${d.id})">☎ Open in the dialler</button>
       <button class="btn btn-ghost btn-sm" onclick="callLeadsToCampaign([${d.id}])">Add to campaign</button>
       ${c.call_status ? `<button class="btn btn-ghost btn-sm" onclick="reopenCallLead(${d.id})">Reopen</button>` : ''}
-      <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="removeFromCalling([${d.id}])">Take off Calling</button>
+      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="removeFromCalling([${d.id}])">Take off Calling</button>
     </div>`;
 }
 
@@ -866,7 +866,7 @@ function _emailPanelSection(d) {
   return `<span class="field-label">Email</span>
     <div style="display:flex;flex-direction:column;gap:4px">${emails.map(e => {
       const enr = (d.enrollments || []).filter(x => x.email === e.email);
-      return `<div class="text-small"><span class="mono">${esc(e.email)}</span> ${e.status !== 'active' ? pill(e.status, 'red') : ''}
+      return `<div class="text-small"><span class="tnum">${esc(e.email)}</span> ${e.status !== 'active' ? pill(e.status, 'red') : ''}
         ${enr.map(x => `<span class="text-muted"> · ${esc(x.campaign)}: ${esc(x.status === 'queued' ? `step ${x.current_step}` : x.status)}</span>`).join('')}</div>`;
     }).join('')}</div>
     <div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px">

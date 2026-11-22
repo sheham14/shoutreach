@@ -130,7 +130,7 @@
        invisible: a follow-up due on a non-sending day just waits, leaving a
        "next send" timestamp in the past that reads like a broken scheduler. -->
   <div id="cd-send-status" style="display:none;margin-bottom:16px;padding:10px 14px;
-       border-radius:8px;font-size:12px;border:1px solid var(--border2)"></div>
+       border-radius:8px;font-size:12px;border:1px solid var(--line)"></div>
 
   <div class="stat-grid" id="cd-stats" style="grid-template-columns:repeat(5,1fr)"></div>
   <div id="cd-variant-stats"></div>
@@ -169,7 +169,7 @@
           <th style="width:36px"><input type="checkbox" id="enroll-select-all" onchange="toggleSelectAllEnrolled(this.checked)" style="cursor:pointer"/></th>
           <th>Email</th><th>Name</th><th>Company</th>
           <th>Variant</th><th>Sent</th><th>Step</th>
-          <th>Status</th><th>Next Send</th><th></th>
+          <th>Status</th><th>Next send</th><th></th>
         </tr></thead>
         <tbody id="cd-report"></tbody>
       </table>

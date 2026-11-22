@@ -5,8 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>ShoutReach</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📣</text></svg>">
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="preload" href="{{ url_for('static', filename='fonts/InterVariable.woff2') }}" as="font" type="font/woff2" crossorigin />
 <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}" />
 </head>
 <body>
@@ -95,12 +94,12 @@
     <p class="text-muted text-small" style="margin-bottom:16px">for <strong id="chpw-username"></strong></p>
     <input type="hidden" id="chpw-uid" />
     <div class="form-group" id="chpw-current-group">
-      <label>Current Password</label>
+      <label>Current password</label>
       <input id="chpw-current" type="password" autocomplete="current-password" placeholder="Your current password" />
       <div class="form-hint">Required when changing your own password.</div>
     </div>
     <div class="form-group">
-      <label>New Password</label>
+      <label>New password</label>
       <input id="chpw-password" type="password" autocomplete="new-password" placeholder="Min 12 characters" />
     </div>
     <div class="flex gap-2">

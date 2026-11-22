@@ -35,7 +35,7 @@
           <option value="no_email">No email</option>
           <option value="has_email">Has an email</option>
         </select>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);cursor:pointer;white-space:nowrap">
           <input type="checkbox" id="wa-add-new-only" checked onchange="waAddSearch()" style="cursor:pointer" />
           Not on WhatsApp yet
         </label>
@@ -43,9 +43,9 @@
       <div class="flex gap-2 items-center" style="margin-bottom:8px;flex-wrap:wrap">
         <button class="btn btn-ghost btn-sm" onclick="waAddSelectAllShown()">Select all shown</button>
         <button class="btn btn-ghost btn-sm" onclick="waAddClearSelection()">Clear</button>
-        <span class="text-muted text-small mono" id="wa-add-count"></span>
+        <span class="text-muted text-small tnum" id="wa-add-count"></span>
       </div>
-      <div class="table-wrap" style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
+      <div class="table-wrap" style="max-height:300px;overflow-y:auto;border:1px solid var(--line);border-radius:8px">
         <table>
           <thead><tr><th style="width:36px"></th><th>Business</th><th>Phone</th></tr></thead>
           <tbody id="wa-add-table"></tbody>

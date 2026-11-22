@@ -415,8 +415,8 @@ function _showImportResult(res) {
   const box = document.getElementById('gl-result');
   box.style.display = 'block';
   box.innerHTML = `<b>Done.</b> ${esc(res.text)}
-    ${res.batch ? ` · <a style="color:var(--blue);cursor:pointer" onclick="openScrapeInContacts('${res.batch}')">See them in Contacts →</a>
-      · <a style="color:var(--blue);cursor:pointer" onclick="setTab('getleads','history')">Your imports</a>` : ''}`;
+    ${res.batch ? ` · <a style="color:var(--accent);cursor:pointer" onclick="openScrapeInContacts('${res.batch}')">See them in Contacts →</a>
+      · <a style="color:var(--accent);cursor:pointer" onclick="setTab('getleads','history')">Your imports</a>` : ''}`;
   toast('Imported ✓');
 }
 
@@ -504,14 +504,14 @@ function _renderWorkerBanner(d) {
   if (urlElCmd) urlElCmd.textContent = window.location.origin;
 
   if (d.worker_online) {
-    dot.style.background = 'var(--green)';
+    dot.style.background = 'var(--success)';
     title.textContent = 'Worker connected';
     const secs = d.worker_last_seen ?? 0;
     detail.textContent = `Running on your machine — last seen ${secs}s ago. `
       + 'Chrome will open there when a scrape starts.';
     help.style.display = 'none';
   } else {
-    dot.style.background = 'var(--amber)';
+    dot.style.background = 'var(--warning)';
     title.textContent = 'No worker connected';
     detail.textContent = d.worker_last_seen == null
       ? 'This server cannot open a browser. Start the worker on your own machine.'
@@ -557,7 +557,7 @@ async function pollScraperStatus() {
   if (jobActive && d.heartbeat_secs != null) {
     const stale = d.heartbeat_secs > 30;
     hbEl.style.display = 'block';
-    hbEl.style.color = stale ? 'var(--amber)' : 'var(--muted)';
+    hbEl.style.color = stale ? 'var(--warning)' : 'var(--text-2)';
     hbEl.textContent = stale
       ? `⚠ No update in ${d.heartbeat_secs}s — may be stuck (auto-fails after 3 min of silence)`
       : `Last update ${d.heartbeat_secs}s ago`;
@@ -570,9 +570,9 @@ async function pollScraperStatus() {
   }
 
   if (d.logs && d.logs.length) {
-    const levelColor = { INFO: 'var(--text)', WARN: 'var(--amber)', ERROR: 'var(--red)' };
+    const levelColor = { INFO: 'var(--text)', WARN: 'var(--warning)', ERROR: 'var(--danger)' };
     document.getElementById('sc-log-feed').innerHTML = [...d.logs].reverse().map(l =>
-      `<div style="padding:6px 14px;border-bottom:1px solid var(--border);color:${levelColor[l.level]||'var(--text)'}">${esc(l.msg)}</div>`
+      `<div style="padding:6px 14px;border-bottom:1px solid var(--line);color:${levelColor[l.level]||'var(--text)'}">${esc(l.msg)}</div>`
     ).join('');
   }
 

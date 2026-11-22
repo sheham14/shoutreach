@@ -151,7 +151,7 @@ function _renderSender(sender) {
     return;
   }
   el.className = 'text-small';
-  el.style.color = 'var(--amber)';
+  el.style.color = 'var(--warning)';
   el.textContent = !sender.alive
     ? '⚠ The email sender isn\'t running. Reload this page to restart it; if this stays, check the server.'
     : `⚠ The email sender last ran ${ago}. Nothing is being sent.`;

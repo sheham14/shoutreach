@@ -674,7 +674,7 @@ function createLeadTable(cfg) {
       <div class="table-wrap"><table class="lead-table${cfg.mobile ? ' m-table' : ''}"><thead>${head}</thead><tbody>${rows}</tbody></table></div>
       ${t.pages > 1 ? `<div class="lt-pager">
           <button class="btn btn-ghost btn-sm" ${t.page <= 1 ? 'disabled' : ''} onclick="LT['${cfg.id}'].step(-1)">← Prev</button>
-          <span class="text-muted text-small mono">Page ${t.page} of ${t.pages}</span>
+          <span class="text-muted text-small tnum">Page ${t.page} of ${t.pages}</span>
           <button class="btn btn-ghost btn-sm" ${t.page >= t.pages ? 'disabled' : ''} onclick="LT['${cfg.id}'].step(1)">Next →</button>
         </div>` : ''}`;
   };

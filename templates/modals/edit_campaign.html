@@ -2,22 +2,22 @@
   <div class="modal">
     <button class="modal-close" onclick="closeModal('modal-edit-campaign')">✕</button>
     <h2>Campaign Settings</h2>
-    <div class="form-group"><label>Campaign Name</label><input id="ec-name" placeholder="My Campaign" /></div>
+    <div class="form-group"><label>Campaign name</label><input id="ec-name" placeholder="My Campaign" /></div>
     <div class="form-grid">
-      <div class="form-group"><label>Daily Email Limit</label><input id="ec-limit" type="number" min="1" max="500" /><div class="form-hint">Start low while warming up (10–30/day)</div></div>
-      <div class="form-group"><label>Min Delay Between Sends (sec)</label><input id="ec-mindelay" type="number" /></div>
+      <div class="form-group"><label>Daily email limit</label><input id="ec-limit" type="number" min="1" max="500" /><div class="form-hint">Start low while warming up (10–30/day)</div></div>
+      <div class="form-group"><label>Min delay between sends (sec)</label><input id="ec-mindelay" type="number" /></div>
     </div>
     <div class="form-group">
-      <label>Campaign Timezone</label>
+      <label>Campaign timezone</label>
       <select id="ec-timezone"></select>
       <div class="form-hint">Send window hours are interpreted in this timezone.</div>
     </div>
     <div class="form-grid">
-      <div class="form-group"><label>Send Window — Start Hour</label><input id="ec-start" type="number" min="0" max="23" /></div>
-      <div class="form-group"><label>Send Window — End Hour</label><input id="ec-end" type="number" min="1" max="24" /></div>
+      <div class="form-group"><label>Send window — start hour</label><input id="ec-start" type="number" min="0" max="23" /></div>
+      <div class="form-group"><label>Send window — end hour</label><input id="ec-end" type="number" min="1" max="24" /></div>
     </div>
     <div class="form-group">
-      <label>Sending Days</label>
+      <label>Sending days</label>
       <div id="ec-send-days" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px"></div>
       <div class="flex gap-2" style="flex-wrap:wrap">
         <button type="button" class="btn btn-ghost btn-sm" onclick="setSendDaysPreset('0,1,2,3,4')">Mon–Fri</button>
@@ -31,11 +31,11 @@
       </div>
     </div>
     <div class="form-grid">
-      <div class="form-group"><label>Max Delay Between Sends (sec)</label><input id="ec-maxdelay" type="number" /></div>
-      <div class="form-group"><label>Bounce Auto-Pause Threshold (%)</label><input id="ec-bounce" type="number" min="1" max="100" /><div class="form-hint">Campaign pauses if bounce rate exceeds this</div></div>
+      <div class="form-group"><label>Max delay between sends (sec)</label><input id="ec-maxdelay" type="number" /></div>
+      <div class="form-group"><label>Bounce auto-pause threshold (%)</label><input id="ec-bounce" type="number" min="1" max="100" /><div class="form-hint">Campaign pauses if bounce rate exceeds this</div></div>
     </div>
     <div class="form-group" style="margin-top:8px">
-      <label>Campaign Variables</label>
+      <label>Campaign variables</label>
       <div class="form-hint" style="margin-bottom:8px">Key-value pairs available as <code>{{variable_name}}</code> in this campaign's email templates. Can be overridden per-contact via CSV custom columns.</div>
       <div id="ec-vars-list" style="display:flex;flex-direction:column;gap:6px"></div>
       <button type="button" class="btn btn-ghost btn-sm" onclick="addCampaignVar()" style="margin-top:8px">+ Add Variable</button>
