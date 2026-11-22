@@ -9476,3 +9476,21 @@ def record_cal_event(body: bytes) -> bool:
         cur = conn.execute("INSERT OR IGNORE INTO cal_events(digest, body) VALUES(?, ?)",
                            (digest, body.decode("utf-8", "replace")))
         return cur.rowcount == 1
+
+
+
+def get_cal_events(limit: int = 50) -> list:
+    """The most recent verified Cal.com deliveries, as received, newest first
+    -- for an admin to download and look at (and to capture real payloads)."""
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, received_at, processed_at, error, body FROM cal_events "
+                            "ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["body"] = json.loads(d["body"])
+        except ValueError:
+            pass
+        out.append(d)
+    return out

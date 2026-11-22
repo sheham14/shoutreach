@@ -272,6 +272,12 @@ def main():
                       headers={"X-Cal-Signature-256": good})
         check("and a Cal.com signature doesn't open the website door", r.status_code == 401)
 
+        r = ca.get("/api/website-settings/cal-events")
+        check("an admin can download what Cal.com sent, as received",
+              r.status_code == 200 and json.loads(r.data)[0]["body"] == {"hello": "cal"}
+              and "attachment" in r.headers.get("Content-Disposition", ""))
+        check("a non-admin can't", co.get("/api/website-settings/cal-events").status_code == 403)
+
         print("\n5. NOTHING ELSE OPENED UP")
         for path_ in ("/api/inbound/website-leadx", "/api/inbound/", "/api/inbound/cal/extra"):
             r = anon.post(path_, json=LEAD, headers=web)

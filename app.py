@@ -731,6 +731,18 @@ def api_rotate_cal_secret():
     return jsonify({"ok": True, "secret": secret})
 
 
+@app.route("/api/website-settings/cal-events", methods=["GET"])
+@admin_required
+def api_cal_events_download():
+    """The last 50 verified Cal.com deliveries, exactly as received, as a JSON
+    file. They hold the attendee's details, so admin only."""
+    body = json.dumps(db.get_cal_events(50), indent=2, ensure_ascii=False)
+    resp = make_response(body)
+    resp.headers["Content-Type"] = "application/json; charset=utf-8"
+    resp.headers["Content-Disposition"] = 'attachment; filename="cal-deliveries.json"'
+    return resp
+
+
 @app.route("/api/website-followup", methods=["GET"])
 @login_required
 def api_get_website_followup():
