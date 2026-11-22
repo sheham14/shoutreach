@@ -9866,13 +9866,14 @@ def run_website_followups(now: datetime.datetime = None) -> dict:
         arrival plus the email wait.
 
     A business that booked in the meantime (on Cal.com, or set to booked by
-    hand) gets neither. Either way the enquiry is marked queued, so it is
+    hand), or whose stage has moved on from "Enquired" during the wait
+    (replied, not interested, won, one of the operator's own), gets neither. Either way the enquiry is marked queued, so it is
     looked at once. `now` is injectable for tests.
     """
     now = now or datetime.datetime.utcnow()
     cfg = get_website_config()
     wa_cutoff = (now - datetime.timedelta(minutes=int(cfg["wa_wait_minutes"]))).strftime("%Y-%m-%d %H:%M:%S")
-    counts = {"whatsapp": 0, "email": 0, "booked": 0, "none": 0}
+    counts = {"whatsapp": 0, "email": 0, "booked": 0, "moved_on": 0, "none": 0}
     with get_db() as conn:
         rows = conn.execute("""
             SELECT e.id, e.owner_id, e.business_id, e.email, e.country, e.site, e.created_at,
@@ -9883,8 +9884,12 @@ def run_website_followups(now: datetime.datetime = None) -> dict:
         """, (wa_cutoff,)).fetchall()
     for e in rows:
         done = []
-        if e["cal_booking_id"] or e["pipeline_stage"] in ("booked", "booked_elsewhere"):
-            counts["booked"] += 1
+        moved_on = e["pipeline_stage"] not in ("", "enquired")
+        if e["cal_booking_id"] or moved_on:
+            # Booked, or the lead has moved on during the wait -- replied,
+            # not interested, won, a stage of the operator's own (review of
+            # Plan 2, item 5). Either way it isn't a non-booker to chase.
+            counts["booked" if e["cal_booking_id"] or e["pipeline_stage"] == "booked" else "moved_on"] += 1
         elif not e["do_not_contact"]:
             prefs = get_website_followup(owner_id=e["owner_id"])
             if e["phone"] and prefs["wa_campaign_id"]:
@@ -9908,7 +9913,7 @@ def run_website_followups(now: datetime.datetime = None) -> dict:
                         done.append("email")
         for kind in done:
             counts[kind] += 1
-        if not done and not (e["cal_booking_id"] or e["pipeline_stage"] in ("booked", "booked_elsewhere")):
+        if not done and not (e["cal_booking_id"] or moved_on):
             counts["none"] += 1
         with get_db() as conn:
             conn.execute("UPDATE website_enquiries SET followup_queued_at=? WHERE id=? AND followup_queued_at IS NULL",

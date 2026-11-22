@@ -120,11 +120,29 @@ def main():
         check("booked on Cal.com: no WhatsApp, no email",
               q(path, "SELECT COUNT(*) FROM wa_leads")[0][0] == 0 and q(path, "SELECT COUNT(*) FROM enrollments")[0][0] == 0)
         check("and it isn't looked at again", q(path, "SELECT followup_queued_at IS NOT NULL FROM website_enquiries") == [(1,)])
-        bid2 = enquire(db, path, "handbooked@clinic.co.uk", business="Other Clinic", phone="07700 900999")
+        bid2 = enquire(db, path, "hello@otherclinic.co.uk", business="Other Clinic", phone="07700 900999")
+        check("(a separate lead from the first)", bid2 != bid)
         db.set_business_pipeline(bid2, "booked", "call", next_action_at=ts(3 * 24 * 60)[:16], owner_id=b)
         db.run_website_followups(now=at(31))
         check("booked by hand on another channel: neither either",
               q(path, "SELECT COUNT(*) FROM wa_leads")[0][0] == 0 and q(path, "SELECT COUNT(*) FROM enrollments")[0][0] == 0)
+
+        print("   or moved on during the wait (review item 5)")
+        for i, stage in enumerate(("not_interested", "won", "replied", "proposal_due")):
+            # Each its own domain: the matcher treats a shared company domain
+            # as the same business.
+            mid = enquire(db, path, f"hello@moved{i}.co.uk", business=f"Moved Clinic {i}", phone=f"07700 90080{i}")
+            db.set_business_pipeline(mid, stage, "email", owner_id=b)
+        db.run_website_followups(now=at(31))
+        check("Not interested, Won, Replied, Proposal due within the wait: no WhatsApp, no email",
+              q(path, "SELECT COUNT(*) FROM wa_leads")[0][0] == 0 and q(path, "SELECT COUNT(*) FROM enrollments")[0][0] == 0)
+        check("those were four separate leads",
+              len({q(path, "SELECT business_id FROM website_enquiries WHERE email=?", (f"hello@moved{i}.co.uk",))[0][0]
+                   for i in range(4)}) == 4)
+        still = enquire(db, path, "hello@still.co.uk", business="Still Enquired", phone="07700 900900")
+        db.run_website_followups(now=at(31))
+        check("one still on 'Enquired on the website' is followed up",
+              q(path, "SELECT COUNT(*) FROM wa_leads WHERE business_id=?", (still,))[0][0] == 1)
 
         print("\n4. A SUPPRESSED ADDRESS GETS NO EMAIL")
         db, path, a, b, email_camp, wa = setup(work, "suppressed.db")
@@ -134,8 +152,9 @@ def main():
         check("no enrolment for an address that bounced", q(path, "SELECT COUNT(*) FROM enrollments")[0][0] == 0)
         check("its WhatsApp follow-up still happens (it gave a number)",
               q(path, "SELECT COUNT(*) FROM wa_leads WHERE business_id=?", (bid,))[0][0] == 1)
-        db.unsubscribe_contact("stop@clinic.co.uk")
-        enquire(db, path, "stop@clinic.co.uk", business="Stop Clinic", phone="07700 900444")
+        db.unsubscribe_contact("hello@stopclinic.co.uk")
+        stop = enquire(db, path, "hello@stopclinic.co.uk", business="Stop Clinic", phone="07700 900444")
+        check("(a separate lead from the bounced one)", stop != bid)
         db.run_website_followups(now=at(31))
         check("an unsubscribed address: no email, and no WhatsApp either (do not contact)",
               q(path, "SELECT COUNT(*) FROM enrollments")[0][0] == 0
