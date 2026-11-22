@@ -20,8 +20,6 @@ import email as emaillib
 import email.message
 import email.utils
 import re
-import time
-import random
 import secrets
 import datetime
 import hashlib
@@ -29,7 +27,6 @@ import hmac
 import base64
 import json
 import logging
-from typing import Optional
 
 import db
 

@@ -21,7 +21,6 @@ import hmac
 import logging
 import os
 import secrets as _secrets
-import sys
 import threading
 import time as _time
 from collections import defaultdict, deque
@@ -30,7 +29,7 @@ from functools import wraps
 from urllib.parse import urlparse
 from flask import (
     Flask, render_template, request, jsonify,
-    redirect, url_for, make_response, Response, session, abort, g
+    redirect, make_response, Response, session, abort, g
 )
 
 import audit

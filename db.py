@@ -17,7 +17,6 @@ import phonenumbers
 import hashlib
 import hmac as _hmac
 import os as _os
-from pathlib import Path
 
 logger = logging.getLogger("db")
 
