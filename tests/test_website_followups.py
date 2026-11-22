@@ -97,6 +97,10 @@ def main():
               enrol == [(email_camp, "queued", ts(24 * 60))], str(enrol))
         check("marked queued", q(path, "SELECT followup_queued_at FROM website_enquiries") == [(ts(31),)])
         db.run_website_followups(now=at(90))
+        db.record_website_enquiry(db.clean_website_enquiry({
+            "site": "hexiv.co.uk", "name": "Pat Person", "email": "pat@clinic.co.uk", "summary": "posted again"}))
+        check("a repeat post of the form doesn't end the follow-up email it started",
+              q(path, "SELECT status FROM enrollments") == [("queued",)])
         check("run twice, queued once",
               q(path, "SELECT COUNT(*) FROM wa_leads")[0][0] == 1 and q(path, "SELECT COUNT(*) FROM enrollments")[0][0] == 1
               and q(path, "SELECT followup_queued_at FROM website_enquiries") == [(ts(31),)])

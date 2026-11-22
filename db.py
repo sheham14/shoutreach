@@ -9444,6 +9444,13 @@ def file_website_enquiry(enquiry_id: int):
                      (batch, bid, 1 if bid > newest else 0))
         conn.execute("UPDATE website_enquiries SET owner_id=?, business_id=?, updated_at=datetime('now') "
                      "WHERE id=?", (owner, bid, enquiry_id))
+        if first_filing and bid <= newest:
+            # A business its owner already held, perhaps mid-sequence: they
+            # have just asked to talk, so the cold emails stop (review of
+            # Plan 2, item 6) -- as the other operator's copy's already do.
+            # First filing only: a repeat post mustn't end the website
+            # follow-up (package 4) this enquiry itself started.
+            _end_email_enrolments(conn, bid)
         stage = conn.execute("SELECT pipeline_stage FROM businesses WHERE id=?", (bid,)).fetchone()
     if stage and not stage["pipeline_stage"]:
         set_business_pipeline(bid, "enquired", "website", owner_id=owner)
