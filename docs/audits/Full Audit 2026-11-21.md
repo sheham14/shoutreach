@@ -19,7 +19,7 @@ build it in.
 | | |
 |---|---|
 | Fix-now items (§2) | 18 of 19 done: 16 by Plan 1 (2026-11-21); 12 and 13 (F-23, F-24) by Plan 2 package 5. All deployed 2026-11-22. Open: 7 (B-24, backups — the operator's job, no code) |
-| Front-end findings (§3) | 10 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5). All deployed 2026-11-22 |
+| Front-end findings (§3) | 15 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5), all deployed 2026-11-22. F-3, F-4, F-7, F-29, F-38 (Plan 3 package 1, branch `plan-3-redesign-phase-1`, not deployed). F-5 partly done (tokens exist; type and layers applied) |
 | Design direction (§4) | agreed in mockup form on 2026-11-21 ("the mockups look good"); mark saved as `static/img/hexiv-mark.svg` |
 | Back-end findings (§5–§6) | 10 of 31 done: B-1, B-2 (first half: owners on log lines still open), B-3, B-6, B-9, B-10, B-14, B-15, B-22, B-23 |
 | Zoho booking retired (§1, Plan 2 package 8, deployed 2026-11-22) | The Zoho parts of B-7, B-8, B-13 and B-17 are closed and marked in place. Each finding stays open for its other parts, so none is counted as done above |
@@ -211,10 +211,29 @@ is green, Calling is blue, WhatsApp is purple
 and WhatsApp — a green brand — is purple. A colour that means four things
 means nothing.
 
+> ✅ **RESOLVED** — Plan 3, package 1 (`204b017`). The three channel classes
+> are plain text (`--text`); blue and purple are gone from the app
+> (`.badge-blue`, `.pill.purple` and the like now draw neutral until package
+> 2 merges the tag styles). Green is split: `--accent` (teal) for the primary
+> button, selection, active tab and chip, focus; `--success` for sent,
+> replied, booked and progress. Checked: no `--green`, `--blue` or `--purple`
+> left in css, scripts or templates (grep); walk-throughs at 1440×900 and
+> 390×844 on the harness.
+
 **F-4 · The sign-in page has its own look. (Low)** It carries its own
 109-line stylesheet and a blue button, while the app's main button is green
 ([login.html](../../templates/login.html)). The first screen anyone sees
 doesn't match the second.
+
+> ✅ **RESOLVED** — Plan 3, package 1 (`204b017`). `login.html` links
+> `main.css` and has no stylesheet of its own; its button and fields are the
+> app's. To make that possible, `/static/css/`, `/static/img/` and
+> `/static/fonts/` load without a session (`_is_public_static` in `app.py`);
+> `/static/js/` stays private. Checked: `tests/test_security.py` section 8
+> (the three folders answer 200 signed out; `app.js` and nine climbing paths
+> such as `/static/css/../js/app.js` do not; every `/api/` route answers as
+> before), and the sign-in shots at both widths. The mark replaces the ◈ and
+> "Powered by Hexiv" in package 3.
 
 ### 3.2 The system underneath
 
@@ -232,6 +251,16 @@ One screen shows the result: Calling → To do on a phone has **ten** text
 sizes visible at once; WhatsApp → To do has eight. Sizes half a pixel apart
 (12, 12.5, 13, 13.5) can't be told apart by eye but still stop things lining
 up.
+
+> ◐ **PARTLY DONE** — Plan 3, package 1 (`204b017`). Tokens for all four
+> exist on `:root` in `main.css`: type `--fs-xs` to `--fs-xl` (12, 13, 14,
+> 16, 20, 28; base 15 on a phone), space `--sp-1` to `--sp-6` (4 to 32),
+> radius `--r-control` / `--r-card` / `--r-round`, and named layers
+> (`--z-sticky`, `--z-sheet`, `--z-fullscreen`, `--z-menu`, `--z-window`,
+> `--z-toast`). Every z-index and every font size in `main.css` now uses
+> them (the 36 px empty-state emoji goes with package 3). Spacing and radius
+> are applied with the controls in package 2. Sizes written inline in the
+> scripts and templates go screen by screen in later phases.
 
 **F-6 · Four designs for one job. (Medium)** A small coloured label is a
 `badge`, a `pill`, a `chip` or a tab `count`, each with its own size, border
@@ -254,6 +283,15 @@ references. So a change of palette reaches most of the app from one place.
   hand as the old colours at low strength (`rgba(0,232,122,.12)` and the
   like): 46 in the stylesheet, 21 more in the scripts and templates. Those
   won't follow a variable and have to be replaced with tint variables.
+
+> ✅ **RESOLVED** — Plan 3, package 1 (`204b017`). Both catches done before
+> the palette went in. `--green` is gone, each use given `--accent` or
+> `--success` (the list is in the Plan 3 build log). Every hand-written tint
+> is a token (`--accent-tint`, `--success-soft`, `--warning-soft`,
+> `--danger-soft`, their `-edge` forms, `--neutral-soft`, `--scrim`,
+> `--shadow`). Checked by grep: `main.css` has no `rgba(` outside a token
+> definition and none of `#00e87a`, `#4da6ff`, `#a78bfa`, `#080c10`; no old
+> colour name is defined or used anywhere.
 
 **F-8 · Leftovers.** Styles nothing uses: the scheduler status pill and its
 pulsing animation, and the `.seg` three-way switch
@@ -452,6 +490,11 @@ See [desktop-dashboard.png](evidence-2026-11-21/desktop-dashboard.png) and
 Mono, whose zero has a slash through it. At a glance "0" reads as "8" or
 "θ" — on the one screen whose job is to be read at a glance.
 
+> ✅ **RESOLVED** — Plan 3, package 1 (`204b017`). Large numbers, stat values
+> and counts are Inter with tabular figures (`.tnum`); the coding font is
+> kept for code only (placeholders, keys, terminal commands, the raw
+> database viewer). Checked in the Dashboard shots at both widths.
+
 #### Email
 
 **F-20 · Two "Done" buttons on every To do row. (Medium · fix-now 9)** The
@@ -575,6 +618,14 @@ cards and 3.8 : 1 on fields. The accepted floor for small text is 4.5 : 1,
 and this grey is mostly used at 11–12.5 px. Field borders measure 1.2–1.5 : 1,
 so boxes are barely visible against the page; the floor for a control's
 outline is 3 : 1.
+
+> ✅ **RESOLVED** — Plan 3, package 1 (`204b017`). Secondary text is
+> `--text-2` `#a3b8be`: 8.94 : 1 on the page, 8.32 on cards, 7.55 on fields.
+> The faintest grey, `--text-3` `#6d8890` (4.91 and 4.57), is used only on
+> the page and cards, where it passes; it would fail on fields (4.14) and
+> isn't used there. Field and tick-box edges are `--line-strong` `#5b7880`:
+> 3.30 : 1 against fields, 3.64 against cards. Checked by computing the WCAG
+> ratios from the token values.
 
 **F-39 · Most tap targets are under size. (High)** The comfortable minimum
 for a finger is 44 px. Measured on a 390 px screen:

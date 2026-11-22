@@ -24,6 +24,10 @@ is left.
      `docs/plans/plan-3-shots/<stage>/` for the hand-back.
 5. Suite: `for f in tests/test_*.py; do python "$f" >/dev/null 2>&1 || echo "FAIL $f"; done`
    (each test points DB_PATH at its own scratch file).
+6. **On the operator's Windows machine** (sessions from 2026-11-22 evening):
+   Python 3.13, Playwright 1.59.0 with its own Chromium (`chromium-1217`
+   under `%LOCALAPPDATA%\ms-playwright`) already work. Don't install 1.63.0
+   there; that step is for the container only.
 
 ## Branch base
 
@@ -35,7 +39,7 @@ merged; `docs/plans/README.md` has the Status column).
 | Package | What | State | Commit |
 |---|---|---|---|
 | 0 | Walk-throughs point at Meetings; "before" shots | done | `0bae7f7` |
-| 1 | Tokens, fonts, sign-in page | code done; audit/Handover marking left | see log |
+| 1 | Tokens, fonts, sign-in page | done | `204b017` (code), audit marked after |
 | 2 | Controls | not started | |
 | 3 | Icons and the mark | not started | |
 | 4 | Dialogs, dates, wording | not started | |
@@ -130,3 +134,15 @@ outside token definitions):
 Then packages 2, 3, 4 in order, as the plan says. After each: suite,
 `shoot.py` for the three plans, `keep_shots.py <n-name>`, log entry, commit,
 push. Hand-back at the end per the plan's "Hand-back" section.
+
+### Package 1 — paperwork done (Windows session, 2026-11-22)
+
+- Re-checked before marking: no old colour or old token name anywhere in css,
+  scripts or templates; no `rgba(` outside token definitions; no Google Fonts
+  or Space Grotesk; contrast recomputed from the token values (same figures
+  as above).
+- Audit: F-3, F-4, F-7, F-29, F-38 marked `✅ RESOLVED` in place; F-5 marked
+  partly done (tokens exist; type sizes and layers applied; space and radius
+  with package 2). Status block: 15 of 43 front-end findings.
+- Handover §6: the deploy check now says only `/static/js/` needs a login.
+  §8: a paragraph on `tests/test_security.py` section 8.

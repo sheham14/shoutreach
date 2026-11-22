@@ -950,8 +950,10 @@ at computer and phone size against the same fake Zoho.
   succeeds even if the app crashes a moment later. Check that
   `https://shoutreach.hexiv.co/login` returns **200** and `/api/users/me`
   returns **401**; a **502** means startup failed, most likely in `init_db`.
-  `/static/*` needs a login (302), so it can't prove new code shipped — the
-  run log's `git pull` line (`Updating <old>..<new>`) can.
+  `/static/js/*` needs a login (302), so it can't prove new code shipped — the
+  run log's `git pull` line (`Updating <old>..<new>`) can. (Since Plan 3,
+  `/static/css/`, `/static/img/` and `/static/fonts/` load signed out, for
+  the sign-in page; a changed `main.css` is visible there.)
 - **Deploy SSH key:** ed25519. The public half is in the Cloud Console under
   **VM → Edit → SSH Keys** (username `sheham_shahid`); the private half exists
   only in the GitHub secret `SSH_PRIVATE_KEY`. On 2026-09-15 the old,
@@ -1062,6 +1064,15 @@ for f in tests/test_*.py; do python "$f"; done
 `test_zoho_calendar.py`). `test_rendering.py` once
 failed with "database is locked" mid-suite and passed on its own and on a
 re-run — watch for it.
+
+`tests/test_security.py` section 8 pins the one thing a signed-out visitor
+can reach besides `/login` (Plan 3 package 1, `_is_public_static` in
+`app.py`): a file under `/static/css/`, `/static/img/` or `/static/fonts/`
+answers 200, so the sign-in page can use `main.css`, the fonts and the mark.
+`/static/js/app.js` and every path that climbs out of those folders
+(`/static/css/../js/app.js`, encoded dots, backslashes) still redirect to
+sign-in, and every `/api/` route and method answers exactly as it does with
+the rule switched off. A prefix-only rule fails it.
 
 `tests/test_pipeline.py` covers stages (§5a/§5c): the built-ins and inventing
 your own, one stage read from all three channels, the cadence stopping on set
