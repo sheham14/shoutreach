@@ -2,7 +2,7 @@
 <div class="modal-overlay" id="modal-new-campaign">
   <div class="modal">
     <button class="modal-close" onclick="closeModal('modal-new-campaign')" aria-label="Close">{{ icon('x', 20) }}</button>
-    <h2>New Campaign</h2>
+    <h2>New campaign</h2>
     <div class="form-group"><label>Campaign name</label><input id="nc-name" placeholder="Clinic Outreach – Toronto" /></div>
     <div class="form-grid">
       <div class="form-group"><label>Daily email limit</label><input id="nc-limit" type="number" value="30" min="1" max="500" /><div class="form-hint">Start low while warming up (10–30/day)</div></div>
@@ -19,7 +19,7 @@
     </div>
     <div class="form-group"><label>Max delay between sends (sec)</label><input id="nc-maxdelay" type="number" value="120" /></div>
     <div class="flex gap-2">
-      <button class="btn btn-primary" onclick="createCampaign()">Create Campaign</button>
+      <button class="btn btn-primary" onclick="createCampaign()">Create campaign</button>
       <button class="btn btn-ghost" onclick="closeModal('modal-new-campaign')">Cancel</button>
     </div>
   </div>

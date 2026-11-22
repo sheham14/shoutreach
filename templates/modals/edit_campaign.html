@@ -2,7 +2,7 @@
 <div class="modal-overlay" id="modal-edit-campaign">
   <div class="modal">
     <button class="modal-close" onclick="closeModal('modal-edit-campaign')" aria-label="Close">{{ icon('x', 20) }}</button>
-    <h2>Campaign Settings</h2>
+    <h2>Campaign settings</h2>
     <div class="form-group"><label>Campaign name</label><input id="ec-name" placeholder="My Campaign" /></div>
     <div class="form-grid">
       <div class="form-group"><label>Daily email limit</label><input id="ec-limit" type="number" min="1" max="500" /><div class="form-hint">Start low while warming up (10–30/day)</div></div>
@@ -39,7 +39,7 @@
       <label>Campaign variables</label>
       <div class="form-hint" style="margin-bottom:8px">Key-value pairs available as <code>{{variable_name}}</code> in this campaign's email templates. Can be overridden per-contact via CSV custom columns.</div>
       <div id="ec-vars-list" style="display:flex;flex-direction:column;gap:6px"></div>
-      <button type="button" class="btn btn-ghost btn-sm" onclick="addCampaignVar()" style="margin-top:8px">+ Add Variable</button>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="addCampaignVar()" style="margin-top:8px">+ Add variable</button>
     </div>
     <div class="flex gap-2" style="margin-top:16px">
       <button class="btn btn-primary" onclick="saveCampaignSettings()">Save Settings</button>

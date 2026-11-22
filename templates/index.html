@@ -59,7 +59,7 @@
 <div class="modal-overlay" id="modal-add-user">
   <div class="modal" style="max-width:380px">
     <button class="modal-close" onclick="closeModal('modal-add-user')" aria-label="Close">{{ icon('x', 20) }}</button>
-    <h2 id="user-modal-title">Add User</h2>
+    <h2 id="user-modal-title">Add a user</h2>
     <div class="form-group">
       <label>Username</label>
       <input id="new-user-username" placeholder="cofounder" autocomplete="off" />
@@ -82,7 +82,7 @@
       </div>
     </div>
     <div class="flex gap-2">
-      <button class="btn btn-primary" onclick="saveNewUser()">Create User</button>
+      <button class="btn btn-primary" onclick="saveNewUser()">Create user</button>
       <button class="btn btn-ghost" onclick="closeModal('modal-add-user')">Cancel</button>
     </div>
   </div>
@@ -91,7 +91,7 @@
 <div class="modal-overlay" id="modal-change-password">
   <div class="modal" style="max-width:380px">
     <button class="modal-close" onclick="closeModal('modal-change-password')" aria-label="Close">{{ icon('x', 20) }}</button>
-    <h2>Change Password</h2>
+    <h2>Change password</h2>
     <p class="text-muted text-small" style="margin-bottom:16px">for <strong id="chpw-username"></strong></p>
     <input type="hidden" id="chpw-uid" />
     <div class="form-group" id="chpw-current-group">
@@ -104,7 +104,7 @@
       <input id="chpw-password" type="password" autocomplete="new-password" placeholder="Min 12 characters" />
     </div>
     <div class="flex gap-2">
-      <button class="btn btn-primary" onclick="submitChangePassword()">Save Password</button>
+      <button class="btn btn-primary" onclick="submitChangePassword()">Save password</button>
       <button class="btn btn-ghost" onclick="closeModal('modal-change-password')">Cancel</button>
     </div>
   </div>

@@ -418,6 +418,17 @@ function chooseDialog({ title, body, confirm = 'OK', danger = false, collect = (
   return new Promise(resolve => { _chooseResolve = resolve; });
 }
 
+// A yes/no question in the same dialog, for what used to be confirm() (audit
+// F-37, Plan 3 package 4). `text` is plain and escaped here; a blank line
+// starts a new paragraph. `html` is used as-is instead -- escape what goes in
+// it. danger: true draws the confirm button solid red, for deleting things.
+// Resolves true for yes, null for no / Cancel / the close button.
+function confirmDialog({ title, text = '', html = '', confirm = 'OK', danger = false }) {
+  const body = html || String(text).split(/\n\s*\n/).map(p =>
+    `<p class="dialog-p">${esc(p.trim()).replace(/\n/g, '<br>')}</p>`).join('');
+  return chooseDialog({ title, body, confirm, danger });
+}
+
 function chooseConfirm() {
   const value = _chooseCollect ? _chooseCollect() : true;
   if (value === undefined || value === null || value === false) return;  // collect() showed why

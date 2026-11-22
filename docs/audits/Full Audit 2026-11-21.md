@@ -19,7 +19,7 @@ build it in.
 | | |
 |---|---|
 | Fix-now items (§2) | 18 of 19 done: 16 by Plan 1 (2026-11-21); 12 and 13 (F-23, F-24) by Plan 2 package 5. All deployed 2026-11-22. Open: 7 (B-24, backups — the operator's job, no code) |
-| Front-end findings (§3) | 19 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5), all deployed 2026-11-22. Plan 3 (branch `plan-3-redesign-phase-1`, not deployed): F-3, F-4, F-7, F-29, F-38 (package 1); F-6, F-35 (package 2); F-1, F-2 (package 3). Partly done: F-5, F-8, F-11, F-27, F-31, F-37, F-39, F-40 |
+| Front-end findings (§3) | 20 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5), all deployed 2026-11-22. Plan 3 (branch `plan-3-redesign-phase-1`, not deployed): F-3, F-4, F-7, F-29, F-38 (package 1); F-6, F-35 (package 2); F-1, F-2 (package 3); F-37 (package 4). Partly done: F-5, F-8, F-11, F-27, F-31, F-39, F-40 |
 | Design direction (§4) | agreed in mockup form on 2026-11-21 ("the mockups look good"); mark saved as `static/img/hexiv-mark.svg` |
 | Back-end findings (§5–§6) | 10 of 31 done: B-1, B-2 (first half: owners on log lines still open), B-3, B-6, B-9, B-10, B-14, B-15, B-22, B-23 |
 | Zoho booking retired (§1, Plan 2 package 8, deployed 2026-11-22) | The Zoho parts of B-7, B-8, B-13 and B-17 are closed and marked in place. Each finding stays open for its other parts, so none is counted as done above |
@@ -563,7 +563,7 @@ it, and Activate sits right next to delete.
 > ◐ **PARTLY DONE** — Plan 3, package 2 (`6033e43`). The red-outlined ✕ on every row is a quiet
 > icon button that turns red only on hover; "Remove selected" fades while
 > nothing is ticked; "Activate" on each campaign card is secondary. Title
-> Case goes with package 4; campaigns as a table and the header are layout.
+> Case done in package 4; campaigns as a table and the header are layout.
 
 **F-43 · Leads tables need sideways scrolling on a laptop. (Medium)** At
 1280 px wide, Email → Leads is 407 px wider than its card and Calling → Leads
@@ -658,11 +658,17 @@ still use the browser's own grey pop-up
 the app's own dialog — so "are you sure?" looks different depending on where
 you are.
 
-> ◐ **PARTLY DONE** — Plan 3, package 3. Symbols in button labels are icons from the
-> one set (⬆ ⬇ ⏹ ▶ ⏸ ✓ ✕ ⚙ ⊞ ↻ ✎ ⋯ ⟳ ⎋ ← → ↗ and the rest); icon-only
-> buttons have an `aria-label`. The Activity log's stored symbols stay
-> (they are data written by `db.add_log`). Confirmations and Title Case are
-> package 4.
+> ✅ **RESOLVED** — Plan 3, packages 3 and 4. Symbols in button labels are
+> icons from the one set (⬆ ⬇ ⏹ ▶ ⏸ ✓ ✕ ⚙ ⊞ ↻ ✎ ⋯ ⟳ ⎋ ← → ↗ and the rest);
+> icon-only buttons have an `aria-label` (package 3). The fifteen
+> `confirm()` calls and the one `alert()` are the app's own dialog
+> (`confirmDialog`, a wrapper over `chooseDialog`), destructive ones with a
+> solid red confirm; button labels and window titles are in sentence case
+> ("Add account", "Save rules", "Create campaign") (package 4). The Activity
+> log's stored symbols stay: they are data written by `db.add_log`.
+> Checked: no `confirm(` or `alert(` left in the scripts or templates
+> (grep), and all eleven reachable confirmations opened on the harness as
+> the app's dialog with no browser pop-up.
 
 ### 3.6 Reach, touch and legibility (measured)
 

@@ -86,7 +86,11 @@ async function loadCampaigns() {
 }
 
 async function deleteCampaign(id, name) {
-  if (!confirm(`Delete campaign "${name}"?\n\nThis will permanently remove the campaign, all its steps, enrollments, and send history.`)) return;
+  if (!await confirmDialog({
+    title: `Delete campaign "${name}"?`,
+    text: 'This permanently removes the campaign, all its steps, enrollments and send history.',
+    confirm: 'Delete campaign', danger: true,
+  })) return;
   await api(`/api/campaigns/${id}`, 'DELETE');
   toast('Campaign deleted');
   loadCampaigns();
@@ -445,20 +449,28 @@ function _updateRemoveSelectedBtn() {
   if (!btn) return;
   const n = enrollSelectedIds.size;
   btn.disabled = n === 0;
-  btn.innerHTML = `${icon('x', { size: 14 })} Remove Selected${n > 0 ? ` (${n})` : ''}`;
+  btn.innerHTML = `${icon('x', { size: 14 })} Remove selected${n > 0 ? ` (${n})` : ''}`;
 }
 
 async function removeSelectedEnrolled() {
   const n = enrollSelectedIds.size;
   if (!n) return;
-  if (!confirm(`Remove ${n} contact${n > 1 ? 's' : ''} from this campaign?`)) return;
+  if (!await confirmDialog({
+    title: `Remove ${n} contact${n > 1 ? 's' : ''} from this campaign?`,
+    text: 'Anything already sent stays in their history.',
+    confirm: 'Remove', danger: true,
+  })) return;
   await Promise.all([...enrollSelectedIds].map(id => api(`/api/enrollments/${id}`, 'DELETE')));
   toast(`Removed ${n} contact${n > 1 ? 's' : ''}`);
   openCampaign(currentCampaignId);
 }
 
 async function unenrollContact(enrollId) {
-  if (!confirm('Remove this contact from the campaign?')) return;
+  if (!await confirmDialog({
+    title: 'Remove this contact from the campaign?',
+    text: 'Anything already sent stays in their history.',
+    confirm: 'Remove', danger: true,
+  })) return;
   await api(`/api/enrollments/${enrollId}`, 'DELETE');
   toast('Contact removed');
   openCampaign(currentCampaignId);
@@ -487,7 +499,7 @@ function _clearStepModal() {
 function addStepUI() {
   const steps = document.querySelectorAll('.step-card');
   const nextNum = steps.length + 1;
-  document.getElementById('step-modal-title').textContent = `Add Step ${nextNum}`;
+  document.getElementById('step-modal-title').textContent = `Add step ${nextNum}`;
   document.getElementById('step-num-input').value = nextNum;
   document.getElementById('step-delay').value = nextNum === 1 ? 0 : 3;
   _clearStepModal();
@@ -499,7 +511,7 @@ async function editStep(stepNum) {
   const steps = await api(`/api/campaigns/${currentCampaignId}/steps`);
   const s = steps.find(x => x.step_num === stepNum);
   if (!s) return;
-  document.getElementById('step-modal-title').textContent = `Edit Step ${stepNum}`;
+  document.getElementById('step-modal-title').textContent = `Edit step ${stepNum}`;
   document.getElementById('step-num-input').value = stepNum;
   document.getElementById('step-delay').value     = s.delay_days;
   document.getElementById('step-subject').value   = s.subject;
@@ -570,12 +582,14 @@ async function saveStep() {
       ? `  {{${g.key}}} — empty for ALL ${g.total} contacts`
       : `  {{${g.key}}} — empty for ${g.missing} of ${g.total} contacts`);
     const suggestion = `{{${gaps[0].key}|${_FALLBACK_SUGGESTIONS[gaps[0].key] || 'there'}}}`;
-    const ok = confirm(
-      `These variables have no fallback and are missing for some contacts:\n\n`
-      + lines.join('\n')
-      + `\n\nThose emails will send a blank where the value should be.\n`
-      + `Add a fallback like ${suggestion} to fix it.\n\nSave anyway?`
-    );
+    const ok = await confirmDialog({
+      title: 'Some contacts are missing these values',
+      html: `<p class="dialog-p">These variables have no fallback:</p>
+        <ul class="dialog-list">${lines.map(l => `<li class="mono">${esc(l.trim())}</li>`).join('')}</ul>
+        <p class="dialog-p">Those emails will send a blank where the value should be. Add a fallback
+        like <span class="mono">${esc(suggestion)}</span> to fix it.</p>`,
+      confirm: 'Save anyway',
+    });
     if (!ok) return;
   }
 
@@ -588,7 +602,11 @@ async function saveStep() {
 }
 
 async function deleteStep(stepNum) {
-  if (!confirm(`Delete step ${stepNum}?`)) return;
+  if (!await confirmDialog({
+    title: `Delete step ${stepNum}?`,
+    text: 'Its subject, body and versions are removed from the sequence.',
+    confirm: 'Delete step', danger: true,
+  })) return;
   await api(`/api/campaigns/${currentCampaignId}/steps/${stepNum}`, 'DELETE');
   toast('Step deleted');
   openCampaign(currentCampaignId);
@@ -1081,7 +1099,7 @@ async function openAIReview() {
       ${_aiRewrite.subject ? `<div style="font-size:12px;margin-bottom:4px"><span style="color:var(--text-2)">Subject:</span> ${esc(_aiRewrite.subject)}</div>` : ''}
       ${_aiRewrite.body ? `<div style="font-size:12px;color:var(--text-2);white-space:pre-wrap;max-height:240px;overflow-y:auto;border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin-top:4px">${esc(_aiRewrite.body)}</div>` : ''}
       <div class="flex gap-2" style="margin-top:10px">
-        <button class="btn btn-primary btn-sm" onclick="applyAIRewrite()">Apply Rewrite</button>
+        <button class="btn btn-primary btn-sm" onclick="applyAIRewrite()">Apply rewrite</button>
         <button class="btn btn-ghost btn-sm" onclick="dismissAIRewrite()">Dismiss</button>
       </div>
     </div>` : '';

@@ -2,7 +2,7 @@
 <div class="modal-overlay" id="modal-step">
   <div class="modal" style="max-width:640px">
     <button class="modal-close" onclick="closeModal('modal-step')" aria-label="Close">{{ icon('x', 20) }}</button>
-    <h2 id="step-modal-title">Edit Step</h2>
+    <h2 id="step-modal-title">Edit step</h2>
     <input type="hidden" id="step-num-input" />
     <div class="form-group">
       <label>Delay (days since previous step)</label>
@@ -64,7 +64,7 @@
     <div style="margin:16px 0;border-top:1px solid var(--line);padding-top:16px">
       <div class="flex items-center gap-2" style="margin-bottom:12px">
         <span style="font-size:13px;font-weight:600">A/B Variants</span>
-        <button class="btn btn-ghost btn-sm" onclick="addStepVariant()">+ Add Variant</button>
+        <button class="btn btn-ghost btn-sm" onclick="addStepVariant()">+ Add variant</button>
         <span class="text-muted text-small" style="margin-left:4px" id="variant-weight-total"></span>
       </div>
       <div id="step-variants-list" style="display:flex;flex-direction:column;gap:12px"></div>
@@ -74,9 +74,9 @@
     </div>
 
     <div class="flex gap-2 items-center" style="flex-wrap:wrap">
-      <button class="btn btn-primary" onclick="saveStep()">Save Step</button>
+      <button class="btn btn-primary" onclick="saveStep()">Save step</button>
       <button class="btn btn-ghost" onclick="openStepPreview()">Preview</button>
-      <button class="btn btn-ghost" id="btn-ai-review" onclick="openAIReview()" title="Requires AI features enabled in Settings">AI Review</button>
+      <button class="btn btn-ghost" id="btn-ai-review" onclick="openAIReview()" title="Requires AI features enabled in Settings">AI review</button>
       <!-- Which arm Preview and AI Review act on. Hidden while the step has a
            single arm, since there is nothing to choose between. -->
       <select id="copy-target" onchange="dismissAIRewrite()"

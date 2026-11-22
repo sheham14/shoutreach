@@ -465,7 +465,7 @@ function auditResultsHtml(a, ctx) {
     const ssl = a.ssl || {};
     rows.push(`<div class="audit-row"><span class="k">Website</span><div>
       ${site.built_with.length ? `Built with ${esc(site.built_with.join(', '))}<br>` : ''}
-      ${_yes(site.https && ssl.valid !== false, `Secure (https)${ssl.expires ? `, certificate until ${esc(ssl.expires)}` : ''}`, ssl.problem || 'Not secure — no working https')}<br>
+      ${_yes(site.https && ssl.valid !== false, `Secure (https)${ssl.expires ? `, certificate until ${fmtWhen(ssl.expires, 'wall')}` : ''}`, ssl.problem || 'Not secure — no working https')}<br>
       ${_yes(site.mobile_viewport, 'Set up for phones', 'Not set up for phone screens')}<br>
       ${_yes(site.title && site.description, 'Title and description set', site.title ? 'No description for Google' : 'No page title')}<br>
       ${_yes(site.schema_types.length, `Structured data: ${site.schema_types.join(', ')}`, 'No structured data (helps Google and AI answers)')}
@@ -485,8 +485,10 @@ function auditResultsHtml(a, ctx) {
   if (email.ok) rows.push(`<div class="audit-row"><span class="k">Email</span><div>${esc(email.provider)}</div></div>`);
   const arch = a.archive || {};
   const dom = a.domain || {};
-  const age = [arch.first_seen && `site first seen ${arch.first_seen}`, dom.registered && `domain registered ${dom.registered}`,
-               dom.expires && `expires ${dom.expires}`].filter(Boolean);
+  // Dates from the outside checks (archive, WHOIS) are plain days.
+  const day = v => fmtWhen(v, 'wall');
+  const age = [arch.first_seen && `site first seen ${day(arch.first_seen)}`, dom.registered && `domain registered ${day(dom.registered)}`,
+               dom.expires && `expires ${day(dom.expires)}`].filter(Boolean);
   if (age.length) rows.push(`<div class="audit-row"><span class="k">Age</span><div>${esc(age.join(' · '))}</div></div>`);
   if (ctx) rows.push(ratingContextRow(ctx));
   return `<div class="audit-results">${rows.join('')}</div>

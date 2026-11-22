@@ -82,15 +82,16 @@ async function confirmChannelConflicts(res, resend) {
   // The stage comes along so you can tell "already on whatsapp, nothing has
   // happened yet" from "already on whatsapp, meeting booked" — which is the
   // difference between adding them here too and leaving well alone.
-  const lines = res.conflicts.slice(0, 8).map(c =>
-    `  ${c.business_name || 'Unnamed business'} — already on ${c.channels.join(', ')}`
-    + (c.stage ? ` · ${c.stage}` : '')
-  ).join('\n');
-  const more = res.conflicts.length > 8 ? `\n  …and ${res.conflicts.length - 8} more` : '';
-  const ok = confirm(
-    `${res.conflicts.length} of these are already on another channel:\n\n${lines}${more}\n\n` +
-    `Add them here too?`
-  );
+  const items = res.conflicts.slice(0, 8).map(c =>
+    `<li><b>${esc(c.business_name || 'Unnamed business')}</b> — already on ${esc(c.channels.join(', '))}`
+    + (c.stage ? ` · ${esc(c.stage)}` : '') + '</li>'
+  ).join('');
+  const more = res.conflicts.length > 8 ? `<li>…and ${res.conflicts.length - 8} more</li>` : '';
+  const ok = await confirmDialog({
+    title: `${res.conflicts.length} of these ${res.conflicts.length === 1 ? 'is' : 'are'} already on another channel`,
+    html: `<ul class="dialog-list">${items}${more}</ul><p class="dialog-p">Add them here too?</p>`,
+    confirm: 'Add them here too',
+  });
   if (!ok) return res;
   return resend();
 }
@@ -101,21 +102,23 @@ async function confirmChannelConflicts(res, resend) {
 // authoritative over yours, so this never blocks an import and never offers to
 // merge anything. It fires after the rows have already landed, purely so two
 // people don't turn up at the same clinic a week apart without knowing.
-function notifyCrossOwnerOverlap(res) {
+// Returns a promise: await it, so a dialog that follows doesn't replace it.
+async function notifyCrossOwnerOverlap(res) {
   const found = (res && res.overlaps) || [];
   if (!found.length) return;
-  const lines = found.slice(0, 8).map(m => {
+  const items = found.slice(0, 8).map(m => {
     const where = (m.channel_labels || []).join(', ') || 'their list';
-    const since = m.since ? `, added ${m.since}` : '';
-    return `  ${m.business_name || 'Unnamed business'} — ${m.owner_name} has this on ${where}${since}`;
-  }).join('\n');
-  const more = found.length > 8 ? `\n  …and ${found.length - 8} more` : '';
-  alert(
-    `Heads up: ${found.length} of these ${found.length === 1 ? 'is' : 'are'} ` +
-    `already on someone else's list.\n\n${lines}${more}\n\n` +
-    `They have been added to yours anyway — nothing was merged or shared. ` +
-    `This is only so you don't both approach the same business.`
-  );
+    const since = m.since ? `, added ${fmtWhen(m.since, 'wall')}` : '';
+    return `<li><b>${esc(m.business_name || 'Unnamed business')}</b> — ${esc(m.owner_name)} has this on ${esc(where)}${esc(since)}</li>`;
+  }).join('');
+  const more = found.length > 8 ? `<li>…and ${found.length - 8} more</li>` : '';
+  await chooseDialog({
+    title: `${found.length} of these ${found.length === 1 ? 'is' : 'are'} already on someone else's list`,
+    body: `<ul class="dialog-list">${items}${more}</ul>
+      <p class="dialog-p">They have been added to yours anyway — nothing was merged or shared.
+      This is only so you don't both approach the same business.</p>`,
+    confirm: 'OK',
+  });
 }
 
 // ── CSRF token bootstrap ──────────────────────────────────────────────────────

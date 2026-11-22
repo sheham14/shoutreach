@@ -650,11 +650,12 @@ async function saveCallOutcome() {
     return;
   }
   if (o && o.stops_email) {
-    const ok = confirm(
-      `Mark ${_callLead.company || 'this lead'} as "${o.label}"?\n\n` +
-      `This also stops any email sequence they're in` +
-      (o.key === 'do_not_call' ? ` and unsubscribes them.` : `.`)
-    );
+    const ok = await confirmDialog({
+      title: `Mark ${_callLead.company || 'this lead'} as "${o.label}"?`,
+      text: `This also stops any email sequence they're in` +
+            (o.key === 'do_not_call' ? ` and unsubscribes them.` : `.`),
+      confirm: `Mark as ${o.label}`,
+    });
     if (!ok) return;
   }
 
@@ -812,8 +813,11 @@ async function setOutcomeTone(key, tone) {
 }
 
 async function deleteOutcome(key) {
-  if (!confirm('Remove this outcome?\n\nIf calls already used it, it is archived '
-             + 'instead of deleted so their history stays readable.')) return;
+  if (!await confirmDialog({
+    title: 'Remove this outcome?',
+    text: 'If calls already used it, it is archived instead of deleted so their history stays readable.',
+    confirm: 'Remove', danger: true,
+  })) return;
   const res = await api(`/api/call-outcomes/${key}`, 'DELETE');
   if (!res || res.error) { toast((res && res.error) || 'Could not remove it', 'err'); return; }
   toast(res.result === 'archived' ? 'Archived — past calls keep their label' : 'Removed');

@@ -1300,7 +1300,9 @@ retired `contacts` table.
 - `scraper_worker.py`, `gmaps_email_scraper.py`, `email_validator.py` — the
   laptop worker.
 - `static/js/tables.js` — shared frontend pieces: tabs (`setTab`/`onTab`),
-  `createLeadTable` (every leads table), `chooseDialog` (replaces `prompt()`),
+  `createLeadTable` (every leads table), `chooseDialog` (replaces `prompt()`)
+  and `confirmDialog({title, text, confirm, danger})` on top of it (replaces
+  `confirm()`: there are none left; `danger` draws the confirm solid red),
   pills, `fillPlaceholders`, and **`fmtWhen(value, kind)`, the one way to
   show a time** (audit F-33): `'utc'` for database timestamps (converted to
   the viewer's time), `'wall'` for times a person typed (`next_call_at`,

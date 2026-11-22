@@ -147,7 +147,7 @@
   <div>
     <div class="flex items-center" style="margin-bottom:14px">
       <div class="card-title">Email Sequence</div>
-      <button class="btn btn-ghost btn-sm ml-auto" onclick="addStepUI()">+ Add Step</button>
+      <button class="btn btn-ghost btn-sm ml-auto" onclick="addStepUI()">+ Add step</button>
     </div>
     <div id="steps-container"></div>
   </div>
@@ -159,7 +159,7 @@
       <div class="card-title">Leads in this campaign</div>
       <div class="flex gap-2 ml-auto items-center">
         <span id="report-count" class="text-muted text-small"></span>
-        <button id="enroll-remove-selected-btn" class="btn btn-danger btn-sm" onclick="removeSelectedEnrolled()" disabled>{{ icon('x', 14) }} Remove Selected</button>
+        <button id="enroll-remove-selected-btn" class="btn btn-danger btn-sm" onclick="removeSelectedEnrolled()" disabled>{{ icon('x', 14) }} Remove selected</button>
         <button class="btn btn-ghost btn-sm" onclick="openEnrollModal()">+ Enroll</button>
         <a id="report-export-btn" class="btn btn-ghost btn-sm" href="#" target="_blank">{{ icon('download', 14) }} Export Excel</a>
       </div>
@@ -181,7 +181,7 @@
 <div class="modal-overlay" id="modal-campaign-accounts">
   <div class="modal" style="max-width:420px">
     <button class="modal-close" onclick="closeModal('modal-campaign-accounts')" aria-label="Close">{{ icon('x', 20) }}</button>
-    <h2>Assign Sending Accounts</h2>
+    <h2>Assign sending accounts</h2>
     <p class="text-muted text-small" style="margin-bottom:16px">Selected accounts will rotate round-robin for this campaign. Falls back to global SMTP settings if none selected.</p>
     <div id="campaign-account-checkboxes" style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px"></div>
     <div class="flex gap-2">

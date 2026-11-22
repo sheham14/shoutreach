@@ -356,6 +356,10 @@
     transition: color .14s;
   }
   .modal-close:hover { color: var(--text); }
+  /* confirmDialog's text (what used to be a browser confirm()). */
+  #choose-body .dialog-p { color: var(--text-2); font-size: var(--fs-base); line-height: 1.55; margin-bottom: var(--sp-3); }
+  #choose-body .dialog-p:last-child { margin-bottom: 0; }
+  #choose-body .dialog-list { margin: 0 0 var(--sp-3) var(--sp-5); font-size: var(--fs-sm); line-height: 1.6; }
 
   /* ── Step editor ─────────────────────────────────────── */
   .step-card {

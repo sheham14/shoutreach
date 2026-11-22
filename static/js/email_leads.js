@@ -201,7 +201,11 @@ async function enrollEmailLeads(ids) {
 function enrollSelectedEmailLeads() { enrollEmailLeads(LT.el.selectedIds()); }
 
 async function removeEnrollment(enrollId) {
-  if (!confirm('Take this address out of the campaign? Anything already sent stays in its history.')) return;
+  if (!await confirmDialog({
+    title: 'Take this address out of the campaign?',
+    text: 'Anything already sent stays in its history.',
+    confirm: 'Take it out', danger: true,
+  })) return;
   const res = await api(`/api/enrollments/${enrollId}`, 'DELETE');
   if (!res || res.error) { toast((res && res.error) || 'Could not remove it', 'err'); return; }
   toast('Removed from the campaign');
@@ -213,8 +217,11 @@ async function deleteSelectedContacts() {
   const ids = LT.el.selectedIds();
   if (!ids.length) return;
   const scope = ids.length > LT.el.rows.length ? ' (including some on other pages)' : '';
-  if (!confirm(`Permanently delete ${ids.length} address${ids.length > 1 ? 'es' : ''}${scope}?\n\n`
-             + `The businesses stay in Contacts. This can't be undone.`)) return;
+  if (!await confirmDialog({
+    title: `Permanently delete ${ids.length} address${ids.length > 1 ? 'es' : ''}${scope}?`,
+    text: "The businesses stay in Contacts. This can't be undone.",
+    confirm: 'Delete', danger: true,
+  })) return;
   const res = await api('/api/contacts/bulk-delete', 'POST', { ids });
   if (res && res.error) { toast(res.error, 'err'); return; }
   toast(`Deleted ${ids.length} address${ids.length > 1 ? 'es' : ''}`);
@@ -225,7 +232,11 @@ async function deleteSelectedContacts() {
 async function deleteContact(id) {
   const c = allContacts.find(x => x.id === id);
   const label = c ? (c.email || c.company || `#${id}`) : `#${id}`;
-  if (!confirm(`Delete ${label}?\n\nIt's marked deleted rather than erased, so it can be found with "Show deleted".`)) return;
+  if (!await confirmDialog({
+    title: `Delete ${label}?`,
+    text: 'It\'s marked deleted rather than erased, so it can be found with "Show deleted".',
+    confirm: 'Delete', danger: true,
+  })) return;
   await api(`/api/contacts/${id}`, 'DELETE');
   toast('Address deleted');
   LT.el.load();

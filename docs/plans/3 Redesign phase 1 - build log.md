@@ -41,8 +41,8 @@ merged; `docs/plans/README.md` has the Status column).
 | 0 | Walk-throughs point at Meetings; "before" shots | done | `0bae7f7` |
 | 1 | Tokens, fonts, sign-in page | done | `204b017` (code), audit marked after |
 | 2 | Controls | done | `6033e43` (+ `7012a05` audit) |
-| 3 | Icons and the mark | done | see log |
-| 4 | Dialogs, dates, wording | not started | |
+| 3 | Icons and the mark | done | `fc2c87e` |
+| 4 | Dialogs, dates, wording | done | see log |
 
 ## Log
 
@@ -285,3 +285,52 @@ partly done.
 - Audit: F-1, F-2 resolved; F-37 partly (confirmations and Title Case are
   package 4); F-5 note: every font size in main.css is now on the scale.
   Handover §8 (test_icons, 33 files) and §10 (where icons live).
+
+**Package 3 committed** as `fc2c87e`; suite run against that commit in a
+separate worktree before pushing.
+
+### Package 4 — dialogs, dates, wording (Windows session, 2026-11-22)
+
+- **Dialogs.** `confirmDialog({title, text | html, confirm, danger})` in
+  `tables.js` wraps `chooseDialog` (no new dialog): plain `text` is escaped,
+  a blank line starts a paragraph. All 15 `confirm()` calls and the 1
+  `alert()` replaced: Calling's stop-email outcome, remove outcome; delete
+  campaign, remove enrolled (one / selected), the step editor's missing
+  variables, delete step; take an address out, bulk delete addresses, delete
+  an address; clear logs; delete user, delete account, rotate worker key;
+  channel conflicts; and the cross-operator overlap notice (was `alert()`;
+  now `async` and awaited in both scraper.js imports, so a dialog after it
+  can't replace it). Destructive ones use `danger: true` (solid red confirm,
+  text `--bg`); the confirm button says what it does ("Delete campaign",
+  "Rotate key"). Conflict and overlap lists are `<ul>`s with every name
+  escaped. Wording of three titles tightened (the delete-account one now says
+  "sending account"; clear logs is "Clear the whole activity log?"); two got
+  a second line saying what stays ("Anything already sent stays in their
+  history.", the step's content).
+- **Checked on the harness** with a script that opens 11 of the 16 directly,
+  reads the dialog and cancels: all 11 open as `#modal-choose`, 9 with the
+  red confirm, no native dialog fired, no page error; a business name with
+  `<b>` shows literally. The other five need state set up first (remove
+  selected enrolled, bulk delete addresses, delete one address, the step
+  editor's missing variables, Calling's stop-email outcome): read, and
+  parsed by `node --check`, not driven.
+- **Dates.** Left outside `fmtWhen` after Plan 1: the Activity log
+  (`created_at` chopped to 19 characters, in UTC) — now "Today 6:16 pm";
+  the overlap notice's "added 2026-11-20"; the audit's certificate expiry,
+  archive first-seen and domain registered/expires dates (plain days,
+  `'wall'`). Still raw on purpose: CSV export values and the date picker's
+  value (they must be machine-readable), and `utcNow()`'s stored timestamp.
+- **Wording.** Button labels and window titles in sentence case: Create
+  user, Save password, Change password, Save account, Add an email account,
+  Edit account, Save contact, Add contact, Campaign settings, Add variable,
+  Enroll contacts / selected / all active, New campaign, Create campaign,
+  Email preview, Edit step / Add step N, Add variant, Save step, AI review,
+  Remove selected, Assign sending accounts, Add account, Save rules, Add
+  user, Apply rewrite. Proper names kept (WhatsApp, Google Maps, CSV,
+  Excel). The Help page's prose still names some of them in Title Case
+  ("Remove Selected"); left, it's content.
+- Walk-throughs: desktop-1, desktop-2, phone-1 `TOTAL PROBLEMS: 0`. Shots in
+  `docs/plans/plan-3-shots/4-dialogs/` (the screens look as in package 3;
+  the changes are in dialogs and labels).
+- Audit: F-37 resolved; F-31's Title Case part done. Handover §10:
+  `confirmDialog`.

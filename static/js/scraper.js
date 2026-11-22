@@ -380,7 +380,7 @@ async function _importToWhatsApp(rows, upload, source, country, campaignId) {
       rows: first.conflicts.map(c => c.row), country, wa_campaign_id: campaignId, confirm_conflicts: true,
       batch_id: first.batch_id || null, source,
     }));
-  notifyCrossOwnerOverlap(first);
+  await notifyCrossOwnerOverlap(first);
   const inserted = (first.inserted || 0) + (final !== first ? (final.inserted || 0) : 0);
   return {
     text: `${inserted} lead${inserted === 1 ? '' : 's'} on WhatsApp, ready to send`
@@ -398,7 +398,7 @@ async function _importToContacts(rows, upload, source, dest, campaignId) {
       rows: first.conflicts.map(c => c.row), confirm_conflicts: true,
       batch_id: first.batch_id || null, source, channel,
     }));
-  notifyCrossOwnerOverlap(first);
+  await notifyCrossOwnerOverlap(first);
   const ids = [...(first.business_ids || []), ...(final !== first ? (final.business_ids || []) : [])];
   const batch = first.batch_id || (final && final.batch_id);
   const inv = (first.invalid_mx || 0) + (final !== first ? (final.invalid_mx || 0) : 0);

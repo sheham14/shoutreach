@@ -411,7 +411,11 @@ async function submitChangePassword() {
 }
 
 async function deleteUser(uid, username) {
-  if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+  if (!await confirmDialog({
+    title: `Delete user "${username}"?`,
+    text: 'This cannot be undone.',
+    confirm: 'Delete user', danger: true,
+  })) return;
   const res = await api(`/api/users/${uid}`, "DELETE");
   // Refused while they still own leads or campaigns — say so rather than
   // reporting success and leaving the account sitting there.
@@ -478,7 +482,7 @@ async function toggleAccountStatus(id, currentlyPaused) {
 function openAddAccountModal() {
   _accountEditId = null;
   document.getElementById("account-modal-title").textContent =
-    "Add Email Account";
+    "Add an email account";
   [
     "acct-name",
     "acct-email",
@@ -520,7 +524,7 @@ async function openEditAccountModal(id) {
   const a = accounts.find((x) => x.id === id);
   if (!a) return;
   _accountEditId = id;
-  document.getElementById("account-modal-title").textContent = "Edit Account";
+  document.getElementById("account-modal-title").textContent = "Edit account";
   document.getElementById("acct-name").value = a.name || "";
   document.getElementById("acct-email").value = a.email || "";
   document.getElementById("acct-from-name").value = a.from_name || "";
@@ -576,8 +580,11 @@ async function saveAccount() {
 }
 
 async function deleteAccount(id) {
-  if (!confirm("Delete this account? It will be removed from all campaigns."))
-    return;
+  if (!await confirmDialog({
+    title: 'Delete this sending account?',
+    text: 'It is removed from every campaign that uses it.',
+    confirm: 'Delete account', danger: true,
+  })) return;
   await api(`/api/accounts/${id}`, "DELETE");
   toast("Account deleted");
   loadAccounts();
@@ -708,7 +715,11 @@ async function copyWorkerKey() {
 }
 
 async function rotateWorkerKey() {
-  if (!confirm('Rotate your worker key?\n\nYour worker will stop being able to connect until you give it the new key. Only your worker is affected.')) return;
+  if (!await confirmDialog({
+    title: 'Rotate your worker key?',
+    text: 'Your worker will stop being able to connect until you give it the new key. Only your worker is affected.',
+    confirm: 'Rotate key', danger: true,
+  })) return;
   const res = await api('/api/settings/worker-key', 'POST');
   const input = document.getElementById('cfg-worker-key');
   input.type = 'text';
