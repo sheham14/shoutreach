@@ -1,5 +1,7 @@
 # Plan 4 · Back-end hardening
 
+**Draft, under review: do not build from this yet.**
+
 **For:** a coding session. **Branch:** `plan-4-hardening`, from `master` once
 Plan 2 is merged. **Source:** the audit's back-end findings still open after
 Plans 1 and 2 (§5, §6) and the back-end items carried in §7. Read
