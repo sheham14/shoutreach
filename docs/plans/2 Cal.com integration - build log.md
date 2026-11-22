@@ -22,7 +22,7 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
 | 1 | Settings and the two doors | done | `e9d6607` |
 | 2 | An enquiry becomes a lead | done | `9a9625d` |
 | 3 | A booking updates the lead | done | `e046fc6`, `48f13ab` |
-| 4 | Following up people who didn't book | not started | |
+| 4 | Following up people who didn't book | done | `5904f68` |
 | 5 | One Meetings page | not started | |
 | 6 | The other operator's copy | not started | |
 | 7 | Telling the team | not started | |
@@ -132,3 +132,18 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
 - Browser: the four scrubbed fixtures replayed, signed, into the harness;
   the lead read "Today 6:30 pm · Booked on Cal.com · from hexiv.co.uk ·
   Join", then "8:00 pm · Cancelled on Cal.com", no Join.
+
+### Package 4 — done (`5904f68`)
+
+- `db.run_website_followups(now=None)`; scheduler `run_website_followups()`
+  and `run_cal_events()` in `_one_pass`, each in its own try.
+- `enroll_contacts_bulk(..., not_before=None)`: first `next_send_at` is the
+  later of now and `not_before` (UTC).
+- Choices: "booked in between" = the enquiry has a Cal.com booking, or the
+  business's stage is `booked` (or `booked_elsewhere`, package 6). A business
+  marked do not contact (e.g. it unsubscribed) gets neither follow-up. Every
+  enquiry past the wait is marked queued even when nothing was queued (booked,
+  or the owner chose no campaigns), so it is considered once: choosing
+  campaigns later doesn't reach back to older enquiries. WhatsApp uses the
+  enquiry's country, else the site's.
+- Tests: tests/test_website_followups.py (injected clock). Suite: 30 files.
