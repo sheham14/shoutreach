@@ -19,7 +19,7 @@ build it in.
 | | |
 |---|---|
 | Fix-now items (§2) | 18 of 19 done: 16 by Plan 1 (2026-11-21); 12 and 13 (F-23, F-24) by Plan 2 package 5. All deployed 2026-11-22. Open: 7 (B-24, backups — the operator's job, no code) |
-| Front-end findings (§3) | 15 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5), all deployed 2026-11-22. F-3, F-4, F-7, F-29, F-38 (Plan 3 package 1, branch `plan-3-redesign-phase-1`, not deployed). F-5 partly done (tokens exist; type and layers applied) |
+| Front-end findings (§3) | 17 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5), all deployed 2026-11-22. Plan 3 (branch `plan-3-redesign-phase-1`, not deployed): F-3, F-4, F-7, F-29, F-38 (package 1); F-6, F-35 (package 2). Partly done: F-5, F-8, F-11, F-27, F-31, F-39, F-40 |
 | Design direction (§4) | agreed in mockup form on 2026-11-21 ("the mockups look good"); mark saved as `static/img/hexiv-mark.svg` |
 | Back-end findings (§5–§6) | 10 of 31 done: B-1, B-2 (first half: owners on log lines still open), B-3, B-6, B-9, B-10, B-14, B-15, B-22, B-23 |
 | Zoho booking retired (§1, Plan 2 package 8, deployed 2026-11-22) | The Zoho parts of B-7, B-8, B-13 and B-17 are closed and marked in place. Each finding stays open for its other parts, so none is counted as done above |
@@ -258,8 +258,9 @@ up.
 > radius `--r-control` / `--r-card` / `--r-round`, and named layers
 > (`--z-sticky`, `--z-sheet`, `--z-fullscreen`, `--z-menu`, `--z-window`,
 > `--z-toast`). Every z-index and every font size in `main.css` now uses
-> them (the 36 px empty-state emoji goes with package 3). Spacing and radius
-> are applied with the controls in package 2. Sizes written inline in the
+> them (the 36 px empty-state emoji goes with package 3). Package 2
+> (`6033e43`) put every padding, margin, gap and corner in `main.css` on
+> the space and radius tokens. Sizes written inline in the
 > scripts and templates go screen by screen in later phases.
 
 **F-6 · Four designs for one job. (Medium)** A small coloured label is a
@@ -270,6 +271,13 @@ filters, so the same shape is sometimes a status and sometimes a button.
 There are likewise three label styles for form fields: capitals in the coding
 font ("MESSAGE"), ordinary case in the coding font ("Notes", "Outcome"), and
 plain text.
+
+> ✅ **RESOLVED** — Plan 3, package 2 (`6033e43`). `.badge` and `.pill` are one rule: a dot and a
+> word in success, warning, danger or neutral. A tab's count is a plain
+> number (amber when something waits), not a little pill. Chips that switch
+> lists are a segmented control and the other chips are quiet buttons, so no
+> filter looks like a status. One label style since package 1. Checked in
+> the walk-through shots at both widths.
 
 **F-7 · The good news: colours already go through named variables.** Almost
 every solid colour is `var(--green)`, `var(--muted)` and so on — about 450
@@ -300,6 +308,11 @@ pulsing animation, and the `.seg` three-way switch
 `infoDot`, is defined and styled but never called, while 52 explanations live
 in hover-only tooltips that a phone can't show
 ([utils.js:52](../../static/js/utils.js#L52)).
+
+> ◐ **PARTLY DONE** — the scheduler pill and its pulsing dot were deleted
+> (Plan 3 package 1); `.seg` is now the segmented control (package 2,
+> `6033e43`). `infoDot` is still unused and the hover-only tooltips remain:
+> moving them is layout, for a later phase.
 
 ### 3.3 Clutter, screen by screen
 
@@ -342,6 +355,11 @@ first lead starts 343 px down. Four fit.
 biggest, brightest thing on the page — and adding leads is the one thing you
 are *not* there to do. Under it, every row has its own bright green
 "WhatsApp ↗" button. The eye has nowhere to land.
+
+> ◐ **PARTLY DONE** — Plan 3, package 2 (`6033e43`). The "WhatsApp" button on every row is
+> secondary, so the screen has one teal button per region ("+ Add leads" in
+> the header, Open/Sent in the lead). Where "+ Add leads" lives is layout
+> (audit §4.7), for a later phase.
 
 **F-12 · The action sits in the middle of the screen, not under the thumb.
 (High)** In the open lead, "Open in WhatsApp" is about halfway down, with the
@@ -466,6 +484,11 @@ five rows on a phone. Each row in the queue also has its own "Open" button,
 though the whole row is already clickable.
 See [phone-calling-lead.png](evidence-2026-11-21/phone-calling-lead.png).
 
+> ◐ **PARTLY DONE** — Plan 3, package 2 (`6033e43`). Outcome buttons moved from inline styles to
+> `.outcome-btn`: main text on the secondary fill (not grey), 44 px tall on
+> a phone, the picked one in its tone. Still to do (layout): the two-column
+> grid, "More", and the queue's per-row "Open".
+
 **F-21 · Raw timestamps. (Medium · fix-now 10)** Callbacks show as
 `2026-11-20T10:30`, call history as `2026-11-21 21:27`
 ([calling.js:207](../../static/js/calling.js#L207),
@@ -521,6 +544,11 @@ the name breaks one word per line ("Dubai / dentists / - / website /
 refresh") because the status, Manage, Activate and delete don't wrap beside
 it, and Activate sits right next to delete.
 
+> ◐ **PARTLY DONE** — Plan 3, package 2 (`6033e43`). The red-outlined ✕ on every row is a quiet
+> icon button that turns red only on hover; "Remove selected" fades while
+> nothing is ticked; "Activate" on each campaign card is secondary. Title
+> Case goes with package 4; campaigns as a table and the header are layout.
+
 **F-43 · Leads tables need sideways scrolling on a laptop. (Medium)** At
 1280 px wide, Email → Leads is 407 px wider than its card and Calling → Leads
 381 px wider. At 1440 px the phone column on Email → Leads is still cut off,
@@ -545,6 +573,10 @@ table, not a setting.
 **F-35 · Tick boxes are the browser's own. (Low)** Bright white squares on a
 dark page, ticking purple. Only radio buttons were given the app's colour
 ([main.css:718](../../static/css/main.css#L718)).
+
+> ✅ **RESOLVED** — Plan 3, package 2 (`6033e43`). Tick boxes and radios use `accent-color:
+> var(--accent)` on the dark scheme. Checked in the Contacts and Leads
+> shots.
 
 ### 3.4 Visible defects not already listed
 
@@ -642,6 +674,13 @@ for a finger is 44 px. Measured on a 390 px screen:
 | Text links ("Reset to template", "Open the chat again") | 31 tall |
 | Tick boxes in lists | 20 × 20 |
 
+> ◐ **PARTLY DONE** — Plan 3, package 2 (`6033e43`). On a phone, buttons, chips, tabs, dropdowns,
+> the row menu, the menu button and the call outcomes are at least 44 px,
+> and so are text links in a lead. `measure.py phone`: nothing under 44 px
+> on WhatsApp To do, the open lead, "Did it send?" and the Calling lead
+> (the plan's three screens). Tick boxes in lists stay 20 × 20 and
+> placeholder buttons 35 px; for the later layout phases.
+
 **F-30 · Expected: every text box zooms the page on an iPhone. (Medium ·
 fix-now 16)** Safari zooms in when a field's text is smaller than 16 px.
 Every field here is 13–14 px — the message box, search, notes. Not seen
@@ -661,6 +700,12 @@ windows. Dropdowns and the search box have their focus outline removed and
 nothing put in its place
 ([main.css:446–449](../../static/css/main.css#L446-L449)). Fourteen buttons
 are a symbol with no name.
+
+> ◐ **PARTLY DONE** — Plan 3, package 2 (`6033e43`). A 2 px teal focus ring on everything the
+> keyboard reaches; every `outline: none` removed (checked by pressing Tab
+> through WhatsApp To do: every stop shows it). Package 3 adds names to the
+> icon-only buttons. Labels tied to fields, Escape, focus on open and list
+> rows that take focus are behaviour, not looks: later.
 
 ### 3.7 States
 
