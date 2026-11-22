@@ -219,3 +219,34 @@ a real iPhone (F-30).
   the Settings redesign, as the audit says.
 - Before deploying: take a manual backup and confirm `timedatectl` on the VM
   says UTC (Handover §6a), since "Sent today" now compares in SQL.
+
+## What's left after Plan 1 (2026-11-22)
+
+**The operator's own steps, no code:**
+
+1. Review, merge and deploy Plan 1. Take a manual backup first and check
+   `timedatectl` says UTC. After the deploy: `/login` 200, `/api/users/me` 401.
+2. B-24: a daily disk snapshot that leaves the VM (Cloud Console →
+   Compute Engine → Snapshots → Snapshot schedules, keep 14 days).
+3. The cofounder's account and laptop worker (Handover §4), still not done.
+4. Hand checks from earlier deploys never confirmed (Handover §9). Skip the
+   Zoho Console setup: Plan 2 retires Zoho booking.
+
+**Written, ready to build:**
+
+- Plan 2 · Cal.com integration — needs Plan 1 (packages 1 and 4) merged.
+- Plan 3 · Redesign phase 1 — needs Plan 1 package 7; can run alongside Plan 2.
+
+**Not planned yet:**
+
+- Back-end hardening, roughly in order of importance: B-13 (secrets in
+  plaintext, the audit's largest remaining risk), B-18 and B-27 (deploys run
+  no tests; a failed deploy shows green, with no way back), B-11 (failed sends
+  retried forever), B-12 (bounce check memory), B-28 (missed replies),
+  B-4/B-5 (lead audit fetch safety); then B-7, B-8, B-16, B-17, B-19–B-21,
+  B-25, B-26, B-29, B-30 and the second half of B-2.
+- Redesign phases 2–5 (audit §8). 36 of 43 front-end findings are still open,
+  most of them covered by those phases.
+
+**Suggested order:** deploy Plan 1 and set up the snapshot → Plans 2 and 3
+→ write the back-end hardening plan, starting with B-13, B-18 and B-27.
