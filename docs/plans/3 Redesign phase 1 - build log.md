@@ -40,7 +40,7 @@ merged; `docs/plans/README.md` has the Status column).
 |---|---|---|---|
 | 0 | Walk-throughs point at Meetings; "before" shots | done | `0bae7f7` |
 | 1 | Tokens, fonts, sign-in page | done | `204b017` (code), audit marked after |
-| 2 | Controls | not started | |
+| 2 | Controls | done | see log |
 | 3 | Icons and the mark | not started | |
 | 4 | Dialogs, dates, wording | not started | |
 
@@ -146,3 +146,82 @@ push. Hand-back at the end per the plan's "Hand-back" section.
   with package 2). Status block: 15 of 43 front-end findings.
 - Handover §6: the deploy check now says only `/static/js/` needs a login.
   §8: a paragraph on `tests/test_security.py` section 8.
+
+### Package 2 — controls (Windows session, 2026-11-22)
+
+Restyled by class; no class renamed. Two classes **added**: `.btn-icon` (a
+quiet one-symbol button) and `.seg` on the three chip rows that switch lists
+(the unused `.seg` style was rewritten as their base), plus `.outcome-btn`
+for Calling's outcomes.
+
+- **Buttons.** Primary: accent fill, `--on-accent`. Secondary (`.btn-ghost`,
+  and `.btn` with no kind): `--raised`, main text, no border. Destructive
+  (`.btn-danger`): danger text on the secondary fill; a solid danger button
+  only as `#choose-confirm` (the dialog's confirm, text `--bg`, 5.9:1).
+  `.btn-amber` (Pause, Resume) became secondary: amber is a state, not a
+  button colour. Disabled buttons fade (F-31's lit "Remove selected").
+- **Repeated primaries made secondary:** WhatsApp To do's "WhatsApp" on every
+  row, Email To do's "Done" on every row, Calling → Campaigns "Work it" per
+  campaign, Email → Campaigns "Activate" per campaign (the one inside a
+  campaign stays primary), Contacts → Recently deleted "Restore" per group,
+  Get leads "Add all to…" / "Download CSV" per list.
+- **Per-row ✕ boxes → `.btn-icon`** with `title` and `aria-label`: campaign
+  delete, enrolled contact remove, call outcome delete, script line remove,
+  email version/variable remove, user delete, account delete. Buttons with a
+  word ("Delete", "Take off WhatsApp", "Delete forever") stay `.btn-danger`.
+- **Fields.** One element-level rule gives every text box, dropdown and text
+  area (classed or not) `--raised`, a `--line-strong` edge, radius 6. Every
+  `outline: none` removed. **Focus:** `:focus-visible` 2 px accent ring on
+  everything; fields show it on any focus. Checked by pressing Tab through
+  WhatsApp To do: dropdown, primary, tabs, chips, row buttons all show
+  `2px solid rgb(60,193,208)`. (`plan-desktop-2`'s `focus-ring` probe calls
+  `.focus()` from script after mouse clicks, which `:focus-visible` ignores by
+  design, so it still prints "none"; not a fault.)
+- **Tick boxes and radios:** `accent-color: var(--accent)`; `color-scheme:
+  dark` was already on `body`.
+- **Tags:** `.badge` and `.pill` share one rule: dot + word, success,
+  warning, danger or neutral; `.pill.dashed` is an outline with no dot.
+- **Segmented control:** Ready / Follow-up due, the Calling buckets, the
+  sent log's Today / 7 days / Everything.
+- **Tabs:** accent underline; counts are plain `--text-2` numbers (`.hot`
+  ones in warning), no longer little pills.
+- **Cards:** `--surface`, radius 10, no border; `.card .card` has no fill.
+  Stat tiles and Dashboard to-do tiles lost their borders (hover is a
+  background step). Step cards in the step editor lost their border.
+- **Tables:** row hover `--raised`, current row `--accent-soft` (already).
+- **Windows, menus, toast:** radius 10, `--shadow`, no border; row menus on
+  `--raised`.
+- **Spacing and radius tokens applied** (the package 1 leftover): every
+  padding, margin and gap in `main.css` is a `--sp-*` token (ties rounded
+  up; 48 and 64 written as sums of tokens), every radius `--r-control`,
+  `--r-card` or `--r-round`. Only 1–2 px hairlines and layout widths (the
+  220 px sidebar) are left as numbers. Inline sizes in scripts and templates
+  are untouched (later phases).
+- **Phone tap targets:** buttons, chips, tabs, dropdowns, the row menu
+  button, outcome buttons and the menu button are min 44 px; text links in a
+  lead panel or sheet, "N marked not on WhatsApp", "sent today" and
+  Calling's script folds too. `measure.py phone`: **0 under 44 px** on
+  wa-todo, wa-todo-lead, wa-todo-did-it-send and calling-lead (were 2, 4,
+  1, 8 after the first pass). Other screens still list 20 px list tick boxes
+  and placeholder buttons (35 px); not in the plan's list.
+- **Outcome buttons:** inline style moved to `.outcome-btn` (+ `tone-*`,
+  `.on`). Unpicked: secondary fill, main text (F-27's grey). Picked: the tone's
+  tint and edge (success, danger, accent, or neutral).
+- **Motion:** buttons, tabs, chips, rows, menus 120–160 ms;
+  `prefers-reduced-motion` turns all transitions and animations off. The
+  pulsing dot and scheduler pill were already gone (package 1). The drawer
+  (200 ms) and FAQ open/close are not hover/press motion; left.
+- **Tooling:** `keep_shots.py` now takes the newest match per step (stale
+  shots from older plan versions had the same step names under other
+  numbers and were being picked).
+- Walk-throughs: desktop-1, desktop-2, phone-1 all `TOTAL PROBLEMS: 0`.
+  Shots in `docs/plans/plan-3-shots/2-controls/`.
+
+**Left, and why (later phases):**
+- The sidebar's "Check for email replies & send" is a button styled entirely
+  by an inline `style` and `onmouseover` (tokens only, so nothing defeats a
+  token); it keeps its own outline look until the sidebar is rebuilt.
+- Sidebar items and list rows can't take keyboard focus (no `href` /
+  `tabindex`); making them reachable is behaviour (F-14, F-40), not looks.
+- Settings' Database tabs mark the open table with `btn-primary` (teal =
+  selected); left.

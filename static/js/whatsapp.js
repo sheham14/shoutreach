@@ -95,7 +95,7 @@ async function _waSentLogHtml() {
              onclick="waSentWindow('${key}')">${label}</button>`;
 
   return `
-    <div class="chips" style="margin-bottom:12px">
+    <div class="chips seg" style="margin-bottom:12px">
       ${chip('today', 'Today')}${chip('week', 'Last 7 days')}${chip('all', 'Everything')}
     </div>
     ${!rows.length ? '<div class="empty-state"><p>Nothing sent in this period.</p></div>' : `
@@ -389,7 +389,7 @@ function _renderWaQueue() {
     return `<tr class="clickable ${l.id === _waCurrent ? 'current' : ''}" onclick="openWaLead(${l.id}, true)">
       <td>${name}</td>${showCamp ? `<td>${camp}</td>` : ''}${cells.map(c => `<td>${c}</td>`).join('')}
       <td class="m-card">${mobile}</td>
-      <td class="nowrap m-keep" style="text-align:right">${l.wa_number ? `<button class="btn btn-primary btn-sm row-wa"
+      <td class="nowrap m-keep" style="text-align:right">${l.wa_number ? `<button class="btn btn-ghost btn-sm row-wa"
         onclick="event.stopPropagation();openWaFromRow(${l.id})" title="Open this chat in WhatsApp">WhatsApp ↗</button>` : ''}</td></tr>`;
   }).join('');
 }

@@ -182,7 +182,7 @@ async function loadTrash() {
           <div class="text-muted text-small" style="margin-top:2px">${names}</div>
         </div>
         <span class="text-muted text-small tnum" title="Then they're gone for good">${g.days_left} day${g.days_left === 1 ? '' : 's'} left</span>
-        <button class="btn btn-primary btn-sm" onclick="restoreTrash('${escj(g.group)}', ${g.count})">Restore</button>
+        <button class="btn btn-ghost btn-sm" onclick="restoreTrash('${escj(g.group)}', ${g.count})">Restore</button>
         <button class="btn btn-ghost btn-sm" onclick="toggleTrashItems(this)">Show</button>
         <button class="btn btn-danger btn-sm" onclick="forgetTrash('${escj(g.group)}', ${g.count})">Delete forever</button>
       </div>

@@ -61,7 +61,7 @@ async function loadEmailReplies() {
       const who = [r.first_name, r.last_name].filter(Boolean).join(' ');
       const action = done
         ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();emailReplyDone(${r.id}, false)">Put back</button>`
-        : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();emailReplyDone(${r.id}, true)">Done</button>`;
+        : `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();emailReplyDone(${r.id}, true)">Done</button>`;
       return `<tr class="clickable" onclick="openEmailReply(${r.id})">
         <td><span class="biz-name">${esc(r.company || r.email)}</span>
             <span class="sub tnum">${esc(r.reply_from || r.email)}${who ? ` · ${esc(who)}` : ''}</span></td>

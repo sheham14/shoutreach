@@ -77,8 +77,8 @@ async function loadCampaigns() {
           <button class="btn btn-ghost btn-sm" onclick="openCampaign(${c.id})">Manage →</button>
           ${c.status === 'active'
             ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${c.id})">⏸ Pause</button>`
-            : `<button class="btn btn-primary btn-sm" onclick="activateCampaign(${c.id})">▶ Activate</button>`}
-          <button class="btn btn-danger btn-sm" onclick="deleteCampaign(${c.id}, '${escj(c.name)}')">✕</button>
+            : `<button class="btn btn-ghost btn-sm" onclick="activateCampaign(${c.id})">▶ Activate</button>`}
+          <button class="btn btn-icon btn-sm" title="Delete campaign" aria-label="Delete campaign" onclick="deleteCampaign(${c.id}, '${escj(c.name)}')">✕</button>
         </div>
       </div>
     </div>
@@ -287,7 +287,7 @@ function addCampaignVar(key = '', value = '') {
     <input class="ec-var-val" placeholder="value" value="${esc(value)}"
            style="flex:2;background:var(--raised);border:1px solid var(--line-strong);border-radius:6px;
                   padding:6px 10px;color:var(--text);font-size:13px" />
-    <button class="btn btn-danger btn-sm" onclick="this.closest('.ec-var-row').remove()">✕</button>`;
+    <button class="btn btn-icon btn-sm" title="Remove" aria-label="Remove" onclick="this.closest('.ec-var-row').remove()">✕</button>`;
   document.getElementById('ec-vars-list').appendChild(row);
 }
 
@@ -897,7 +897,7 @@ function _addVariantBlock(label, subject, body, weight) {
                style="width:64px;background:var(--raised);border:1px solid var(--line-strong);
                       border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px" />
         <span style="font-size:12px;color:var(--text-2)">%</span>
-        <button class="btn btn-danger btn-sm" onclick="removeVariantBlock(this)">✕</button>
+        <button class="btn btn-icon btn-sm" title="Remove this version" aria-label="Remove this version" onclick="removeVariantBlock(this)">✕</button>
       </div>
     </div>
     <div class="form-group" style="margin-bottom:8px">
@@ -1177,7 +1177,7 @@ function renderContactReport(rows) {
       <td class="tnum" style="text-align:center">${r.current_step}</td>
       <td>${statusSel}</td>
       <td class="tnum text-muted" style="font-size:11px">${esc(nextSend)}</td>
-      <td><button class="btn btn-danger btn-sm" onclick="unenrollContact(${r.enroll_id})" title="Remove">✕</button></td>
+      <td><button class="btn btn-icon btn-sm" onclick="unenrollContact(${r.enroll_id})" title="Remove" aria-label="Remove from this campaign">✕</button></td>
     </tr>`;
   }).join('');
 

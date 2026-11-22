@@ -103,7 +103,7 @@ function _renderCampaignCards() {
         <div><span style="color:var(--success)">${c.booked} booked</span> · ${c.not_interested} not interested</div>
       </div>
       <div class="flex gap-2" style="margin-top:12px;flex-wrap:wrap">
-        <button class="btn btn-primary btn-sm" onclick="workCallCampaign(${c.id})">☎ Work it</button>
+        <button class="btn btn-ghost btn-sm" onclick="workCallCampaign(${c.id})">☎ Work it</button>
         <button class="btn btn-ghost btn-sm" onclick="openCallingCampaign(${c.id})">Leads</button>
         <button class="btn btn-ghost btn-sm" onclick="openAddLeadsModal(${c.id})">+ Add leads</button>
       </div>
@@ -592,18 +592,14 @@ function _renderOutcomeButtons(selected) {
   const wrap = document.getElementById('cq-outcomes');
   wrap.innerHTML = _callOutcomes.map(o => {
     const on = o.key === selected;
-    // Colour comes from the outcome's own tone so custom ones look deliberate
-    // rather than defaulting to the same blue as everything else.
-    // Good, bad: the state colours. Anything else is just "selected": teal.
-    const colour = { good: 'var(--success)', bad: 'var(--danger)',
-                     info: 'var(--accent)', neutral: 'var(--text-2)' }[o.tone]
-                || (o.terminal ? 'var(--danger)' : 'var(--accent)');
-    return `<button type="button" onclick="chooseOutcome('${esc(o.key)}')"
-      title="${o.stops_email ? 'Also stops any email sequence for this contact' : ''}"
-      style="padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;font-family:var(--font);
-             border:1px solid ${on ? colour : 'var(--line)'};
-             background:${on ? 'var(--raised)' : 'transparent'};
-             color:${on ? colour : 'var(--text-2)'}">${esc(o.label)}</button>`;
+    // A picked outcome takes its own tone, so custom ones look deliberate:
+    // good and bad are the state colours, neutral stays plain, anything else
+    // is just "selected" (teal). Styles are .outcome-btn in main.css.
+    const tone = { good: 'good', bad: 'bad', info: 'info', neutral: 'neutral' }[o.tone]
+              || (o.terminal ? 'bad' : 'info');
+    return `<button type="button" class="outcome-btn tone-${tone}${on ? ' on' : ''}"
+      onclick="chooseOutcome('${esc(o.key)}')"
+      title="${o.stops_email ? 'Also stops any email sequence for this contact' : ''}">${esc(o.label)}</button>`;
   }).join('');
 }
 
@@ -784,7 +780,7 @@ function _outcomeRow(o) {
     <td class="tnum" style="font-size:12px">${yes(o.stops_email)}</td>
     <td>${o.is_builtin
         ? '<span class="text-muted" style="font-size:11px">—</span>'
-        : `<button class="btn btn-danger btn-sm" onclick="deleteOutcome('${esc(o.key)}')">✕</button>`}</td>
+        : `<button class="btn btn-icon btn-sm" title="Delete this outcome" aria-label="Delete this outcome" onclick="deleteOutcome('${esc(o.key)}')">✕</button>`}</td>
   </tr>`;
 }
 
@@ -900,7 +896,7 @@ function _scriptSectionRow(s, i) {
         <input class="cq-sec-title" value="${esc(s.title || '')}" placeholder="Section name"
                style="flex:1;background:var(--raised);border:1px solid var(--line-strong);border-radius:6px;
                       padding:6px 10px;color:var(--text);font-size:13px;font-family:var(--font)" />
-        <button class="btn btn-danger btn-sm" onclick="this.closest('.cq-script-row').remove()">✕</button>
+        <button class="btn btn-icon btn-sm" title="Remove this line" aria-label="Remove this line" onclick="this.closest('.cq-script-row').remove()">✕</button>
       </div>
       <textarea class="cq-sec-body soft-input" style="min-height:90px"
                 placeholder="What you say here…">${esc(s.body || '')}</textarea>

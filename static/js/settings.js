@@ -332,7 +332,7 @@ async function loadUsers() {
       <td class="tnum text-muted" style="font-size:11px">${esc(fmtWhen(u.created_at, 'utc', { dateOnly: true }))}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-ghost btn-sm" onclick="openChangePasswordModal(${u.id}, '${escj(u.username)}')">Change password</button>
-        ${u.id !== me.id ? `<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id}, '${escj(u.username)}')">✕</button>` : ""}
+        ${u.id !== me.id ? `<button class="btn btn-icon btn-sm" title="Delete user" aria-label="Delete user" onclick="deleteUser(${u.id}, '${escj(u.username)}')">✕</button>` : ""}
       </td>
     </tr>
   `,
@@ -451,7 +451,7 @@ async function loadAccounts() {
           ${paused ? "▶ Activate" : "⏸ Pause"}
         </button>
         <button class="btn btn-ghost btn-sm" onclick="openEditAccountModal(${a.id})">✎</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteAccount(${a.id})">✕</button>
+        <button class="btn btn-icon btn-sm" title="Delete account" aria-label="Delete account" onclick="deleteAccount(${a.id})">✕</button>
         <span id="acct-row-result-${a.id}" class="tnum" style="font-size:11px;margin-left:8px"></span>
       </td>
     </tr>

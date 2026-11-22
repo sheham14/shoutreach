@@ -47,7 +47,9 @@ def main():
         if not found:
             print("missing:", prefix, step)
             continue
-        img = Image.open(found[0]).convert("RGB")
+        # Several runs of different plan versions can leave the same step
+        # under different numbers: take the newest.
+        img = Image.open(max(found, key=os.path.getmtime)).convert("RGB")
         img.save(os.path.join(dest, name + ".webp"), "WEBP", quality=82, method=6)
         print("kept", name)
 

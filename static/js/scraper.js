@@ -446,7 +446,7 @@ async function loadScrapeLists() {
     if (l.kind === 'held') {
       title = [l.niche, l.city].filter(Boolean).join(' — ') || `Scrape #${l.id}`;
       forPill = pill('CSV only', 'purple');
-      actions = `<button class="btn btn-primary btn-sm" ${l.count ? '' : 'disabled'}
+      actions = `<button class="btn btn-ghost btn-sm" ${l.count ? '' : 'disabled'}
           onclick="downloadUrl('/api/scraper/jobs/${l.id}/csv')">⬇ Download CSV</button>`;
     } else {
       title = manual ? l.base : (l.name || l.base);
@@ -457,7 +457,7 @@ async function loadScrapeLists() {
         ${manual ? '' : `<button class="btn btn-ghost btn-sm" onclick="renameImport('${escj(id)}', '${escj(l.name || '')}',
             '${escj(`${l.base} · ${fmtWhen(l.created_at, 'utc', { absolute: true })}`)}', loadScrapeLists)">Rename</button>`}
         <button class="btn btn-ghost btn-sm" onclick="openScrapeInContacts('${escj(id)}')">View</button>
-        <button class="btn btn-primary btn-sm" onclick="addListToChannel('${escj(id)}', '${escj(title)}', ${l.count})">Add all to…</button>`;
+        <button class="btn btn-ghost btn-sm" onclick="addListToChannel('${escj(id)}', '${escj(title)}', ${l.count})">Add all to…</button>`;
     }
     const counted = l.kind === 'import' && l.new_count < l.count
       ? `${l.count} <span class="text-muted">(${l.new_count} new)</span>` : `${l.count}`;
