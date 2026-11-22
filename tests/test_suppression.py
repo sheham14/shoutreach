@@ -214,6 +214,29 @@ def test_backstop(work):
     check("address_suppression still says unsubscribed",
           db.address_suppression("forced@ten.ae") == "unsubscribed")
 
+    # Review of B-1: a stored row whose address differs only in case or
+    # spaces (from before every write path lower-cased, or edited by hand)
+    # must not slip past the backstop.
+    db.upsert_businesses([{"email": "loud@shouty.ae", "company": "Shouty"}], owner_id=a)
+    db.unsubscribe_contact("loud@shouty.ae")
+    with db.get_db() as conn:
+        conn.execute("UPDATE email_leads SET email=' Loud@SHOUTY.ae ', status='active' "
+                     "WHERE email='loud@shouty.ae'")
+        conn.execute("UPDATE businesses SET do_not_contact=0 WHERE name='Shouty'")
+    check("a mixed-case, padded row forced active is still not on the due list",
+          not due_for(db, path, a, " Loud@SHOUTY.ae "))
+    cid = db.create_campaign("Preview", owner_id=a)
+    with db.get_db() as conn:
+        lid = conn.execute("SELECT id FROM email_leads WHERE email=' Loud@SHOUTY.ae '").fetchone()[0]
+        conn.execute("INSERT INTO enrollments(campaign_id, email_lead_id, status) VALUES(?,?,'queued')",
+                     (cid, lid))
+    check("and the send preview doesn't count it",
+          db.get_campaign_send_preview(cid, owner_id=a)["sendable"] == 0)
+    db.unsubscribe_contact("LOUD@shouty.ae")
+    check("a later opt-out in another case reaches that row",
+          q(path, "SELECT status FROM email_leads WHERE id=?", (lid,)) == [("unsubscribed",)])
+    check("and its business", q(path, "SELECT do_not_contact FROM businesses WHERE name='Shouty'") == [(1,)])
+
     db.upsert_businesses([{"email": "soft@eleven.ae", "company": "Eleven"}], owner_id=a)
     for _ in range(3):
         db.increment_soft_bounce("soft@eleven.ae", 3)
@@ -231,6 +254,12 @@ def test_migration(work):
     db.upsert_businesses([{"email": "old-b@thirteen.ae", "company": "Thirteen"},
                           {"email": "both@fourteen.ae", "company": "Fourteen"}], owner_id=b)
     db.upsert_businesses([{"email": "both@fourteen.ae", "company": "Fourteen"}], owner_id=a)
+    db.upsert_businesses([{"email": "late@fifteen.ae", "company": "Fifteen"}], owner_id=a)
+    db.upsert_businesses([{"email": "late@fifteen.ae", "company": "Fifteen"},
+                          {"email": "keep@sixteen.ae", "company": "Sixteen"}], owner_id=b)
+    late_b = q(path, "SELECT id FROM email_leads WHERE email='late@fifteen.ae' AND owner_id=?", (b,))[0][0]
+    cid_b = db.create_campaign("B's", owner_id=b)
+    db.enroll_contacts_bulk(cid_b, [late_b], owner_id=b)
     with db.get_db() as conn:
         # As a database from before the table existed would look.
         conn.execute("DELETE FROM suppressed_addresses")
@@ -239,8 +268,22 @@ def test_migration(work):
         conn.execute("UPDATE email_leads SET status='bounced' WHERE email='old-b@thirteen.ae'")
         conn.execute("UPDATE email_leads SET status='bounced' WHERE email='both@fourteen.ae' AND owner_id=?", (a,))
         conn.execute("UPDATE email_leads SET status='unsubscribed' WHERE email='both@fourteen.ae' AND owner_id=?", (b,))
+        # The state the old hole left: A unsubscribed, then B imported the
+        # same address and it stayed active, business contactable.
+        conn.execute("UPDATE email_leads SET status='unsubscribed' WHERE email='late@fifteen.ae' AND owner_id=?", (a,))
     db.init_db()
     got = dict(q(path, "SELECT email, reason FROM suppressed_addresses"))
+    check("a copy left active by the old hole is unsubscribed by the migration",
+          q(path, "SELECT status FROM email_leads WHERE email='late@fifteen.ae' AND owner_id=?", (b,))
+          == [("unsubscribed",)])
+    check("and its business is do-not-contact (calls and WhatsApp stop too)",
+          q(path, """SELECT b.do_not_contact FROM businesses b JOIN email_leads el ON el.business_id=b.id
+                      WHERE el.email='late@fifteen.ae' AND el.owner_id=?""", (b,)) == [(1,)])
+    check("and its queued enrollment stops",
+          q(path, """SELECT e.status FROM enrollments e JOIN email_leads el ON el.id=e.email_lead_id
+                      WHERE el.email='late@fifteen.ae' AND el.owner_id=?""", (b,)) == [("unsubscribed",)])
+    check("B's other leads are untouched",
+          q(path, "SELECT status FROM email_leads WHERE email='keep@sixteen.ae'") == [("active",)])
     check("A's opt-out is copied", got.get("old-a@twelve.ae") == "unsubscribed", str(got))
     check("B's bounce is copied", got.get("old-b@thirteen.ae") == "bounced", str(got))
     check("unsubscribed wins over bounced", got.get("both@fourteen.ae") == "unsubscribed", str(got))
@@ -265,7 +308,7 @@ def test_no_owner_anywhere(work):
         check(f"{fn.__name__} never mentions an owner", "owner" not in code)
     src = inspect.getsource(db.get_due_enrollments)
     check("the due list's check has no owner in it",
-          re.search(r"NOT EXISTS \(SELECT 1 FROM suppressed_addresses s WHERE s.email = el.email\)", src)
+          re.search(r"NOT EXISTS \(SELECT 1 FROM suppressed_addresses s WHERE s.email = lower\(trim\(el.email\)\)\)", src)
           is not None)
 
 

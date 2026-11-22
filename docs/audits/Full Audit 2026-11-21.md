@@ -862,6 +862,17 @@ unsubscribed or bounced address sendable again. (High · seen)**
 > now end with the address suppressed and off the due list. Bulk delete of
 > addresses is still a hard delete (Fable 3.8), but it no longer forgets a
 > bounce.
+>
+> **Review fixes (2026-11-22):** every match on an address in the
+> suppression path is now `lower(trim(email))` (the two `NOT EXISTS`
+> backstops, `_apply_suppression`, soft bounces, `address_suppression`'s
+> fallback), with an expression index; a stored row "Loud@SHOUTY.ae" forced
+> active is off the due list and out of the send preview. And
+> `_migrate_suppressed_addresses` now **applies** each address it records,
+> so a copy the old hole left active (another operator's import after the
+> opt-out) is unsubscribed on upgrade, with its business do-not-contact and
+> its enrollments stopped. Both pinned in `tests/test_suppression.py` §4 and
+> §5; each new check fails on the previous `db.py`.
 
 The rule (Handover §3, CLAUDE.md) is that an unsubscribe or a bounce binds
 every operator, for good. In the code, an opt-out is only a status on

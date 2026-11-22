@@ -854,6 +854,10 @@ def init_db():
             # fuzzy phone match across one shared table.
             "CREATE INDEX IF NOT EXISTS email_leads_business_idx ON email_leads(business_id)",
             "CREATE INDEX IF NOT EXISTS email_leads_status_idx   ON email_leads(status)",
+            # Suppression matches an address however it was typed (audit B-1
+            # review): stored rows can hold "Loud@SHOUTY.ae" from before every
+            # write path lower-cased, and the backstop exists for exactly them.
+            "CREATE INDEX IF NOT EXISTS email_leads_email_lc_idx ON email_leads(lower(trim(email)))",
             "CREATE INDEX IF NOT EXISTS call_leads_business_idx  ON call_leads(business_id)",
             "CREATE INDEX IF NOT EXISTS call_leads_next_call_idx ON call_leads(next_call_at) WHERE next_call_at IS NOT NULL",
             "CREATE INDEX IF NOT EXISTS call_leads_status_idx    ON call_leads(call_status)",
@@ -3369,28 +3373,28 @@ def _apply_suppression(conn, email: str, reason: str = None) -> str:
         return ""
     reason = reason or _suppressed_reason(conn, email)
     if reason == "unsubscribed":
-        conn.execute("UPDATE email_leads SET status='unsubscribed' WHERE email=?", (email,))
+        conn.execute("UPDATE email_leads SET status='unsubscribed' WHERE lower(trim(email))=?", (email,))
         # IN, not =. An address can exist once per operator, and a scalar
         # subquery would silently pick whichever row it saw first -- stopping
         # one person's campaign while the other kept mailing someone who had
         # just asked to be left alone, over the same shared accounts.
         conn.execute("""
             UPDATE businesses SET do_not_contact=1
-             WHERE id IN (SELECT business_id FROM email_leads WHERE email=?)
+             WHERE id IN (SELECT business_id FROM email_leads WHERE lower(trim(email))=?)
         """, (email,))
         conn.execute("""
             UPDATE enrollments SET status='unsubscribed'
-            WHERE email_lead_id IN (SELECT id FROM email_leads WHERE email=?)
+            WHERE email_lead_id IN (SELECT id FROM email_leads WHERE lower(trim(email))=?)
               AND status NOT IN ('unsubscribed','bounced','completed','replied')
         """, (email,))
     elif reason == "bounced":
         # A dead address is dead for everyone who holds it. A row that
         # unsubscribed keeps saying so: that's the stronger fact.
         conn.execute("UPDATE email_leads SET status='bounced' "
-                     "WHERE email=? AND status != 'unsubscribed'", (email,))
+                     "WHERE lower(trim(email))=? AND status != 'unsubscribed'", (email,))
         conn.execute("""
             UPDATE enrollments SET status='bounced'
-            WHERE email_lead_id IN (SELECT id FROM email_leads WHERE email=?)
+            WHERE email_lead_id IN (SELECT id FROM email_leads WHERE lower(trim(email))=?)
               AND status='queued'
         """, (email,))
     else:
@@ -3460,11 +3464,11 @@ def increment_soft_bounce(email: str, threshold: int = 3):
     email = (email or "").strip().lower()
     with get_db() as conn:
         conn.execute(
-            "UPDATE email_leads SET soft_bounce_count = soft_bounce_count + 1 WHERE email=?",
+            "UPDATE email_leads SET soft_bounce_count = soft_bounce_count + 1 WHERE lower(trim(email))=?",
             (email,)
         )
         row = conn.execute(
-            "SELECT MAX(soft_bounce_count) AS n FROM email_leads WHERE email=?", (email,)
+            "SELECT MAX(soft_bounce_count) AS n FROM email_leads WHERE lower(trim(email))=?", (email,)
         ).fetchone()
         count = (row["n"] or 0) if row else 0
 
@@ -3805,14 +3809,14 @@ def get_campaign_send_preview(campaign_id: int, owner_id=None) -> dict:
              WHERE e.campaign_id = ? AND el.owner_id = ?
                AND e.status = 'queued' AND el.status = 'active'
                AND b.do_not_contact = 0
-               AND NOT EXISTS (SELECT 1 FROM suppressed_addresses s WHERE s.email = el.email)
+               AND NOT EXISTS (SELECT 1 FROM suppressed_addresses s WHERE s.email = lower(trim(el.email)))
         """, (campaign_id, owner)).fetchone()[0]
         enrollable = conn.execute("""
             SELECT COUNT(*) FROM email_leads el
               JOIN businesses b ON b.id = el.business_id
              WHERE el.owner_id = ? AND el.status = 'active'
                AND el.duplicate_of IS NULL AND b.do_not_contact = 0
-               AND NOT EXISTS (SELECT 1 FROM suppressed_addresses s WHERE s.email = el.email)
+               AND NOT EXISTS (SELECT 1 FROM suppressed_addresses s WHERE s.email = lower(trim(el.email)))
                AND NOT EXISTS (SELECT 1 FROM enrollments e
                                 WHERE e.email_lead_id = el.id AND e.campaign_id = ?)
                AND NOT EXISTS (SELECT 1 FROM enrollments e
@@ -3972,7 +3976,7 @@ def get_due_enrollments(campaign_id, limit=20):
               -- The backstop: an address that unsubscribed or bounced is
               -- never sent, however its row came to say 'active'. No owner
               -- here, on purpose (suppressed_addresses has none).
-              AND NOT EXISTS (SELECT 1 FROM suppressed_addresses s WHERE s.email = el.email)
+              AND NOT EXISTS (SELECT 1 FROM suppressed_addresses s WHERE s.email = lower(trim(el.email)))
               AND (e.next_send_at IS NULL OR e.next_send_at <= ?)
             ORDER BY e.next_send_at ASC NULLS FIRST
             LIMIT ?
@@ -4059,9 +4063,10 @@ def _migrate_email_reply_todo(conn):
 def _migrate_suppressed_addresses(conn):
     """
     Remember every opt-out and bounce recorded before suppressed_addresses
-    existed, for every owner (B-1). Unsubscribed first, so it wins where one
-    copy unsubscribed and another bounced. Guarded by a settings marker; it
-    only ever adds rows, so a re-run couldn't undo anything either.
+    existed, for every owner (B-1), and apply each to every copy of the
+    address. Unsubscribed first, so it wins where one copy unsubscribed and
+    another bounced. Guarded by a settings marker; it only ever adds
+    suppression, so a re-run couldn't undo anything either.
     """
     if conn.execute("SELECT 1 FROM settings WHERE key='_migrated_suppressed_addresses'").fetchone():
         return
@@ -4071,6 +4076,25 @@ def _migrate_suppressed_addresses(conn):
             SELECT DISTINCT lower(trim(email)), ? FROM email_leads
              WHERE status = ? AND email LIKE '%@%'
         """, (reason, reason))
+    # Recording isn't enough (review of B-1): the old hole left copies that
+    # are still 'active' -- another operator's import after the opt-out, a
+    # restore -- with their business still contactable on calls and
+    # WhatsApp. Each one is made what it would have been had it existed at
+    # the time, exactly as a late copy is from now on.
+    applied = 0
+    for row in conn.execute("SELECT email, reason FROM suppressed_addresses").fetchall():
+        stale = conn.execute("""
+            SELECT 1 FROM email_leads el JOIN businesses b ON b.id = el.business_id
+             WHERE lower(trim(el.email)) = ?
+               AND (el.status NOT IN ('unsubscribed', 'bounced')
+                    OR (? = 'unsubscribed' AND (el.status != 'unsubscribed' OR b.do_not_contact = 0)))
+             LIMIT 1
+        """, (row["email"], row["reason"])).fetchone()
+        _apply_suppression(conn, row["email"], row["reason"])
+        applied += 1 if stale else 0
+    if applied:
+        logger.info("Suppression: applied %d remembered opt-out(s)/bounce(s) to copies "
+                    "that had missed them", applied)
     conn.execute("INSERT OR REPLACE INTO settings(key, value) "
                  "VALUES('_migrated_suppressed_addresses', '1')")
 
@@ -5039,7 +5063,7 @@ def address_suppression(email: str) -> str:
         # Rows from before suppressed_addresses existed are copied into it
         # by _migrate_suppressed_addresses; this scan is the belt to that.
         rows = {r["status"] for r in conn.execute(
-            "SELECT DISTINCT status FROM email_leads WHERE email=? "
+            "SELECT DISTINCT status FROM email_leads WHERE lower(trim(email))=? "
             "AND status IN ('unsubscribed','bounced')", (email,))}
     return "unsubscribed" if "unsubscribed" in rows else ("bounced" if rows else "")
 

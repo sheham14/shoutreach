@@ -1154,8 +1154,12 @@ choice that differs from the plan, is `docs/plans/1 Fix now - build log.md`.
 **Deploying it** runs two additions on the live database, both rehearsed on
 a database built by the previous code (`c92729a`): a `users.session_version`
 column (default 0, so open sessions keep working) and
-`_migrate_suppressed_addresses` (copies existing opt-outs and bounces; no row
-changes). Take a backup first anyway.
+`_migrate_suppressed_addresses`, which copies existing opt-outs and bounces
+**and applies them to every copy of each address**: a copy the old B-1 hole
+left active (the other operator's import after an opt-out) becomes
+unsubscribed or bounced, and an unsubscribe marks its business do not
+contact. On the rehearsal database it changed only the one planted copy.
+Take a backup first anyway.
 
 Still open from the fix-now list:
 
