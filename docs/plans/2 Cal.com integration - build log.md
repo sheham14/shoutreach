@@ -557,8 +557,13 @@ not marked done:
    `httpsOnly()` (tables.js) wherever a join link is rendered
    (meetings.js, `calMeetingBoxHtml`, `meetingBoxHtml`), so old rows too.
    Test: test_cal_bookings.py §6.
-2. todo — a failed delivery is retried (unread, attempts, give up after 5
-   with one Activity-log line; unreadable bodies marked at once).
+2. **done `9f75f43`** — failed delivery retried: `process_cal_event` leaves
+   an unexpected failure unread (`cal_events.attempts`, new column), gives up
+   after `CAL_MAX_ATTEMPTS` (5) with one Activity-log line; not-JSON / no
+   payload marked at once. `_cal_booking_created`'s last writes (meeting,
+   enquiry booking id, team email via `_queue_team_notification(conn, …)`)
+   are one transaction; "already recorded" re-runs the idempotent
+   cross-operator marking. Test: test_cal_bookings.py §7.
 3. todo — (a) a cancellation waits while a delivery for its booking is
    unread; (b) a created booking arriving after its own reschedule is skipped.
 4. todo — the other operator's copy is marked only when it has no stage
