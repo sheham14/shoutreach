@@ -42,7 +42,7 @@ merged; `docs/plans/README.md` has the Status column).
 | 1 | Tokens, fonts, sign-in page | done | `204b017` (code), audit marked after |
 | 2 | Controls | done | `6033e43` (+ `7012a05` audit) |
 | 3 | Icons and the mark | done | `fc2c87e` |
-| 4 | Dialogs, dates, wording | done | see log |
+| 4 | Dialogs, dates, wording | done | `8a2833c` |
 
 ## Log
 
@@ -334,3 +334,122 @@ separate worktree before pushing.
   the changes are in dialogs and labels).
 - Audit: F-37 resolved; F-31's Title Case part done. Handover §10:
   `confirmDialog`.
+
+**Package 4 committed** as `8a2833c`; the suite (33 files) passed against that
+commit in a separate worktree before pushing.
+
+## Hand-back (Plan 3, 2026-11-22)
+
+All four packages are built on `plan-3-redesign-phase-1`, one code commit per
+package. Nothing is merged or deployed. `db.py`, `scheduler.py` and
+`sender.py` are untouched (`git diff 52b0eb9 -- db.py scheduler.py sender.py`
+is empty).
+
+Screenshots: `docs/plans/plan-3-shots/<stage>/`, the same twelve screens
+each time — sign-in, Dashboard, WhatsApp To do, a lead panel, Calling To do,
+Settings, at 1440×900 (`desktop-*`) and 390×844 (`phone-*`). The stages are
+`0-before`, `1-tokens`, `2-controls`, `3-icons` and `4-dialogs`. `0-before`
+and `1-tokens` were taken in a Linux container; 2 to 4 on Windows, so font
+rendering differs slightly between them. The harness's data moves with the
+clock, so counts differ between stages.
+
+### Package 1 · Tokens, fonts, sign-in page — `204b017` (+ `8c7c1e3` docs)
+
+- **Before / after:** `0-before/*` → `1-tokens/*`.
+- **Checked by hand:** no old colour or old token name in css, scripts or
+  templates (grep); no `rgba(` outside a token definition; no Google Fonts
+  request in any walk-through (`shoot.py` reports requests leaving the
+  machine); contrast computed from the token values (text-2 8.94 / 8.32 /
+  7.55 on bg / surface / raised; text-3 4.91 / 4.57 on bg / surface only;
+  line-strong 3.30 against raised, 3.64 against surface); signed out,
+  `main.css`, the mark and the fonts answer 200 and `app.js` doesn't
+  (`tests/test_security.py` section 8, which fails against a prefix-only
+  rule).
+- **Done differently:** the plan names five layers and lists six; six are
+  defined. Its rename counts were 1–5 off the code's (counting, not a
+  disagreement).
+- **`--green`, where it wasn't obvious:** `.step-num` became accent (a step
+  number isn't a success); `.meeting-box` became success (booked). The full
+  list of accent and success uses is in the package 1 log entry above.
+
+### Package 2 · Controls — `6033e43` (+ `7012a05` audit)
+
+- **Before / after:** `1-tokens/*` → `2-controls/*`.
+- **Checked by hand:** Tab pressed through WhatsApp To do shows a 2 px teal
+  ring on every stop; `measure.py phone` shows nothing under 44 px on
+  WhatsApp To do, the open lead, "Did it send?" and the Calling lead; the
+  outcome buttons, segmented chips and quiet ✕ looked at in the shots.
+- **Done differently:** two classes **added**, none renamed: `.btn-icon`
+  (the quiet one-symbol button) and `.seg` on the three chip rows that
+  switch lists, plus `.outcome-btn` for the call outcomes the plan asked to
+  move out of inline styles. `.btn-amber` (Pause, Resume) is secondary,
+  because amber is a state, never a button colour (plan §Decided). Tab
+  counts became plain numbers. Every padding, margin, gap and radius in
+  `main.css` is on a token (48 and 64 are written as sums of tokens).
+  `keep_shots.py` now takes the newest shot per step (stale shots with the
+  same step name were being picked).
+
+### Package 3 · Icons and the mark — `fc2c87e`
+
+- **Before / after:** `2-controls/*` → `3-icons/*`. The sidebar, tab icon
+  and sign-in page are the visible change.
+- **Checked by hand:** every page in the three walk-throughs, the Help page
+  (its icons sit inside a `{% raw %}` block and first printed as text; fixed
+  and pinned), the meeting box, the lead panel's edit and close buttons.
+- **Tests:** new `tests/test_icons.py`; shown to fail with an icon missing
+  from the set and with Help's icons un-wrapped from the raw block.
+- **Done differently:** Lucide 0.460.0 (`lucide-static` from npm, SVGs only;
+  ISC licence beside `icons.js`). 41 icons, not "about thirty": the Help
+  page's section icons are included. Toasts lost their trailing ✓ / ▶ / ⏸.
+  Left as text: Activity log symbols (stored data), ★ in ratings, → in prose
+  and text links, the CSS-drawn ▸ on folds and ↓ between email steps.
+
+### Package 4 · Dialogs, dates, wording — `8a2833c`
+
+- **Before / after:** `3-icons/*` → `4-dialogs/*` (the twelve screens barely
+  change; this package is in dialogs and labels).
+- **Checked by hand:** 11 of the 16 confirmations opened on the harness by
+  script: each is the app's dialog, no native dialog fires, 9 destructive
+  ones draw the red confirm, a name with `<b>` shows literally. The other
+  five need state set up and were read, not driven. Activity log times read
+  "Today 6:16 pm".
+- **Done differently:** `confirmDialog()` is a small wrapper over
+  `chooseDialog` (same dialog, escapes its text) rather than repeating the
+  body markup sixteen times. A few dialog titles were tightened while being
+  moved (they had been run-on `confirm()` strings).
+
+### Tests
+
+The whole suite passes against each package's exact commit, run in a
+separate worktree so later edits couldn't leak in: 32 files after package 2,
+33 after packages 3 and 4 (`test_icons.py` added). No test that reads
+front-end files needed changing: none of the ids, function names or
+placeholders that `test_meetings.py`, `test_cal_bookings.py` or
+`test_rendering.py` look for moved.
+
+### For the reviewer
+
+```
+git switch plan-3-redesign-phase-1
+for f in tests/test_*.py; do python "$f" >/dev/null 2>&1 || echo "FAIL $f"; done
+python tests/test_icons.py
+python tools/audit/serve.py seed && python tools/audit/serve.py   # leave running
+python tools/audit/shoot.py tools/audit/plan-desktop-1.json      # and -desktop-2, -phone-1
+python tools/audit/measure.py phone
+grep -rnE '\b(confirm|alert)\(' static/js templates               # only chooseConfirm / confirmDialog
+for f in static/js/*.js; do node --check "$f"; done
+```
+
+### Left for later phases (seen, not done: each would move something)
+
+- The sidebar's "Check for email replies & send" keeps its inline-styled
+  outline (tokens only); sidebar items and list rows can't take keyboard
+  focus (F-14, F-40).
+- "+ Add leads" stays the header's primary button; where it lives is layout
+  (§4.7). The per-row "Open" in Calling's queue stays (F-27).
+- Tick boxes in lists are 20 × 20 and placeholder buttons 35 px on a phone;
+  not on the plan's three screens.
+- Inline sizes and spacing in scripts and templates (F-5, F-42) go screen by
+  screen with the layouts.
+- The Help page's prose still names some buttons in Title Case.
+- `infoDot` is still unused; the hover-only tooltips remain (F-8).
