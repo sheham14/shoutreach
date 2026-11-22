@@ -25,8 +25,8 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
 | 4 | Following up people who didn't book | done | `5904f68` |
 | 5 | One Meetings page | done | `2cffc4e` |
 | 6 | The other operator's copy | done | `574cad8` |
-| 7 | Telling the team | not started | |
-| 8 | Remove ShoutReach's Zoho booking | not started | |
+| 7 | Telling the team | done | `62eb404` |
+| 8 | Remove ShoutReach's Zoho booking | **next — not started** | |
 
 ## Log
 
@@ -196,3 +196,65 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
   applies it on an enquiry too, before any booking. It's built that way; say
   if an enquiry-only match should read differently.
 - Handover §3 updated. Suite: 32 files pass.
+
+### Package 7 — done (`62eb404`)
+
+- `team_notifications` table; `get_notify_email` / `save_notify_email`
+  (`notify_email:<uid>`), `queue_team_notification` (called on an enquiry's
+  first filing in `file_website_enquiry`, and on a booking in both paths of
+  `_cal_booking_created`), `run_team_notifications(send=None)`;
+  `sender.send_notification`; scheduler `run_team_notifications()` in
+  `_one_pass`. Routes `GET/PUT /api/notify-email`; field in My settings'
+  "Website enquiries that don't book" card.
+- Choices: sent by the scheduler, not the routes (contract B: never call out
+  from the inbound route); first active sending account; not counted against
+  any cap; five attempts.
+- Tests: tests/test_notifications.py. Suite: 33 files pass.
+
+## STOPPED HERE (2026-11-22, session usage ran out) — how to carry on
+
+**Next: package 8, remove ShoutReach's Zoho booking (last).** Per the plan:
+delete `zoho_calendar.py`, the `/api/zoho/*` and `/zoho/*` routes, the
+meeting sync/invite/cancel routes (`/api/businesses/<id>/meeting/...`),
+`_book_meeting` and its two callers (`api_set_business_pipeline` with
+`meeting` in the body, and `api_log_call`), the Zoho cards in Settings (Team
+setup "Zoho Calendar", My settings "Meetings & calendar"), the booking
+dialog's calendar fields (`meetingFieldsHtml` in lead_panel.js and whatever
+calls it; `_zohoStatus`, `retryMeetingSync`, `sendMeetingInvite`,
+`cancelMeeting` and friends), and `tests/test_zoho_calendar.py`. Keep the
+`meetings` and `zoho_connections` tables; empty `zoho_connections` with a
+guarded one-shot (it can hold tokens). Setting the stage to booked by hand
+must still work with a time (that's the package 5 departure noted above).
+Then: mark Handover §5f retired and remove its Zoho to-do list from §9; mark
+the Zoho parts of audit B-7, B-8, B-13, B-17 resolved (find them by id).
+Check meetings rows with source '' (old Zoho ones) still render via the
+reduced box (`meetingBoxHtml`).
+
+**Then the hand-back** (plan's "Hand-back" section): per package the commit,
+tests, what was checked by hand (each package entry above has it), the
+scrubbed payloads (`tests/fixtures/`, README there) and how they differed
+from the handoff (package 3 entry). Also still to write up there:
+
+- **Website repos (separate sessions)** — each site's server route posts
+  contract A to `https://shoutreach.hexiv.co/api/inbound/website-lead` with
+  header `X-API-Key: <website key>` from a server-only env var, at the moment
+  it calls EmailJS today, without waiting on it. JSON body: `site`
+  ("hexiv.co.uk" | "hexiv.co"), `name`, `email` (required), `business`,
+  `phone`, `website`, `country` ("GB" from the UK site), `locale` (.co only),
+  `answers` (object, English labels, in the order asked — .co maps its option
+  ids via content.en.ts), `summary`. ≤ 32 KB; reply `{"ok": true}`; 60/min.
+  Keep EmailJS until package 7 has been seen working for a week. Check the
+  line under the details step says they may be followed up by email or
+  WhatsApp; propose wording if not.
+- **Operator steps:** set each site's owner and country, the booking link,
+  and their notification address and follow-up campaigns; put the website
+  key on each site's hosting. The webhook already exists and works.
+- **Open questions:** (1) "Booked via the website" is also applied when only
+  an enquiry matches the other operator's copy (package 6); (2) verify with
+  one real booking made from "Copy booking link" that
+  `metadata.shoutreach_ref` arrives (package 5); (3) the three real test
+  deliveries on the live server get read once this deploys — the test
+  booking will show as a lead (Hevixxx), booked then cancelled; delete it.
+- **Reviewer commands:** `for f in tests/test_*.py; do python "$f" || echo FAIL $f; done`
+  (33 files); replay `tests/fixtures/cal_*.json` signed into a local server
+  (see tests/test_cal_bookings.py for how).
