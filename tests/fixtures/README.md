@@ -2,7 +2,8 @@
 
 `cal_*.json` are real Cal.com webhook bodies, captured on 2026-11-22 from the
 live `/api/inbound/cal` route (a test booking made through hexiv.co.uk's
-booking form, then rescheduled), with personal details replaced:
+booking form, then rescheduled, then cancelled from Cal.com's emailed
+cancel link), with personal details replaced:
 
 | Real | In the fixture |
 |---|---|

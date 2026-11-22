@@ -4,9 +4,10 @@ Run:  python tests/test_cal_bookings.py     (exits 0 on pass, 1 on failure)
 
 Built on real deliveries, captured from the live route and scrubbed
 (tests/fixtures/cal_*.json): a ping, a booking made through hexiv.co.uk's
-form, and its reschedule. Each is signed and posted to /api/inbound/cal the
+form, its reschedule, and its cancellation. Each is signed and posted to /api/inbound/cal the
 way Cal.com does, and the lead, its stage, its meeting and its follow-ups are
-checked afterwards. Nothing here may write a wa_log row: WhatsApp is only ever
+checked afterwards. The cancellation was made from the link in Cal.com's
+email, after the reschedule. Nothing here may write a wa_log row: WhatsApp is only ever
 sent by a person.
 """
 import copy
@@ -48,6 +49,7 @@ def q(path, sql, params=()):
 
 CREATED, MOVED, PING = (fixture("cal_booking_created.json"), fixture("cal_booking_rescheduled.json"),
                         fixture("cal_ping.json"))
+CANCELLED = fixture("cal_booking_cancelled.json")
 EMAIL = CREATED["payload"]["attendees"][0]["email"]          # sam.booker@example.com
 OLD_UID, NEW_UID = CREATED["payload"]["uid"], MOVED["payload"]["uid"]
 
@@ -142,6 +144,27 @@ def test_ping_and_created(work):
     deliver(MOVED)
     check("a repeat reschedule changes nothing",
           q(path, "SELECT cal_uid, state FROM meetings") == [(NEW_UID, "moved")])
+
+    print("   cancelled")
+    before_stage = q(path, "SELECT pipeline_stage, next_action_at FROM businesses WHERE id=?", (bid,))
+    r = deliver(CANCELLED)
+    check("answers 200", r.status_code == 200)
+    m = q(path, "SELECT state, cancelled_at IS NOT NULL, cal_uid FROM meetings WHERE business_id=?", (bid,))
+    check("the meeting (found by the rescheduled uid) is marked cancelled", m == [("cancelled", 1, NEW_UID)], str(m))
+    check("the stage is NOT changed: the operator decides",
+          q(path, "SELECT pipeline_stage, next_action_at FROM businesses WHERE id=?", (bid,)) == before_stage
+          == [("booked", "2026-11-22 20:00:00")])
+    when = q(path, "SELECT cancelled_at FROM meetings")
+    deliver(CANCELLED)
+    check("a repeat cancellation changes nothing", q(path, "SELECT cancelled_at FROM meetings") == when)
+    check("the lead panel's detail carries the cancelled meeting",
+          db.get_business_detail(bid, owner_id=b)["meeting"]["state"] == "cancelled")
+    stray = copy.deepcopy(CANCELLED)
+    stray["payload"]["uid"] = "never-booked"
+    r = deliver(stray)
+    check("cancelling a booking we never saw: 200, noted on the event, nothing else",
+          r.status_code == 200 and q(path, "SELECT error FROM cal_events ORDER BY id DESC")[0][0]
+          == "cancelled booking not on record")
     check("every delivery was read",
           q(path, "SELECT COUNT(*) FROM cal_events WHERE processed_at IS NULL")[0][0] == 0)
     check("no wa_log row was written", q(path, "SELECT COUNT(*) FROM wa_log")[0][0] == 0)

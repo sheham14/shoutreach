@@ -436,8 +436,26 @@ function meetingWhenText(m) {
 
 // The meeting on a lead's panel: when, whether it's on the calendar, the
 // join link, the invite, and the only way to cancel it.
+// A meeting booked on Cal.com (Plan 2): when, where it came from, its state,
+// Join. Cal.com is the only thing that moves or cancels it, so nothing here
+// offers to -- and a cancelled one stays visible, saying so.
+function calMeetingBoxHtml(d, m) {
+  const state = m.state === 'cancelled'
+    ? '<span style="color:var(--red)">Cancelled on Cal.com</span>'
+    : m.state === 'moved' ? '<span style="color:var(--amber)">Moved on Cal.com</span>' : 'Booked on Cal.com';
+  const site = (d.enquiries || []).map(e => e.site)[0];
+  return `<div class="meeting-box">
+      <div><b>📅 ${esc(meetingWhenText(m))}</b></div>
+      <div>${state}${site ? ` · from ${esc(site)}` : ''}</div>
+      ${m.join_url && m.state !== 'cancelled'
+        ? `<div><a href="${esc(m.join_url)}" target="_blank" rel="noopener" style="color:var(--blue)">Join ↗</a></div>` : ''}
+      <div class="text-muted text-small">Moving or cancelling it happens on Cal.com.</div>
+    </div>`;
+}
+
 function meetingBoxHtml(d, opts) {
   const m = d.meeting;
+  if (m && m.source === 'cal') return calMeetingBoxHtml(d, m);
   if (!m || m.cancelled_at) return '';
   const pid = opts.panelId;
   const zoho = _zohoStatus;

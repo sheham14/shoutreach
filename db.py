@@ -9536,7 +9536,10 @@ def get_cal_events(limit: int = 50) -> list:
 # firstName, lastName; `metadata` is what the site attached (site, phone,
 # website, the answers by id, businessName or clinic) plus Cal.com's own
 # `videoCallUrl`; `videoCallData.url` is the join link; `responses.notes.value`
-# (= `additionalNotes`) is the site's "Label: answer" summary.
+# (= `additionalNotes`) is the site's "Label: answer" summary. A cancellation
+# is BOOKING_CANCELLED carrying the uid of the booking it ends -- after a
+# reschedule, the new uid -- with `status` "CANCELLED" and a
+# `cancellationReason` ('' when none was given).
 
 CAL_CREATED, CAL_RESCHEDULED, CAL_CANCELLED = "BOOKING_CREATED", "BOOKING_RESCHEDULED", "BOOKING_CANCELLED"
 
@@ -9671,6 +9674,24 @@ def _cal_booking_rescheduled(b: dict) -> str:
     return _cal_booking_created(b, state="moved")
 
 
+def _cal_booking_cancelled(p: dict) -> str:
+    """The meeting is marked cancelled and the lead says so. The stage is
+    NOT changed: the operator decides what happens next. A reason, if the
+    person gave one, is kept on the event."""
+    uid = p.get("uid") or ""
+    reason = str(p.get("cancellationReason") or "").strip()
+    with get_db() as conn:
+        m = _cal_meeting_for(conn, uid) if uid else None
+        if not m:
+            return "cancelled booking not on record"
+        conn.execute("""
+            UPDATE meetings SET state='cancelled', cancelled_at=COALESCE(cancelled_at, datetime('now')),
+                   updated_at=datetime('now')
+             WHERE business_id=?
+        """, (m["business_id"],))
+    return f"cancelled: {reason}" if reason else "cancelled"
+
+
 def process_cal_event(event_id: int) -> str:
     """Read one stored delivery and act on it. Never raises: whatever goes
     wrong is written on the event and the next one is still read."""
@@ -9686,6 +9707,8 @@ def process_cal_event(event_id: int) -> str:
             outcome = _cal_booking_created(_cal_booking(payload))
         elif trigger == CAL_RESCHEDULED:
             outcome = _cal_booking_rescheduled(_cal_booking(payload))
+        elif trigger == CAL_CANCELLED:
+            outcome = _cal_booking_cancelled(payload)
         else:
             outcome = f"ignored ({trigger or 'no triggerEvent'})"
     except CalWaiting as exc:
@@ -9697,7 +9720,8 @@ def process_cal_event(event_id: int) -> str:
         outcome = f"error: {exc}"
     with get_db() as conn:
         conn.execute("UPDATE cal_events SET processed_at=datetime('now'), error=? WHERE id=?",
-                     ("" if outcome in ("booked", "moved", "already recorded") else outcome[:500], event_id))
+                     ("" if outcome in ("booked", "moved", "cancelled", "already recorded")
+                      else outcome[:500], event_id))
     return outcome
 
 
