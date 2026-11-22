@@ -74,3 +74,14 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
 - Tests: tests/test_inbound.py §9. Browser: an enquiry posted to the harness
   the way a site would; Contacts → its panel shows the stage pill and the
   "Website enquiry" fold, answers in form order. Suite: 28 files pass.
+
+### Stopped before package 3 — waiting for real Cal.com payloads
+
+- `30b17d9`: admin download of received deliveries (`GET
+  /api/website-settings/cal-events`, link on the Website and bookings card),
+  to capture the payloads.
+- Asked the operator (2026-11-22) to deploy packages 1–2, create the webhook,
+  make a test booking from a site, reschedule it, cancel it, and send the
+  download back. Packages 3–8 not started. When the file arrives: scrub it
+  into `tests/fixtures/cal_*.json`, compare `payload.metadata` with the
+  handoff, then build package 3 on it.
