@@ -24,7 +24,7 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
 | 3 | A booking updates the lead | done | `e046fc6`, `48f13ab` |
 | 4 | Following up people who didn't book | done | `5904f68` |
 | 5 | One Meetings page | done | `2cffc4e` |
-| 6 | The other operator's copy | not started | |
+| 6 | The other operator's copy | done | `574cad8` |
 | 7 | Telling the team | not started | |
 | 8 | Remove ShoutReach's Zoho booking | not started | |
 
@@ -178,3 +178,21 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
 - Browser: Meetings at 1440×900 (with the lead open beside it) and 390×844;
   Dashboard block; WhatsApp tabs without Booked (a remembered Booked tab opens
   To do). Audit: F-19, F-23, F-24 marked resolved. Suite: 31 files pass.
+
+### Package 6 — done (`574cad8`)
+
+- `mark_other_operators_copies(business_id)`, called at the end of
+  `file_website_enquiry` (so both an enquiry and a booking that files one
+  trigger it). Uses `find_existing_business(..., owner_id=other)` for each
+  other user — the same matcher as the import's overlap notice.
+- Stage `booked_elsewhere` in `_LATER_PIPELINE_STAGES` (terminal, seeded by
+  its own marker). `set_business_pipeline` stops follow-ups for it as for
+  `booked`.
+- Choices: leaves a copy alone if it's already `booked` (their own meeting)
+  or on any terminal stage; clears `pipeline_at` too so not even the marking
+  time shows; a booking from a copied link (package 5's reference) doesn't
+  trigger it — it isn't a website lead being filed. **Question for the
+  operator:** the decided label is "Booked via the website", and the plan
+  applies it on an enquiry too, before any booking. It's built that way; say
+  if an enquiry-only match should read differently.
+- Handover §3 updated. Suite: 32 files pass.
