@@ -21,7 +21,7 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
 |---|---|---|---|
 | 1 | Settings and the two doors | done | `e9d6607` |
 | 2 | An enquiry becomes a lead | done | `9a9625d` |
-| 3 | A booking updates the lead | created + rescheduled done; **cancel waits for its payload** | `e046fc6` |
+| 3 | A booking updates the lead | done | `e046fc6`, `48f13ab` |
 | 4 | Following up people who didn't book | not started | |
 | 5 | One Meetings page | not started | |
 | 6 | The other operator's copy | not started | |
@@ -117,3 +117,18 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
   still unread; the first delivery or settings save after this deploys reads
   them, so the test booking appears as a booked lead (delete it if unwanted).
 - Tests: tests/test_cal_bookings.py. Suite: 29 files pass.
+
+### Package 3 — cancel done (`48f13ab`); package 3 complete
+
+- Cancellation captured 01:42 UTC from Cal.com's emailed cancel link (the
+  operator's earlier "No" on the calendar invite RSVP went to the calendar,
+  not Cal.com, so no webhook — expected). `BOOKING_CANCELLED` carries the uid
+  of the booking it ends (the rescheduled one), `status` "CANCELLED",
+  `cancellationReason` "" and `requestReschedule` false.
+- `_cal_booking_cancelled`: meeting state `cancelled`, `cancelled_at` set,
+  stage untouched; reason kept on the event's outcome.
+- Panel: `calMeetingBoxHtml` for `source='cal'` meetings (package 5 reduces
+  the Zoho box for the rest).
+- Browser: the four scrubbed fixtures replayed, signed, into the harness;
+  the lead read "Today 6:30 pm · Booked on Cal.com · from hexiv.co.uk ·
+  Join", then "8:00 pm · Cancelled on Cal.com", no Join.
