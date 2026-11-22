@@ -3,8 +3,9 @@
 Run:  python tests/test_booked_elsewhere.py     (exits 0 on pass, 1 on failure)
 
 When a website enquiry or booking is filed for one operator and the other
-already holds the same business, the other's copy is set to "Booked via the
-website" and its follow-ups stop. Decided 2026-11-21. It must reveal nothing
+already holds the same business, the other's copy says what really happened
+-- "Filled in the website form — not booked" for an enquiry alone, "Booked
+via the website" once there's a booking -- and its follow-ups stop. Decided 2026-11-21. It must reveal nothing
 else to them -- no time, no answers, no contact details, not who holds it --
 and the operator the lead was filed for learns nothing about the other copy.
 """
@@ -95,11 +96,13 @@ def main():
         check("filed for Anas", r.status_code == 200 and q(path, "SELECT owner_id FROM website_enquiries") == [(anas,)])
         stage = q(path, "SELECT pipeline_stage, pipeline_channel, pipeline_at, next_action_at FROM businesses WHERE id=?",
                   (mine,))
-        check("Sheham's copy: Booked via the website, with no time at all",
-              stage == [("booked_elsewhere", "website", None, None)], str(stage))
-        check("the stage is a terminal built-in with that label",
-              q(path, "SELECT label, is_terminal, is_builtin FROM pipeline_stages WHERE key='booked_elsewhere'")
-              == [("Booked via the website", 1, 1)])
+        check("an enquiry alone: Sheham's copy reads 'Filled in the website form — not booked', no time at all",
+              stage == [("enquired_elsewhere", "website", None, None)], str(stage))
+        check("both stages are terminal built-ins with those labels",
+              q(path, "SELECT key, label, is_terminal, is_builtin FROM pipeline_stages "
+                      "WHERE key IN ('enquired_elsewhere','booked_elsewhere') ORDER BY key")
+              == [("booked_elsewhere", "Booked via the website", 1, 1),
+                  ("enquired_elsewhere", "Filled in the website form — not booked", 1, 1)])
         check("its email sequence ended", q(path, "SELECT status FROM enrollments") == [("completed",)])
         check("its messaged WhatsApp lead stops (marked replied)",
               q(path, "SELECT replied FROM wa_leads WHERE business_id=?", (mine,)) == [(1,)])
@@ -109,7 +112,7 @@ def main():
         print("   what Sheham can see")
         d = cs.get(f"/api/businesses/{mine}").get_json()
         blob = json.dumps(d)
-        check("the stage, and nothing more", d["pipeline_stage"] == "booked_elsewhere" and not d.get("enquiries")
+        check("the stage, and nothing more", d["pipeline_stage"] == "enquired_elsewhere" and not d.get("enquiries")
               and d.get("meeting") is None and d.get("next_action_at") is None and d.get("pipeline_at") is None)
         check("no answers, no summary, no name, email or who holds it",
               not any(x in blob for x in ("no-shows", "secret summary", "Hana", "hana@", "anas")), blob[:200])
@@ -135,6 +138,26 @@ def main():
 
         print("\n2. A BOOKING FILED FOR THE OTHER OPERATOR")
         secret = db.rotate_cal_secret()
+
+        def deliver(body):
+            raw = json.dumps(body).encode()
+            return app_mod.app.test_client().post("/api/inbound/cal", data=raw, headers={
+                "X-Cal-Signature-256": hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()})
+        with open(os.path.join(HERE, "fixtures", "cal_booking_created.json"), encoding="utf-8") as f:
+            harbour = json.load(f)
+        harbour["payload"]["uid"] = "harbour-booking"
+        harbour["payload"]["attendees"][0]["email"] = "hana@harbourdental.co.uk"
+        harbour["payload"]["metadata"].update({"businessName": "Harbour Dental Ltd", "phone": "07700 900321",
+                                               "website": "harbourdental.co.uk"})
+        deliver(harbour)
+        check("the enquiry then books: Sheham's copy moves up to 'Booked via the website', still no time",
+              q(path, "SELECT pipeline_stage, pipeline_at, next_action_at FROM businesses WHERE id=?", (mine,))
+              == [("booked_elsewhere", None, None)])
+        app_mod.app.test_client().post("/api/inbound/website-lead", headers={"X-API-Key": key}, json={
+            "site": "hexiv.co.uk", "name": "Hana Harbour", "email": "hana2@harbourdental.co.uk",
+            "business": "Harbour Dental Ltd", "phone": "07700 900321"})
+        check("a later enquiry never moves it back down",
+              q(path, "SELECT pipeline_stage FROM businesses WHERE id=?", (mine,)) == [("booked_elsewhere",)])
         with open(os.path.join(HERE, "fixtures", "cal_booking_created.json"), encoding="utf-8") as f:
             booking = json.load(f)
         booking["payload"]["metadata"]["businessName"] = "Quay Physio"

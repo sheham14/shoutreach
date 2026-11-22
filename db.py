@@ -973,6 +973,7 @@ def init_db():
             _migrate_pipeline_wants_time(conn)
             _migrate_later_pipeline_stage(conn, "enquired")
             _migrate_later_pipeline_stage(conn, "booked_elsewhere")
+            _migrate_later_pipeline_stage(conn, "enquired_elsewhere")
         except Exception as exc:
             logger.warning("Pipeline stage seeding skipped: %s", exc)
 
@@ -4721,6 +4722,9 @@ _LATER_PIPELINE_STAGES = {
     # Plan 2 package 6: the OTHER operator's copy of a business that came in
     # through the website. Terminal: it leaves their board.
     "booked_elsewhere": ("Booked via the website", True, False, False, "good", 45),
+    # ...and the same before any booking: they filled in the website's form
+    # but haven't booked (yet). Becomes booked_elsewhere if a booking follows.
+    "enquired_elsewhere": ("Filled in the website form — not booked", True, False, False, "info", 44),
 }
 
 # Settings marker for the one-shot below -- see _migrate_pipeline_wants_time.
@@ -4948,7 +4952,7 @@ def set_business_pipeline(business_id: int, stage: str, channel: str = "",
             """, (business_id,))
             # A booking, from any channel, also stops email and unsent
             # WhatsApp (Plan 2) -- a stage alone used to stop neither.
-            if stage in ("booked", "booked_elsewhere"):
+            if stage in ("booked", "booked_elsewhere", "enquired_elsewhere"):
                 _stop_followups_on_booking(conn, business_id)
         else:
             conn.execute("""
@@ -9651,6 +9655,7 @@ def _cal_booking_created(b: dict, state: str = "booked") -> str:
         _cal_store_meeting(conn, e["business_id"], b, state)
         conn.execute("UPDATE website_enquiries SET cal_booking_id=?, updated_at=datetime('now') WHERE id=?",
                      (b["uid"], enquiry_id))
+    mark_other_operators_copies(e["business_id"], booked=True)
     queue_team_notification(e["owner_id"], "booking", e["business_id"])
     return "booked"
 
@@ -9924,17 +9929,25 @@ def booking_link_for(business_id: int, channel: str = "", owner_id=None):
 # ── The other operator's copy (Plan 2 package 6 -- crosses the wall, decided) ─
 #
 # A website lead is filed for whoever the site's setting names. If the OTHER
-# operator already holds the same business, their copy is set to the
-# built-in terminal stage "Booked via the website" and its follow-ups stop,
+# operator already holds the same business, their copy is set to a built-in
+# terminal stage that says what really happened -- "Filled in the website
+# form — not booked" for an enquiry alone (enquired_elsewhere), "Booked via
+# the website" once there's a booking (booked_elsewhere; an enquired copy
+# moves up to it, never back down) -- and its follow-ups stop,
 # so they don't go on cold-pitching someone who has just asked to talk.
 # Decided 2026-11-21 as a deliberate exception to the wall (Handover §3).
 # It reveals nothing else: no time (pipeline_at and next_action_at are left
 # empty), no answers, no contact details, not who holds it, nothing on the
 # lead's history. Nothing is merged. Their copy is left alone if it is
-# already booked, or already on a terminal stage.
+# already booked, or already on a terminal stage of its owner's.
 
-def mark_other_operators_copies(business_id: int) -> int:
-    """Returns how many other copies were marked."""
+_ELSEWHERE_STAGES = ("enquired_elsewhere", "booked_elsewhere")
+
+
+def mark_other_operators_copies(business_id: int, booked: bool = False) -> int:
+    """`booked`: a Cal.com booking was just filed, not only an enquiry.
+    Returns how many other copies were marked."""
+    target_stage = "booked_elsewhere" if booked else "enquired_elsewhere"
     with get_db() as conn:
         biz = conn.execute("SELECT * FROM businesses WHERE id=?", (business_id,)).fetchone()
         if not biz:
@@ -9954,11 +9967,16 @@ def mark_other_operators_copies(business_id: int) -> int:
                 SELECT b.pipeline_stage, COALESCE(s.is_terminal, 0) AS terminal
                   FROM businesses b LEFT JOIN pipeline_stages s ON s.key = b.pipeline_stage
                  WHERE b.id=?""", (row["id"],)).fetchone()
-            if current["pipeline_stage"] == "booked" or current["terminal"]:
+            stage_now = current["pipeline_stage"]
+            if stage_now == "booked" or stage_now == target_stage:
                 continue
+            if current["terminal"] and stage_now not in _ELSEWHERE_STAGES:
+                continue          # won, not interested...: their call, left alone
+            if stage_now == "booked_elsewhere" and not booked:
+                continue          # never back down from booked to enquired
             targets.append((row["id"], other))
     for other_id, other_owner in targets:
-        set_business_pipeline(other_id, "booked_elsewhere", "website", owner_id=other_owner)
+        set_business_pipeline(other_id, target_stage, "website", owner_id=other_owner)
         with get_db() as conn:
             # No time: not even when it was marked.
             conn.execute("UPDATE businesses SET pipeline_at=NULL, next_action_at=NULL WHERE id=?", (other_id,))
