@@ -9569,6 +9569,19 @@ def _cal_wall_clock(instant: str, tz_name: str):
     return moment.astimezone(zone).strftime("%Y-%m-%d %H:%M:%S"), utc
 
 
+def _cal_zone_problem(tz_name: str) -> str:
+    """Why the host's time zone couldn't be used (so times are in UTC), or ''.
+    Written on the delivery's record (review of Plan 2, item 8)."""
+    from zoneinfo import ZoneInfo
+    if not tz_name:
+        return "no organizer time zone in the booking: times stored as UTC"
+    try:
+        ZoneInfo(tz_name)
+    except Exception:
+        return f"unknown organizer time zone {tz_name[:60]!r}: times stored as UTC"
+    return ""
+
+
 _CAL_CONTACT_LABELS = {"business name", "clinic name", "website / instagram", "phone / whatsapp"}
 
 
@@ -9603,6 +9616,7 @@ def _cal_booking(p: dict) -> dict:
         "answers": _cal_answers(notes),
         "summary": notes,
         "starts_at": wall, "starts_utc": utc, "timezone": tz,
+        "zone_problem": _cal_zone_problem(tz),
         "minutes": int(p.get("length") or 30),
         # Only an https:// link is ever kept: it goes into an href on the
         # lead and on Meetings (review of Plan 2, item 1).
@@ -9818,10 +9832,11 @@ def process_cal_event(event_id: int) -> str:
     trigger = body.get("triggerEvent") or ""
     payload = body["payload"]
     try:
-        if trigger == CAL_CREATED:
-            outcome = _cal_booking_created(_cal_booking(payload))
-        elif trigger == CAL_RESCHEDULED:
-            outcome = _cal_booking_rescheduled(_cal_booking(payload))
+        if trigger in (CAL_CREATED, CAL_RESCHEDULED):
+            b = _cal_booking(payload)
+            outcome = (_cal_booking_created if trigger == CAL_CREATED else _cal_booking_rescheduled)(b)
+            if b["zone_problem"] and outcome in _CAL_DONE:
+                outcome = f"{outcome}; {b['zone_problem']}"
         elif trigger == CAL_CANCELLED:
             outcome = _cal_booking_cancelled(payload, event_id=event_id)
         else:

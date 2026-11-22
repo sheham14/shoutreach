@@ -459,6 +459,30 @@ def test_out_of_order(work):
           and q(path, "SELECT cal_uid, state FROM meetings") == [(NEW_UID, "moved")])
 
 
+def test_unknown_zone_noted(work):
+    print("\n9. AN UNKNOWN HOST TIME ZONE IS NOTED, NOT SILENT (review item 8)")
+    db, path, a, b, deliver, app_mod = boot(work, "zone.db")
+    db.save_website_config({"sites": {"hexiv.co.uk": {"owner_id": b, "country": "GB"}}})
+    odd = json.loads(json.dumps(CREATED))
+    odd["payload"]["organizer"]["timeZone"] = "Mars/Olympus_Mons"
+    deliver(odd)
+    check("still booked, at the UTC time", q(path, "SELECT starts_at, timezone FROM meetings")
+          == [("2026-11-22 22:00:00", "Mars/Olympus_Mons")])
+    check("and the delivery's record says why",
+          q(path, "SELECT processed_at IS NOT NULL, error FROM cal_events")
+          == [(1, "booked; unknown organizer time zone 'Mars/Olympus_Mons': times stored as UTC")],
+          str(q(path, "SELECT error FROM cal_events")))
+    none = json.loads(json.dumps(MOVED))
+    none["payload"]["organizer"].pop("timeZone")
+    deliver(none)
+    check("no time zone at all is noted too",
+          q(path, "SELECT error FROM cal_events ORDER BY id DESC LIMIT 1")[0][0].endswith(
+              "no organizer time zone in the booking: times stored as UTC"))
+    deliver(CANCELLED)
+    check("a normal delivery's record stays clear", q(path, "SELECT error FROM cal_events ORDER BY id DESC LIMIT 1")
+          == [("",)])
+
+
 def main():
     work = tempfile.mkdtemp(prefix="cal_bookings_")
     try:
@@ -470,6 +494,7 @@ def main():
         test_join_link_https_only(work)
         test_failed_delivery_retried(work)
         test_out_of_order(work)
+        test_unknown_zone_noted(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print()
