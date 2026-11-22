@@ -20,7 +20,7 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
 | Package | What | State | Commit |
 |---|---|---|---|
 | 1 | Settings and the two doors | done | `e9d6607` |
-| 2 | An enquiry becomes a lead | not started | |
+| 2 | An enquiry becomes a lead | done | `9a9625d` |
 | 3 | A booking updates the lead | **blocked: needs real Cal.com payloads** | |
 | 4 | Following up people who didn't book | not started | |
 | 5 | One Meetings page | not started | |
@@ -53,3 +53,24 @@ deployed 2026-11-22 00:59 UTC, the deploy run green).
   no owner set still stores the enquiry (filed for no one until set).
 - Tests: tests/test_inbound.py (56 checks). Browser: both cards, the
   show-once key dialog. Suite: 28 files pass.
+
+### Package 2 — done (`9a9625d`)
+
+- `file_website_enquiry` (called by `record_website_enquiry`), `_website_batch_id`
+  (lead_batches kind `website`, name "Website — <site>", found by kind+source),
+  `file_waiting_enquiries` (run by PUT /api/website-settings),
+  `get_business_enquiries` (in `get_business_detail` as `enquiries`; answers
+  as an ordered list of [question, answer] because Flask sorts JSON object
+  keys).
+- Stage `enquired` in `_LATER_PIPELINE_STAGES`, seeded by
+  `_migrate_later_pipeline_stage` (marker `_seeded_pipeline_stage_enquired`),
+  so a renamed or removed built-in is never put back. `PIPELINE_CHANNELS`
+  gains `website`; the pill says "via the website".
+- Choices: the business name falls back to the person's name when the form's
+  business field is empty; an enquiry only sets the stage when the business
+  has none (never moves a deal backwards); an enquiry filed once stays with
+  its owner even if the site's owner setting changes later; a repeat post
+  without answers keeps the first post's answers.
+- Tests: tests/test_inbound.py §9. Browser: an enquiry posted to the harness
+  the way a site would; Contacts → its panel shows the stage pill and the
+  "Website enquiry" fold, answers in form order. Suite: 28 files pass.
