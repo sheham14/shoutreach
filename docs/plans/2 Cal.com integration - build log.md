@@ -572,8 +572,9 @@ not marked done:
    (`_cal_apply_known_cancellation`); (b) a created booking named as
    `rescheduleUid` by a stored reschedule is skipped ("superseded by its
    reschedule"). Test: test_cal_bookings.py §8 (five orders).
-4. todo — the other operator's copy is marked only when it has no stage
-   (enquired_elsewhere may still move up); Handover §3 + tests.
+4. **done `c7b9761`** — `mark_other_operators_copies` marks only a copy with
+   no stage (or enquired_elsewhere → booked_elsewhere). Handover §3 updated.
+   Test: test_booked_elsewhere.py §4.
 5. todo — non-booker follow-up skipped if the business left "enquired".
 6. todo — filing an enquiry on a business the owner holds ends its email
    sequences.
