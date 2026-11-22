@@ -668,3 +668,23 @@ python tests/test_booked_elsewhere.py  # §4 is fix 4
 git log --oneline 2bb3a7a..plan-2-cal-com
 ```
 
+
+## Re-review passed (2026-11-22) — notes for later
+
+The re-review of `e1828d9` passed: all nine fixes verified, 32/32 under
+Python 3.11 on Linux (also with the clock moved ahead), 30 delivery-order
+cases, and the upgrade rehearsed again on a database built from `3eed5be`.
+No more code was needed. Three things to come back to, none blocking:
+
+1. **An enquiry from a lead already on a closed stage** (Not interested,
+   Won, Replied) keeps that stage and gets no follow-up. This follows from
+   the reviewer's wording of review fix 5. The operator will decide whether
+   an enquiry should reopen a closed lead.
+2. **A reschedule that arrives before its original and is then given up**
+   (failed five times) leaves the original marked "superseded by its
+   reschedule", so no lead is made. Safer later: file the original if its
+   reschedule was given up.
+3. **Handover §3** says a copy "stays so after its owner moves it on"; a
+   copy its owner clears to *no* stage is marked again on a repeat post
+   (only a copy with no stage is marked). Reword it when that section is
+   next edited.
