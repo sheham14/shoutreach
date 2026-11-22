@@ -579,8 +579,9 @@ not marked done:
    on `enquired` (or no stage); counts the rest as `moved_on`. Also fixed the
    test's shared-domain addresses (they collapsed into one business, so some
    package 4 checks tested the same lead).
-6. todo — filing an enquiry on a business the owner holds ends its email
-   sequences.
+6. **done `a76c0d8`** — `file_website_enquiry` ends running sequences when an
+   enquiry is first filed on a business that already existed. First filing
+   only (choice: a repeat post must not end package 4's own follow-up email).
 7. todo — non-ASCII signature header → 401 (compare bytes).
 8. todo — unknown organizer time zone recorded on the event's outcome.
 9. todo — line breaks collapsed in a team email's subject.
