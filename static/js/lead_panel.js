@@ -274,8 +274,8 @@ function calMeetingBoxHtml(d, m) {
   return `<div class="meeting-box">
       <div><b>📅 ${esc(meetingWhenText(m))}</b></div>
       <div>${state}${from ? ` · ${esc(from)}` : ''}</div>
-      ${m.join_url && m.state !== 'cancelled'
-        ? `<div><a href="${esc(m.join_url)}" target="_blank" rel="noopener" style="color:var(--blue)">Join ↗</a></div>` : ''}
+      ${httpsOnly(m.join_url) && m.state !== 'cancelled'
+        ? `<div><a href="${esc(httpsOnly(m.join_url))}" target="_blank" rel="noopener" style="color:var(--blue)">Join ↗</a></div>` : ''}
       <div class="text-muted text-small">Moving or cancelling it happens on Cal.com.</div>
     </div>`;
 }
@@ -290,7 +290,7 @@ function meetingBoxHtml(d, opts) {
   if (d.pipeline_stage !== MEETING_STAGE || !d.next_action_at) return '';
   const from = typeof meetingFrom === 'function'
     ? meetingFrom({ pipeline_channel: d.pipeline_channel, site: ((d.enquiries || [])[0] || {}).site }) : '';
-  const join = m && m.join_url && !m.cancelled_at ? m.join_url : '';
+  const join = m && !m.cancelled_at ? httpsOnly(m.join_url) : '';
   return `<div class="meeting-box">
       <div><b>📅 ${esc(fmtWhen(d.next_action_at, 'wall'))}</b></div>
       ${from ? `<div class="text-muted">${esc(from)}</div>` : ''}

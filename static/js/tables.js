@@ -211,6 +211,13 @@ function fmtWhen(value, kind = 'utc', opts = {}) {
   return rel ? `${rel} ${clock(d)}` : `${date}, ${clock(d)}`;
 }
 
+// A link for an href only if it is https:// (review of Plan 2, item 1): a
+// Cal.com join link -- or an old Zoho row's -- is never trusted to be one.
+function httpsOnly(url) {
+  const u = String(url || '').trim();
+  return /^https:\/\/[^\s\x00-\x1f\x7f]+$/i.test(u) ? u : '';
+}
+
 // Kept as names other files already call.
 function shortDate(s) { return fmtWhen(s, 'utc', { compact: true }); }
 function localDateTime(s) { return fmtWhen(s, 'utc'); }

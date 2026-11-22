@@ -9536,6 +9536,15 @@ class CalWaiting(Exception):
     unprocessed and tried again when the website settings are saved."""
 
 
+def _https_only(url) -> str:
+    """The link if it is an https:// URL with no spaces or control
+    characters, else ''. Anything else (javascript:, data:, http:) is dropped."""
+    url = str(url or "").strip()
+    if not re.fullmatch(r"https://[^\s\x00-\x1f\x7f]+", url, flags=re.IGNORECASE):
+        return ""
+    return url[:2000]
+
+
 def _cal_wall_clock(instant: str, tz_name: str):
     """A UTC instant from Cal.com as the host's wall-clock time, in the
     'YYYY-MM-DD HH:MM:SS' shape next_action_at holds (Handover §5c). Converted
@@ -9585,7 +9594,9 @@ def _cal_booking(p: dict) -> dict:
         "summary": notes,
         "starts_at": wall, "starts_utc": utc, "timezone": tz,
         "minutes": int(p.get("length") or 30),
-        "join_url": (p.get("videoCallData") or {}).get("url") or meta.get("videoCallUrl") or "",
+        # Only an https:// link is ever kept: it goes into an href on the
+        # lead and on Meetings (review of Plan 2, item 1).
+        "join_url": _https_only((p.get("videoCallData") or {}).get("url") or meta.get("videoCallUrl") or ""),
         "title": p.get("title") or "",
         # Set only by a link copied off a lead ("Copy booking link").
         "ref": meta.get(CAL_REF_KEY) or "",

@@ -62,8 +62,9 @@ async function loadMeetings() {
     <tr class="mt-group"><td colspan="5">${esc(g)} <span class="text-muted">· ${groups[g].length}</span></td></tr>
     ${groups[g].map(m => {
       const when = m.starts_at ? fmtWhen(m.starts_at, 'wall') : 'No time set';
-      const join = m.join_url && m.meeting_state !== 'cancelled'
-        ? `<a class="btn btn-ghost btn-sm" href="${esc(m.join_url)}" target="_blank" rel="noopener"
+      const joinUrl = httpsOnly(m.join_url);
+      const join = joinUrl && m.meeting_state !== 'cancelled'
+        ? `<a class="btn btn-ghost btn-sm" href="${esc(joinUrl)}" target="_blank" rel="noopener"
              onclick="event.stopPropagation()">Join ↗</a>` : '';
       return `<tr class="clickable ${(LeadPanel.current['mt-panel'] || {}).businessId === m.business_id ? 'current' : ''}"
                   onclick="openMeetingLead(${m.business_id})">

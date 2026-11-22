@@ -322,6 +322,42 @@ def test_rebooked_by_hand(work):
     check("no wa_log row", q(path, "SELECT COUNT(*) FROM wa_log")[0][0] == 0)
 
 
+def test_join_link_https_only(work):
+    print("\n6. A JOIN LINK IS ONLY EVER AN https:// LINK (review item 1)")
+    import re
+    import subprocess
+    db, path, a, b, deliver, app_mod = boot(work, "joinlink.db")
+    db.save_website_config({"sites": {"hexiv.co.uk": {"owner_id": b, "country": "GB"}}})
+    bad = json.loads(json.dumps(CREATED))
+    bad["payload"]["uid"] = "js-link"
+    bad["payload"]["videoCallData"] = None
+    bad["payload"]["metadata"]["videoCallUrl"] = "javascript:alert(document.cookie)"
+    r = deliver(bad)
+    check("a signed booking with a javascript: link is still filed", r.status_code == 200
+          and q(path, "SELECT pipeline_stage FROM businesses")[0][0] == "booked")
+    check("but no join link is stored", q(path, "SELECT join_url FROM meetings WHERE cal_uid='js-link'") == [("",)])
+    for url, kept in (("https://app.cal.com/video/x", True), ("http://app.cal.com/video/x", False),
+                      ("data:text/html,x", False), (" JavaScript:alert(1)", False),
+                      ("https://evil.example/\njavascript:x", False)):
+        check(f"stored? {url!r}", (db._https_only(url) != "") == kept)
+    js = os.path.join(os.path.dirname(HERE), "static", "js")
+    src = open(os.path.join(js, "tables.js"), encoding="utf-8").read()
+    fn = src[src.index("function httpsOnly"):src.index("// Kept as names other files already call.")]
+    try:
+        out = subprocess.run(["node", "-e", fn + "\nconsole.log(JSON.stringify(["
+                              "httpsOnly('https://app.cal.com/video/x'), httpsOnly('javascript:alert(1)'),"
+                              "httpsOnly(' JAVASCRIPT:x'), httpsOnly('http://x.y'), httpsOnly(null)]))"],
+                             capture_output=True, text=True, timeout=20).stdout
+        check("the page's httpsOnly keeps https and drops the rest (old rows too)",
+              json.loads(out) == ["https://app.cal.com/video/x", "", "", "", ""], out)
+    except FileNotFoundError:
+        print("  [skip] node isn't installed; the source checks below still run")
+    for name in ("meetings.js", "lead_panel.js"):
+        code = open(os.path.join(js, name), encoding="utf-8").read()
+        check(f"{name}: no join link reaches an href except through httpsOnly",
+              not re.search(r"href=\"\$\{esc\(m\.join_url\)\}", code) and "httpsOnly(m.join_url)" in code)
+
+
 def main():
     work = tempfile.mkdtemp(prefix="cal_bookings_")
     try:
@@ -330,6 +366,7 @@ def main():
         test_booked_from_any_channel(work)
         test_awkward_deliveries(work)
         test_rebooked_by_hand(work)
+        test_join_link_https_only(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print()
