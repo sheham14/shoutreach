@@ -9,9 +9,9 @@ a coding session that has not seen the conversations behind it.
 | [1 · Fix now](1%20Fix%20now.md) | Three security holes, the sender's reliability, and a dozen visible faults. Nothing looks different afterwards | — |
 | [2 · Cal.com integration](2%20Cal.com%20integration.md) | Website enquiries and bookings arrive in ShoutReach; a Meetings page; ShoutReach's own Zoho booking is removed | Plan 1, packages 1 and 4 |
 | [3 · Redesign, phase 1](3%20Redesign%20phase%201.md) | The new colours, typeface, icons and controls on today's layouts. Nothing moves | Plan 1, package 7 |
+| [4 · Back-end hardening](4%20Back-end%20hardening.md) | Deploys that test and roll back, a real test of the sender, secrets encrypted at rest, failed sends and missed replies, the lead audit's safety, imports that don't lock the database, errors you can see. Written 2026-11-22; has **Decide first** choices for the operator | Plan 2 merged |
 
-Later plans, not written yet: back-end hardening (B-4, B-5, B-11, B-12, B-13,
-B-18, B-25 to B-30), and redesign phases 2 to 5 (audit §8).
+Later plans, not written yet: redesign phases 2 to 5 (audit §8).
 
 ## Rules for every plan
 

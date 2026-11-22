@@ -539,3 +539,8 @@ to be done later in its own session and branch, not on this one.
 Still for the operator to test later (unchanged): a booking made from
 "Copy booking link" (question 2); Cal.com's time zone (question 4);
 deleting the "Hevixxx" test booking after the merge (question 3).
+
+**Also on this branch (2026-11-22):** `docs/plans/4 Back-end hardening.md`,
+the next written plan, added at the operator's request so it's reviewed in
+the same batch. It's a plan only: no code. Its branch is `plan-4-hardening`,
+from `master` after Plan 2 is merged.

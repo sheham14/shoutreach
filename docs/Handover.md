@@ -1208,8 +1208,10 @@ let a hand booking replace a cancelled Cal.com meeting, fixed the lead
 panel crashing on an old saved audit, removed unused imports, and fixed a
 date-dependent test. Still for the operator to test before or after the
 merge: a booking from "Copy booking link", and Cal.com's time zone.
-**Next:** review and merge `plan-2-cal-com`; Plan 3 (the redesign) comes
-later, separately.
+**Next:** review and merge `plan-2-cal-com`; then Plan 4, back-end
+hardening (`docs/plans/4 Back-end hardening.md`, written 2026-11-22: it
+covers B-13 and everything below, and lists the choices the operator makes
+first). Plan 3 (the redesign) comes later, separately.
 
 Also still open and real: B-13 (secrets stored in plaintext — SMTP/IMAP
 passwords, AI keys, the Cal.com webhook secret, the session key — and in
