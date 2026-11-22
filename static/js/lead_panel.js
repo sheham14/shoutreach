@@ -444,46 +444,34 @@ function calMeetingBoxHtml(d, m) {
     ? '<span style="color:var(--red)">Cancelled on Cal.com</span>'
     : m.state === 'moved' ? '<span style="color:var(--amber)">Moved on Cal.com</span>' : 'Booked on Cal.com';
   const site = (d.enquiries || []).map(e => e.site)[0];
+  const from = typeof meetingFrom === 'function'
+    ? meetingFrom({ pipeline_channel: d.pipeline_channel, site }) : '';
   return `<div class="meeting-box">
       <div><b>📅 ${esc(meetingWhenText(m))}</b></div>
-      <div>${state}${site ? ` · from ${esc(site)}` : ''}</div>
+      <div>${state}${from ? ` · ${esc(from)}` : ''}</div>
       ${m.join_url && m.state !== 'cancelled'
         ? `<div><a href="${esc(m.join_url)}" target="_blank" rel="noopener" style="color:var(--blue)">Join ↗</a></div>` : ''}
       <div class="text-muted text-small">Moving or cancelling it happens on Cal.com.</div>
     </div>`;
 }
 
+// The meeting on a lead's panel (Plan 2, reduced): when, where it came from,
+// Join, and how it changes. A Cal.com booking has its own box above; a
+// meeting set by hand is just the stage's time -- nothing here reaches a
+// calendar any more.
 function meetingBoxHtml(d, opts) {
   const m = d.meeting;
   if (m && m.source === 'cal') return calMeetingBoxHtml(d, m);
-  if (!m || m.cancelled_at) return '';
-  const pid = opts.panelId;
-  const zoho = _zohoStatus;
-  const connected = zoho && zoho.connected;
-  const link = (text, call) => `<a style="color:var(--blue);cursor:pointer" onclick="${call}">${text}</a>`;
-  let cal;
-  if (m.sync_error) {
-    cal = `<span style="color:var(--red)">Not on the calendar — Zoho said: ${esc(m.sync_error)}</span>
-      · ${link('Try again', `retryMeetingSync(${d.id}, '${pid}')`)}`;
-  } else if (m.event_uid) {
-    cal = `<span style="color:var(--green)">✓</span> On ${esc(m.calendar_name || 'your calendar')}`;
-  } else if (connected) {
-    cal = `Not on a calendar yet · ${link('Add it to your calendar', `retryMeetingSync(${d.id}, '${pid}')`)}`;
-  } else {
-    cal = `<span class="text-muted">Not on a calendar — ${link('connect Zoho Calendar', "openSettingsTab('mine')")}</span>`;
-  }
-  const invite = m.invited_at
-    ? `Invite sent to ${esc(m.invite_email)} <span class="text-muted">${esc(whenLocal(m.invited_at))}</span>`
-    : (connected && m.event_uid ? link('Send the client an invite…', `sendMeetingInvite(${d.id}, '${pid}')`) : '');
-  const stale = d.pipeline_stage !== MEETING_STAGE
-    ? `<div class="text-muted text-small">The stage isn't "Meeting booked" any more, but the meeting is still on. Cancel it below if it's off.</div>` : '';
+  if (d.pipeline_stage !== MEETING_STAGE || !d.next_action_at) return '';
+  const from = typeof meetingFrom === 'function'
+    ? meetingFrom({ pipeline_channel: d.pipeline_channel, site: ((d.enquiries || [])[0] || {}).site }) : '';
+  const join = m && m.join_url && !m.cancelled_at ? m.join_url : '';
   return `<div class="meeting-box">
-      <div><b>📅 ${esc(meetingWhenText(m))}</b></div>
-      <div>${cal}</div>
-      ${m.join_url ? `<div><a href="${esc(m.join_url)}" target="_blank" rel="noopener" style="color:var(--blue)">Join link ↗</a></div>` : ''}
-      ${invite ? `<div>${invite}</div>` : ''}
-      ${stale}
-      <div>${link('<span style="color:var(--red)">Cancel meeting…</span>', `cancelMeeting(${d.id}, '${pid}')`)}</div>
+      <div><b>📅 ${esc(fmtWhen(d.next_action_at, 'wall'))}</b></div>
+      ${from ? `<div class="text-muted">${esc(from)}</div>` : ''}
+      ${join ? `<div><a href="${esc(join)}" target="_blank" rel="noopener" style="color:var(--blue)">Join ↗</a></div>` : ''}
+      <div class="text-muted text-small">Arranged outside Cal.com — to move it, change the stage's time.
+        Booking on Cal.com instead? Use Copy booking link.</div>
     </div>`;
 }
 
@@ -860,12 +848,28 @@ function callOutcomeLabel(key) {
 // matters now that a channel-scoped Booked-style view can filter on it.
 const _PANEL_TO_PIPE_CHANNEL = { calling: 'call', email: 'email', whatsapp: 'whatsapp' };
 
+// Booking from a call or WhatsApp (Plan 2): the Cal.com page, prefilled with
+// this lead's name and email and carrying a signed reference, so the booking
+// that comes back lands on exactly this lead.
+async function copyBookingLink(businessId, channel) {
+  const r = await api(`/api/businesses/${businessId}/booking-link?channel=${encodeURIComponent(channel)}`);
+  if (!r || !r.url) { toast((r && r.error) || 'Could not make the link', 'err'); return; }
+  try { await navigator.clipboard.writeText(r.url); toast('Booking link copied — send it to them'); }
+  catch (_) {
+    await chooseDialog({ title: 'Booking link', confirm: 'Done',
+      body: `<input readonly class="mono" style="width:100%;font-size:12px" value="${esc(r.url)}" onclick="this.select()" />` });
+  }
+}
+
 function pipelineRowHtml(d, opts) {
   const channel = _PANEL_TO_PIPE_CHANNEL[opts.channel] || '';
   const set = `setPipelineStage(${d.id}, '${channel}', () => refreshLeadPanel('${opts.panelId}'))`;
+  const book = `<a class="text-small" style="color:var(--blue);cursor:pointer"
+      onclick="copyBookingLink(${d.id}, '${channel}')">Copy booking link</a>`;
   if (!d.pipeline_stage) {
-    return `<div style="margin-top:8px">
+    return `<div class="flex items-center gap-2" style="margin-top:8px;flex-wrap:wrap">
       <a class="text-small" style="color:var(--blue);cursor:pointer" onclick="${set}">+ Set a stage</a>
+      <span class="text-muted text-small">·</span> ${book}
     </div>`;
   }
   const overdue = pipelineOverdue(d)
@@ -873,6 +877,7 @@ function pipelineRowHtml(d, opts) {
   return `<div class="flex items-center gap-2" style="margin-top:8px;flex-wrap:wrap">
       ${pipelinePill(d)}${overdue}
       <a class="text-small" style="color:var(--blue);cursor:pointer" onclick="${set}">Change</a>
+      ${d.pipeline_stage === 'booked' ? '' : `<span class="text-muted text-small">·</span> ${book}`}
     </div>`;
 }
 

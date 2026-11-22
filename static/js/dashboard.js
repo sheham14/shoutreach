@@ -107,6 +107,8 @@ async function refreshDashboard() {
     ['Reply rate', `${w.reply_rate ?? 0}%`, 'green'], ['Due', w.due, w.due ? 'amber' : ''],
   ]);
 
+  _renderWebsiteBlock(d.website || []);
+
   const tbody = document.getElementById('dashboard-campaigns');
   const campaigns = d.campaigns || [];
   if (!campaigns.length) {
@@ -153,6 +155,33 @@ function _renderSender(sender) {
   el.textContent = !sender.alive
     ? '⚠ The email sender isn\'t running. Reload this page to restart it; if this stays, check the server.'
     : `⚠ The email sender last ran ${ago}. Nothing is being sent.`;
+}
+
+// "From the website": recent enquiries and where each stands. Hidden until
+// there's at least one, so an install without the websites never sees it.
+const _WEB_STATUS_TONE = { Booked: 'green', Moved: 'amber', 'Booking cancelled': 'red',
+                           'Followed up': '', "Didn't book yet": 'amber' };
+
+function _renderWebsiteBlock(rows) {
+  const card = document.getElementById('dash-website-card');
+  if (!card) return;
+  card.style.display = rows.length ? '' : 'none';
+  document.getElementById('dash-website').innerHTML = rows.map(r => {
+    const who = r.company || r.business_name || r.name;
+    return `<tr class="clickable" onclick="openWebsiteLead(${r.business_id})">
+      <td><span class="biz-name">${esc(who)}</span>${r.name && r.name !== who ? `<span class="sub">${esc(r.name)}</span>` : ''}</td>
+      <td class="text-muted">${esc(r.site)}</td>
+      <td class="nowrap">${esc(fmtWhen(r.created_at, 'utc'))}</td>
+      <td>${pill(r.status, _WEB_STATUS_TONE[r.status] || '')}</td>
+      <td class="m-card">${mCard(`<span class="biz-name">${esc(who)}</span> ${pill(r.status, _WEB_STATUS_TONE[r.status] || '')}`,
+        `${esc(r.site)} · ${esc(fmtWhen(r.created_at, 'utc'))}`)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function openWebsiteLead(businessId) {
+  showSection('contacts');
+  openContactDetail(businessId);
 }
 
 function openAnyCampaign(channel, id) {

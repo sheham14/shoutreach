@@ -2845,7 +2845,36 @@ def api_dashboard():
     scheduler.ensure_running()
     data = db.get_dashboard(owner_id=me(), since=request.args.get("since") or None)
     data["sender"] = scheduler.status()
+    # Plan 2: "From the website" -- recent enquiries and where each stands.
+    data["website"] = db.get_recent_enquiries(owner_id=me())
     return jsonify(data)
+
+
+@app.route("/api/meetings", methods=["GET"])
+@login_required
+def api_meetings():
+    """The Meetings page: every booked meeting of this operator's, from any
+    channel or the website."""
+    return jsonify(db.get_meetings(owner_id=me()))
+
+
+@app.route("/api/meetings/count", methods=["GET"])
+@login_required
+def api_meetings_count():
+    """For the sidebar, loaded with the app (F-23)."""
+    return jsonify({"count": db.count_meetings(owner_id=me())})
+
+
+@app.route("/api/businesses/<int:bid>/booking-link", methods=["GET"])
+@login_required
+@owned("business", "bid")
+def api_booking_link(bid):
+    """The Cal.com page prefilled for this lead, with a signed reference so the
+    booking that comes back lands on exactly this lead."""
+    url = db.booking_link_for(bid, channel=(request.args.get("channel") or ""), owner_id=me())
+    if not url:
+        return jsonify({"ok": False, "error": "No Cal.com booking link is set yet (Team setup → Website and bookings)."}), 400
+    return jsonify({"ok": True, "url": url})
 
 
 # ── API: Lead lists (one per import) ──────────────────────────────────────────

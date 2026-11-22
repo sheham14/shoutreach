@@ -15,6 +15,7 @@ function showSection(name) {
   if (name === 'dashboard')  refreshDashboard();
   if (name === 'email')      loadEmail();
   if (name === 'contacts')   loadContacts();
+  if (name === 'meetings')   loadMeetings();
   if (name === 'calling')    loadCalling();
   if (name === 'whatsapp')   loadWhatsApp();
   if (name === 'logs')       loadLogs();

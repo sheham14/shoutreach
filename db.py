@@ -9606,6 +9606,8 @@ def _cal_booking(p: dict) -> dict:
         "minutes": int(p.get("length") or 30),
         "join_url": (p.get("videoCallData") or {}).get("url") or meta.get("videoCallUrl") or "",
         "title": p.get("title") or "",
+        # Set only by a link copied off a lead ("Copy booking link").
+        "ref": meta.get(CAL_REF_KEY) or "",
     }
 
 
@@ -9639,6 +9641,20 @@ def _cal_booking_created(b: dict, state: str = "booked") -> str:
     with get_db() as conn:
         if _cal_meeting_for(conn, b["uid"]):
             return "already recorded"
+    ref = read_booking_ref(b["ref"]) if b.get("ref") else None
+    if ref:
+        # Booked from a link copied off a lead: exactly that lead, whoever
+        # owns it and whichever site (if any) the page belongs to.
+        business_id, channel = ref
+        with get_db() as conn:
+            biz = conn.execute("SELECT owner_id FROM businesses WHERE id=?", (business_id,)).fetchone()
+        if not biz:
+            return "not filed: the lead it was booked for has been deleted"
+        set_business_pipeline(business_id, "booked", channel or "website",
+                              next_action_at=b["starts_at"], owner_id=biz["owner_id"])
+        with get_db() as conn:
+            _cal_store_meeting(conn, business_id, b, state)
+        return "booked"
     if b["site"] not in WEBSITE_SITES:
         return f"not filed: no known site in metadata ({b['site'] or 'none'})"
     enquiry_id = record_website_enquiry({
@@ -9804,3 +9820,122 @@ def run_website_followups(now: datetime.datetime = None) -> dict:
             conn.execute("UPDATE website_enquiries SET followup_queued_at=? WHERE id=? AND followup_queued_at IS NULL",
                          (now.strftime("%Y-%m-%d %H:%M:%S"), e["id"]))
     return counts
+
+
+# ── Meetings page, the website block, booking links (Plan 2 package 5) ──────
+
+def get_meetings(owner_id=None) -> list:
+    """
+    Every meeting this operator has booked, from any channel or the website:
+    each business whose stage is 'booked', with its time (wall clock, as the
+    operator reads it -- Handover §5c), where it came from, and the Cal.com
+    meeting's state and join link if there is one. A cancelled meeting stays
+    listed while the stage is still booked: what happens next is the
+    operator's call. The page groups them; this only orders them.
+    """
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        rows = conn.execute("""
+            SELECT b.id AS business_id, b.name AS company, b.phone, b.pipeline_channel,
+                   b.next_action_at AS starts_at, b.pipeline_at,
+                   m.source AS meeting_source, m.state AS meeting_state, m.join_url,
+                   m.timezone, m.minutes, m.cancelled_at,
+                   (SELECT e.site FROM website_enquiries e WHERE e.business_id = b.id
+                     ORDER BY e.id DESC LIMIT 1) AS site
+              FROM businesses b
+              LEFT JOIN meetings m ON m.business_id = b.id
+             WHERE b.owner_id = ? AND b.pipeline_stage = 'booked'
+             ORDER BY b.next_action_at IS NULL, b.next_action_at ASC
+        """, (owner,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_meetings(owner_id=None) -> int:
+    """The sidebar's number: booked meetings not cancelled. Unfiltered, and
+    asked for when the app loads, not when the page is first opened (F-23)."""
+    return sum(1 for m in get_meetings(owner_id=owner_id) if m["meeting_state"] != "cancelled")
+
+
+def get_recent_enquiries(owner_id=None, limit: int = 8) -> list:
+    """The Dashboard's "From the website": this operator's latest enquiries
+    and where each stands."""
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        rows = conn.execute("""
+            SELECT e.id, e.business_id, e.site, e.name, e.business_name, e.created_at,
+                   e.cal_booking_id, e.followup_queued_at,
+                   b.name AS company, b.pipeline_stage, m.state AS meeting_state,
+                   COALESCE(s.label, b.pipeline_stage) AS stage_label
+              FROM website_enquiries e
+              JOIN businesses b ON b.id = e.business_id
+              LEFT JOIN meetings m ON m.business_id = b.id
+              LEFT JOIN pipeline_stages s ON s.key = b.pipeline_stage
+             WHERE e.owner_id = ?
+             ORDER BY e.id DESC LIMIT ?
+        """, (owner, int(limit))).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d["meeting_state"] == "cancelled":
+            d["status"] = "Booking cancelled"
+        elif d["cal_booking_id"]:
+            d["status"] = "Moved" if d["meeting_state"] == "moved" else "Booked"
+        elif d["followup_queued_at"]:
+            d["status"] = "Followed up"
+        else:
+            d["status"] = "Didn't book yet"
+        out.append(d)
+    return out
+
+
+# A booking made from a link copied off a lead carries this in Cal.com's
+# metadata, so the booking that comes back is matched to exactly that lead.
+CAL_REF_KEY = "shoutreach_ref"
+_REF_CHANNELS = ("call", "whatsapp", "email", "")
+
+
+def make_booking_ref(business_id: int, channel: str = "") -> str:
+    """'<business id>.<channel>.<signature>', signed with the install's own
+    secret so a booking can't claim someone else's lead."""
+    channel = channel if channel in _REF_CHANNELS else ""
+    body = f"{int(business_id)}.{channel}"
+    sig = _hmac.new(get_or_create_secret().encode(), body.encode(), hashlib.sha256).hexdigest()[:24]
+    return f"{body}.{sig}"
+
+
+def read_booking_ref(ref: str):
+    """(business_id, channel) for a genuine reference, else None."""
+    parts = str(ref or "").split(".")
+    if len(parts) != 3 or not parts[0].isdigit() or parts[1] not in _REF_CHANNELS:
+        return None
+    if not _hmac.compare_digest(make_booking_ref(int(parts[0]), parts[1]), str(ref)):
+        return None
+    return int(parts[0]), parts[1]
+
+
+def booking_link_for(business_id: int, channel: str = "", owner_id=None):
+    """The Cal.com booking page, prefilled with the lead's name and email and
+    carrying the signed reference. None when no booking link is set."""
+    from urllib.parse import urlencode
+    link = (get_website_config().get("cal_booking_link") or "").strip()
+    if not link:
+        return None
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        biz = conn.execute("SELECT id, name FROM businesses WHERE id=? AND owner_id=?",
+                           (int(business_id), owner)).fetchone()
+        if not biz:
+            return None
+        lead = conn.execute("""
+            SELECT email, first_name, last_name FROM email_leads
+             WHERE business_id=? AND owner_id=? AND status NOT IN ('deleted')
+             ORDER BY duplicate_of IS NOT NULL, id LIMIT 1
+        """, (biz["id"], owner)).fetchone()
+    params = {}
+    person = " ".join(x for x in ((lead["first_name"], lead["last_name"]) if lead else ()) if x)
+    if person or biz["name"]:
+        params["name"] = person or biz["name"]
+    if lead and lead["email"]:
+        params["email"] = lead["email"]
+    params[f"metadata[{CAL_REF_KEY}]"] = make_booking_ref(biz["id"], channel)
+    return link + ("&" if "?" in link else "?") + urlencode(params)

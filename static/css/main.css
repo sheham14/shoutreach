@@ -870,6 +870,13 @@
   /* WhatsApp To do: a long business name wraps rather than pushing the
      number off the side -- the number is what the row is for. */
   .wa-queue-table .biz-name { white-space: normal; }
+  /* Meetings: group headings are rows of the one table, so columns line up
+     (F-19), with the same padding as every other cell. */
+  .mt-table tr.mt-group td {
+    padding: 14px 14px 6px; font-size: 12px; font-weight: 600; color: var(--text2);
+    background: transparent; border-bottom: 1px solid var(--border); cursor: default;
+  }
+  .mt-table .biz-name { white-space: normal; }
   .wa-queue-table td, .wa-queue-table th { padding-left: 10px; padding-right: 10px; }
 
   /* td.m-only: a cell drawn for phones only (a second copy of a row's

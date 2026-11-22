@@ -159,8 +159,8 @@ Small, self-contained, and worth doing first. Effort: **S** under an hour,
 | 9 | ✅ Email → To do shows two "Done" buttons on every row | Medium | S | F-20 |
 | 10 | ✅ Calling shows raw timestamps (`2026-11-20T10:30`) | Medium | S | F-21 |
 | 11 | ✅ Phone: the menu button covers the logo when the menu is open | Low | S | F-22 |
-| 12 | WhatsApp: the Booked count reads 0 until you open the tab — *moved to Plan 2: the Booked tab becomes a Meetings page* | Medium | S | F-23 |
-| 13 | WhatsApp → Booked is unreadable on a phone: the meeting time is cut off — *moved to Plan 2* | High | M | F-24 |
+| 12 | ✅ WhatsApp: the Booked count reads 0 until you open the tab — *moved to Plan 2: the Booked tab becomes a Meetings page* | Medium | S | F-23 |
+| 13 | ✅ WhatsApp → Booked is unreadable on a phone: the meeting time is cut off — *moved to Plan 2* | High | M | F-24 |
 | 14 | ✅ Dashboard "Sent today" is the whole install's figure, shown as yours | Low | S | B-10 |
 | 15 | ✅ "Check for email replies & send" is shown to non-admins and answers "Forbidden" | Low | S | F-25 |
 | 16 | ✅ Typing in any box on an iPhone zooms the page (expected, not seen) | Medium | S | F-30 |
@@ -368,6 +368,14 @@ pushes the time out of sight completely. Signed in as the non-admin account,
 the campaign name beside it is squeezed into a column two letters wide. The
 one fact this tab exists to show is the one you can't read.
 
+> ✅ **RESOLVED** — Plan 2, package 5. The WhatsApp Booked tab is gone; every
+> meeting, from any channel or the website, is on a new **Meetings** page:
+> one table with Needs an outcome / Today / Tomorrow / Later as heading rows
+> (so the columns line up), its count loaded with the app from an unfiltered
+> query, and on a phone each meeting is a card with the time first and Join
+> beside it. Checked: `tests/test_meetings.py`, and in Chromium at 1440×900
+> and 390×844 on the harness.
+
 **F-19 · Columns don't line up, and the Join button can vanish. (Medium)**
 Overdue, Today, Tomorrow and Later are four separate tables, so the "when"
 column starts in a different place in each. Group headings sit hard against
@@ -375,12 +383,28 @@ the card's edge with no padding. With a lead open beside the list, a long
 name pushes Join and .ics off the right edge.
 See [desktop-whatsapp-booked.png](evidence-2026-11-21/desktop-whatsapp-booked.png).
 
+> ✅ **RESOLVED** — Plan 2, package 5. The WhatsApp Booked tab is gone; every
+> meeting, from any channel or the website, is on a new **Meetings** page:
+> one table with Needs an outcome / Today / Tomorrow / Later as heading rows
+> (so the columns line up), its count loaded with the app from an unfiltered
+> query, and on a phone each meeting is a card with the time first and Join
+> beside it. Checked: `tests/test_meetings.py`, and in Chromium at 1440×900
+> and 390×844 on the harness.
+
 **F-23 · The Booked count says 0 until you open the tab. (Medium · fix-now
 12)** It is only set when that tab loads
 ([whatsapp.js:1004](../../static/js/whatsapp.js#L1004)). Five meetings were
 booked and the tab read 0 from every other tab. This is the same family of
 fault as the Leads count that misled your co-founder in September (Handover
 §5b).
+
+> ✅ **RESOLVED** — Plan 2, package 5. The WhatsApp Booked tab is gone; every
+> meeting, from any channel or the website, is on a new **Meetings** page:
+> one table with Needs an outcome / Today / Tomorrow / Later as heading rows
+> (so the columns line up), its count loaded with the app from an unfiltered
+> query, and on a phone each meeting is a card with the time first and Join
+> beside it. Checked: `tests/test_meetings.py`, and in Chromium at 1440×900
+> and 390×844 on the harness.
 
 #### Calling → To do
 

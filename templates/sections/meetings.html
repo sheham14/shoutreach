@@ -1,0 +1,24 @@
+<!-- Every booked meeting, from any channel and from the website (Plan 2).
+     One table, grouped by when, so the columns line up (audit F-19); each
+     row opens its lead beside the list. Cal.com is the only thing that moves
+     or cancels a meeting, so nothing here does. -->
+<div class="section" id="section-meetings">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Meetings</div>
+      <div class="page-sub">Everything booked — from a call, WhatsApp, email or the website</div>
+    </div>
+    <button class="btn btn-ghost btn-sm" onclick="loadMeetings()">↻ Refresh</button>
+  </div>
+  <div class="work-split" id="mt-split" style="grid-template-columns:1fr">
+    <div class="card">
+      <div class="table-wrap">
+        <table class="lead-table m-table mt-table">
+          <thead><tr><th>When</th><th>Business</th><th>From</th><th>State</th><th></th></tr></thead>
+          <tbody id="mt-body"><tr><td colspan="5"><div class="empty-state"><p>Loading…</p></div></td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card work-panel sheet" id="mt-panel" style="display:none"></div>
+  </div>
+</div>
