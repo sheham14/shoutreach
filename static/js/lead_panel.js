@@ -454,7 +454,13 @@ function auditResultsHtml(a, ctx) {
   } else if (ps.error) {
     rows.push(`<div class="audit-row"><span class="k">Mobile scores</span><div class="text-muted">${esc(ps.error)}</div></div>`);
   }
-  const site = a.site || {};
+  // An audit saved by an older version may lack any of these lists (one from
+  // before Sept 2026 has no `engagement`), and reading .length on it used to
+  // stop the whole lead panel from rendering. Missing means none.
+  const site = { ...(a.site || {}) };
+  ['built_with', 'schema_types', 'tracking', 'engagement'].forEach(k => {
+    if (!Array.isArray(site[k])) site[k] = [];
+  });
   if (site.ok) {
     const ssl = a.ssl || {};
     rows.push(`<div class="audit-row"><span class="k">Website</span><div>
