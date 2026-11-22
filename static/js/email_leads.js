@@ -73,7 +73,7 @@ async function loadEmailReplies() {
         <td class="m-card">${mCard(`<span class="biz-name">${esc(r.company || r.email)}</span>`,
           esc(r.reply_subject || '(no subject)'),
           `${r.replied_at ? esc(localDateTime(r.replied_at)) : ''} · ${esc(r.campaign_name || '')}`)}</td>
-        <td class="m-keep">${action}</td>
+        <td class="m-keep m-only">${action}</td>
       </tr>`;
     }).join('')}</tbody></table></div>`;
 }
@@ -249,7 +249,7 @@ async function loadUnsubscribed() {
     <td class="mono" style="font-size:12px">${esc(c.email || '—')}</td>
     <td>${esc([c.first_name, c.last_name].filter(Boolean).join(' ') || '—')}</td>
     <td>${esc(c.company || '—')}</td>
-    <td class="mono text-muted" style="font-size:11px">${(c.created_at || '').substring(0, 10)}</td>
+    <td class="mono text-muted" style="font-size:11px">${esc(fmtWhen(c.created_at, 'utc', { dateOnly: true }))}</td>
   </tr>`).join('');
 }
 
@@ -287,7 +287,7 @@ async function loadInvalidMx() {
     <td class="mono" style="font-size:12px">${esc(c.email || '—')}</td>
     <td>${esc(c.company || '—')}</td>
     <td class="mono text-muted" style="font-size:12px">${esc(c.website || '—')}</td>
-    <td class="mono text-muted" style="font-size:11px">${(c.created_at || '').substring(0, 10)}</td>
+    <td class="mono text-muted" style="font-size:11px">${esc(fmtWhen(c.created_at, 'utc', { dateOnly: true }))}</td>
   </tr>`).join('');
 }
 
@@ -421,7 +421,25 @@ async function enrollSelected() {
   openCampaign(currentCampaignId);
 }
 
+// Enroll All Active can start real email on an active campaign, so it asks
+// first, with the number of addresses it would add (audit B-9).
 async function enrollAll() {
+  const p = await api(`/api/campaigns/${currentCampaignId}/send-preview`);
+  if (!p || p.error) { toast((p && p.error) || 'Could not check this campaign', 'err'); return; }
+  if (!p.enrollable) {
+    toast('None of your active addresses can be added — they are already in this or another campaign, or opted out');
+    return;
+  }
+  const n = p.enrollable === 1 ? '1 address' : `${p.enrollable} addresses`;
+  let body = `<p>This adds <b>${n}</b> to this campaign — every active address of yours that
+    isn't already in a sequence or opted out.</p>`;
+  if (p.status === 'active') {
+    body += `<p>This campaign is already sending, so they'll start getting emails
+      <b>${p.window_open ? 'now' : esc(p.starts_label)}</b>, up to <b>${p.daily_limit}</b> a day.</p>`;
+  }
+  const ok = await chooseDialog({ title: `Enroll ${n}?`, body,
+    confirm: p.status === 'active' ? 'Enroll and send' : 'Enroll' });
+  if (!ok) return;
   const res = await api(`/api/campaigns/${currentCampaignId}/contacts`, 'POST', { all: true });
   toast(_enrollResultMessage(res));
   closeModal('modal-enroll');

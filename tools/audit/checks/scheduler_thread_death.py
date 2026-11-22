@@ -24,7 +24,12 @@ scheduler.email_checking_enabled = lambda: False
 # One campaign whose pass raises (see B-6), so the loop's own error handler
 # has to write an Activity-log line.
 cid = db.create_campaign("c", owner_id=alice)
-db.update_campaign(cid, daily_limit="lots", status="active")
+try:
+    db.update_campaign(cid, daily_limit="lots", status="active")
+except ValueError as e:  # refused at save since Plan 1 package 4; plant it as an old row would hold it
+    print("saving daily_limit='lots' is refused:", e)
+    with db.get_db() as conn:
+        conn.execute("UPDATE campaigns SET daily_limit='lots', status='active' WHERE id=?", (cid,))
 
 lock = sqlite3.connect(db.DB_PATH, check_same_thread=False, isolation_level=None)
 lock.execute("BEGIN IMMEDIATE")          # another writer holds the database

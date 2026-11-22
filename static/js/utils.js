@@ -9,6 +9,8 @@ function showSection(name) {
     : (name === 'logs' || name === 'database') ? 'settings' : name;
   document.querySelector(`nav a[data-section="${navName}"]`)?.classList.add('active');
   toggleSidebar(false); // a tap that navigates should close the drawer behind it
+  // Get leads polls the scraper while it's open, and only then (audit B-14).
+  if (name !== 'scraper' && typeof stopScraperPoll === 'function') stopScraperPoll();
 
   if (name === 'dashboard')  refreshDashboard();
   if (name === 'email')      loadEmail();
@@ -29,6 +31,9 @@ function toggleSidebar(force) {
   const open = force !== undefined ? force : !sidebar.classList.contains('open');
   sidebar.classList.toggle('open', open);
   scrim.classList.toggle('open', open);
+  // The menu button sits over the drawer's logo (audit F-22); it hides while
+  // the drawer is open, and tapping the dimmed area closes it.
+  document.body.classList.toggle('drawer-open', open);
 }
 
 function toast(msg, type = 'ok') {

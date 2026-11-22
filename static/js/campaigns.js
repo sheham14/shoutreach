@@ -115,11 +115,24 @@ async function createCampaign() {
   openCampaign(res.id);
 }
 
-async function activateCampaign(id) {
+// Activate starts real email, so it asks first, with the server's own numbers
+// (audit B-9): how many people, how many a day, and when the first goes.
+async function activateCampaign(id, reopen = false) {
+  const p = await api(`/api/campaigns/${id}/send-preview`);
+  if (!p || p.error) { toast((p && p.error) || 'Could not check this campaign', 'err'); return; }
+  const people = p.sendable === 1 ? '1 person' : `${p.sendable} people`;
+  const when = p.window_open ? 'now' : esc(p.starts_label);
+  const body = p.sendable
+    ? `<p>This will email <b>${people}</b>, up to <b>${p.daily_limit}</b> a day, starting <b>${when}</b>.</p>`
+    : `<p>No one enrolled in this campaign can be emailed yet, so nothing will go out until you enroll
+         people. Once you do, it sends up to <b>${p.daily_limit}</b> a day, starting <b>${when}</b>.</p>`;
+  const ok = await chooseDialog({ title: 'Start sending?', body, confirm: 'Start sending' });
+  if (!ok) return;
   const res = await api(`/api/campaigns/${id}/activate`, 'POST');
   if (!res.ok) { toast(res.error, 'err'); return; }
   toast('Campaign activated ▶');
   loadCampaigns();
+  if (reopen) openCampaign(id);
 }
 
 async function pauseCampaign(id) {
@@ -154,7 +167,7 @@ async function openCampaign(id) {
     <span class="mono text-muted" style="font-size:12px;padding:8px">${statusBadge(c.status)}</span>
     ${c.status === 'active'
       ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${id});openCampaign(${id})">⏸ Pause</button>`
-      : `<button class="btn btn-primary btn-sm" onclick="activateCampaign(${id});openCampaign(${id})">▶ Activate</button>`}
+      : `<button class="btn btn-primary btn-sm" onclick="activateCampaign(${id}, true)">▶ Activate</button>`}
   `;
 
   // Variant stats breakdown (only shown when A/B variants exist)
@@ -1141,7 +1154,7 @@ function renderContactReport(rows) {
       ? `<span class="badge badge-blue" style="font-size:11px">${esc(r.variant_label)}</span>`
       : '<span class="text-muted" style="font-size:11px">—</span>';
     const nextSend = r.next_send_at
-      ? r.next_send_at.replace('T', ' ').substring(0, 16)
+      ? fmtWhen(r.next_send_at, 'utc')
       : (r.status === 'completed' ? 'Done' : '—');
     const rowStyle = STATUS_ROW_STYLE[r.status] || '';
     const statusSel = `

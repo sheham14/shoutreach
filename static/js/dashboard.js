@@ -91,6 +91,11 @@ async function refreshDashboard() {
     ['Sent', e.sent], ['Replies', e.replied, 'green'],
     ['Reply rate', `${e.reply_rate ?? 0}%`, 'green'], ['Sent today', e.today],
   ]);
+  // The shared daily cap, which every operator's campaigns draw on (B-10).
+  const cap = document.getElementById('dash-cap');
+  if (cap) cap.textContent = e.all_accounts_limit
+    ? `Sent today, all accounts: ${e.all_accounts_today ?? 0} of ${e.all_accounts_limit}` : '';
+  _renderSender(d.sender);
   const c = d.calling || {};
   document.getElementById('dash-calling').innerHTML = _miniStats([
     ['Calls today', c.calls_today], ['Due now', c.due, c.due ? 'amber' : ''],
@@ -124,6 +129,30 @@ async function refreshDashboard() {
         `<span class="${meta.cls}">${meta.label}</span> ${pill(cp.status, statusTone)} · ${cp.leads} leads · ${esc(cp.result)}`)}</td>
     </tr>`;
   }).join('');
+}
+
+// "Email sender last ran 2 minutes ago", or a warning when it hasn't run
+// for ten minutes or the thread is down. last_pass_at is a UTC database-style
+// timestamp ("YYYY-MM-DD HH:MM:SS").
+function _renderSender(sender) {
+  const el = document.getElementById('dash-sender');
+  if (!el || !sender) return;
+  const at = sender.last_pass_at ? new Date(sender.last_pass_at.replace(' ', 'T') + 'Z') : null;
+  const mins = at ? Math.max(0, Math.round((Date.now() - at.getTime()) / 60000)) : null;
+  const ago = mins === null ? '' : mins < 1 ? 'just now' : mins === 1 ? '1 minute ago'
+    : mins < 120 ? `${mins} minutes ago` : `${Math.round(mins / 60)} hours ago`;
+  const stale = !sender.alive || (mins !== null && mins > 10);
+  el.style.color = '';
+  if (!stale) {
+    el.className = 'text-small text-muted';
+    el.textContent = at ? `Email sender last ran ${ago}` : 'Email sender starting…';
+    return;
+  }
+  el.className = 'text-small';
+  el.style.color = 'var(--amber)';
+  el.textContent = !sender.alive
+    ? '⚠ The email sender isn\'t running. Reload this page to restart it; if this stays, check the server.'
+    : `⚠ The email sender last ran ${ago}. Nothing is being sent.`;
 }
 
 function openAnyCampaign(channel, id) {

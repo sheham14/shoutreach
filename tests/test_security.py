@@ -27,6 +27,7 @@ def boot(work):
     os.environ["DB_PATH"] = os.path.join(work, "sec.db")
     os.environ["SECRET_KEY"] = "test-secret"
     os.environ["SHOUTREACH_INSECURE_COOKIES"] = "1"
+    os.environ["SHOUTREACH_NO_SCHEDULER"] = "1"
     import db
     importlib.reload(db)
     import app as app_mod
@@ -131,6 +132,30 @@ def test_worker_routes_still_authenticated(app_mod):
           r.status_code in (401, 403), f"got {r.status_code}")
 
 
+def test_logs_admin_only(db, app_mod):
+    """Full Audit 2026-11-21 B-2 -- the Activity log answered any signed-in user."""
+    print("\n7. THE ACTIVITY LOG IS ADMIN-ONLY (B-2)")
+    admin = db.create_user("logadmin", "test-password-123", is_admin=True)
+    plain = db.create_user("logplain", "test-password-123", is_admin=False)
+    db.add_log("Sent step 1 -> someone@clinic.ae | subject")
+
+    def client_for(uid, is_admin):
+        c = app_mod.app.test_client()
+        with c.session_transaction() as s:
+            s["user_id"] = uid
+            s["is_admin"] = is_admin
+            s["csrf_token"] = "t"
+        return c
+    r = client_for(plain, False).get("/api/logs")
+    check("a non-admin gets 403", r.status_code == 403, f"got {r.status_code}")
+    check("and no log lines", b"someone@clinic.ae" not in r.data)
+    r = client_for(admin, True).get("/api/logs")
+    check("an admin still reads it", r.status_code == 200 and b"someone@clinic.ae" in r.data,
+          f"got {r.status_code}")
+    r = app_mod.app.test_client().get("/api/logs")
+    check("signed out gets 401", r.status_code == 401, f"got {r.status_code}")
+
+
 def main():
     work = tempfile.mkdtemp(prefix="sec_")
     try:
@@ -141,6 +166,8 @@ def main():
         test_formula_injection(app_mod)
         test_xff_ratelimit(app_mod)
         test_worker_routes_still_authenticated(app_mod)
+        db.init_db()
+        test_logs_admin_only(db, app_mod)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

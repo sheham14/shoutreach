@@ -339,7 +339,7 @@ async function loadUsers() {
     <tr>
       <td style="font-weight:500">${esc(u.username)}</td>
       <td>${u.is_admin ? '<span class="badge badge-blue">Admin</span>' : '<span class="badge">User</span>'}</td>
-      <td class="mono text-muted" style="font-size:11px">${(u.created_at || "").substring(0, 10)}</td>
+      <td class="mono text-muted" style="font-size:11px">${esc(fmtWhen(u.created_at, 'utc', { dateOnly: true }))}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-ghost btn-sm" onclick="openChangePasswordModal(${u.id}, '${escj(u.username)}')">Change password</button>
         ${u.id !== me.id ? `<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id}, '${escj(u.username)}')">✕</button>` : ""}

@@ -76,8 +76,10 @@ app.config.update(
 
 # Start the background scheduler once, at process boot. Doing this in a
 # before_request hook (the old way) added overhead per request and allowed
-# duplicate threads under request races.
-scheduler.start()
+# duplicate threads under request races. SHOUTREACH_NO_SCHEDULER=1 leaves it
+# off -- for tests, which must never send.
+if os.environ.get("SHOUTREACH_NO_SCHEDULER") != "1":
+    scheduler.start()
 
 
 # ── First-run setup token ────────────────────────────────────────────────────
@@ -209,10 +211,23 @@ def login_required(f):
     return decorated
 
 
+def _current_user():
+    """The signed-in user's row, loaded once per request by _require_login.
+    None for a worker request or a public page."""
+    return getattr(g, "user", None)
+
+
+def is_admin() -> bool:
+    """From the database row on every request, never from the cookie (B-3):
+    demoting someone takes effect on their next click."""
+    user = _current_user()
+    return bool(user and user["is_admin"])
+
+
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not session.get("is_admin"):
+        if not is_admin():
             return jsonify({"error": "Forbidden"}), 403
         return f(*args, **kwargs)
     return decorated
@@ -259,7 +274,8 @@ def worker_auth_required(f):
 
 def me() -> int:
     """The logged-in operator. Every data route scopes to this."""
-    return session["user_id"]
+    user = _current_user()
+    return user["id"] if user else session["user_id"]
 
 
 def require_owned(kind: str, row_id):
@@ -343,10 +359,21 @@ def _require_login():
         return
     if _is_worker_route():
         return          # authenticated by X-API-Key in worker_auth_required
-    if not session.get("user_id"):
+    uid = session.get("user_id")
+    # A signed cookie isn't enough on its own (audit B-3): the account must
+    # still exist, and the cookie must carry the session version the account
+    # is on now -- a password change bumps it, signing out every other
+    # device. A session from before versions existed counts as 0.
+    user = db.get_user_by_id(uid) if uid else None
+    if user and int(session.get("sv", 0) or 0) != int(user.get("session_version") or 0):
+        user = None
+    if not user:
+        session.clear()
         if request.path.startswith("/api/"):
             return jsonify({"error": "Unauthorized"}), 401
         return redirect("/login")
+    g.user = user
+    session["is_admin"] = bool(user["is_admin"])  # display only; never trusted
 
 
 @app.before_request
@@ -479,6 +506,7 @@ def login_submit():
     session["user_id"]    = user["id"]
     session["username"]   = user["username"]
     session["is_admin"]   = bool(user["is_admin"])
+    session["sv"]         = int(user.get("session_version") or 0)
     session["csrf_token"] = _secrets.token_urlsafe(32)
     return redirect("/")
 
@@ -848,9 +876,8 @@ def api_delete_user(uid):
 @app.route("/api/users/<int:uid>/password", methods=["POST"])
 def api_change_password(uid):
     # Admins can change anyone's password; users can only change their own.
-    is_self  = uid == session.get("user_id")
-    is_admin = bool(session.get("is_admin"))
-    if not is_admin and not is_self:
+    is_self  = uid == me()
+    if not is_admin() and not is_self:
         return jsonify({"error": "Forbidden"}), 403
 
     d = request.json or {}
@@ -870,7 +897,10 @@ def api_change_password(uid):
         if not user or not db.verify_user_password(user, current_pass):
             return jsonify({"error": "Current password is incorrect"}), 403
 
-    db.change_password(uid, new_pass)
+    version = db.change_password(uid, new_pass)
+    if is_self:
+        # Signed out everywhere else, but not on the device that changed it.
+        session["sv"] = version
     logging.info("Password changed for uid=%s by uid=%s", uid, session.get("user_id"))
     return jsonify({"ok": True})
 
@@ -880,7 +910,7 @@ def api_me():
     return jsonify({
         "id":       session.get("user_id"),
         "username": session.get("username"),
-        "is_admin": session.get("is_admin"),
+        "is_admin": is_admin(),
         # Whether AI features are switched on (Settings), so the page can
         # leave out buttons that would only answer "AI isn't enabled".
         "ai_enabled": bool(session.get("user_id"))
@@ -1241,17 +1271,20 @@ def api_get_campaigns():
 @login_required
 def api_create_campaign():
     d = request.json or {}
-    cid = db.create_campaign(
-        owner_id    = me(),
-        name        = d.get("name", "New Campaign"),
-        daily_limit = int(d.get("daily_limit", 30)),
-        start_hour  = int(d.get("send_start_hour", 9)),
-        end_hour    = int(d.get("send_end_hour", 17)),
-        min_delay   = int(d.get("min_delay_secs", 45)),
-        max_delay   = int(d.get("max_delay_secs", 120)),
-        timezone    = d.get("timezone") or None,
-        variables   = json.dumps(d.get("variables") or {}),
-    )
+    try:
+        cid = db.create_campaign(
+            owner_id    = me(),
+            name        = d.get("name", "New Campaign"),
+            daily_limit = d.get("daily_limit", 30),
+            start_hour  = d.get("send_start_hour", 9),
+            end_hour    = d.get("send_end_hour", 17),
+            min_delay   = d.get("min_delay_secs", 45),
+            max_delay   = d.get("max_delay_secs", 120),
+            timezone    = d.get("timezone") or None,
+            variables   = json.dumps(d.get("variables") or {}),
+        )
+    except db.CampaignValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
     return jsonify({"ok": True, "id": cid})
 
 
@@ -1426,7 +1459,12 @@ def api_update_campaign(cid):
     if "variables" in d and isinstance(d["variables"], dict):
         d = dict(d)
         d["variables"] = json.dumps(d["variables"])
-    db.update_campaign(cid, **d)
+    try:
+        db.update_campaign(cid, **d)
+    except db.CampaignValueError as e:
+        # Checked before storing (audit B-6): a bad value used to be saved
+        # as sent and stop the send loop for every campaign after it.
+        return jsonify({"ok": False, "error": str(e)}), 400
     return jsonify({"ok": True})
 
 
@@ -1447,6 +1485,33 @@ def api_variable_coverage(cid):
 def api_variable_coverage_global():
     """Coverage across every contact — for a step being drafted outside a campaign."""
     return jsonify(db.get_variable_coverage(None, owner_id=me()))
+
+
+@app.route("/api/campaigns/<int:cid>/send-preview", methods=["GET"])
+@login_required
+@owned("campaign", "cid")
+def api_campaign_send_preview(cid):
+    """
+    What starting this campaign, or enrolling everyone into it, would
+    actually do -- for the confirmation the page shows first (audit B-9):
+    how many people, how many a day, and when the first email goes.
+    """
+    c = db.get_campaign(cid)
+    preview = db.get_campaign_send_preview(cid, owner_id=me())
+    window_open = email_sender.is_business_hours(c)
+    nxt = None if window_open else email_sender.next_send_window(c)
+    tz_name = (c.get("timezone") or "").strip() or "UTC"
+    return jsonify({
+        **preview,
+        "status": c.get("status"),
+        "daily_limit": int(c.get("daily_limit") or 0),
+        "window_open": window_open,
+        # The window's next opening, in the campaign's own timezone.
+        "next_open": nxt.isoformat(timespec="minutes") if nxt else None,
+        "starts_label": ("now" if window_open else
+                         f"{nxt.strftime('%a %d %b, %H:%M')} {tz_name}" if nxt else
+                         "never — the schedule has no send window"),
+    })
 
 
 @app.route("/api/campaigns/<int:cid>/activate", methods=["POST"])
@@ -2014,7 +2079,11 @@ def api_set_enrollment_status(enroll_id):
 # ── API: Logs ─────────────────────────────────────────────────────────────────
 
 @app.route("/api/logs")
+@admin_required
 def api_logs():
+    # Admin only (audit B-2): log lines carry no owner and include both
+    # operators' recipient addresses and subjects. Giving each line an owner,
+    # so each person can read their own, is the rest of B-2 and not done yet.
     return jsonify(db.get_logs(100))
 
 
@@ -2104,7 +2173,7 @@ def api_update_pipeline_stage(key):
     # Built-ins are shared vocabulary, so relabelling one is an admin call;
     # a stage you invented is yours. Same rule as call outcomes.
     existing = db.get_pipeline_stage(key)
-    if existing and existing["is_builtin"] and not session.get("is_admin"):
+    if existing and existing["is_builtin"] and not is_admin():
         return jsonify({"ok": False, "error": "Built-in stages are shared — ask an admin"}), 403
     if not db.update_pipeline_stage(key, owner_id=me(), **(request.json or {})):
         return jsonify({"ok": False, "error": "Nothing to update, or unknown stage"}), 400
@@ -2442,7 +2511,7 @@ def api_update_call_outcome(key):
     # Built-ins are shared vocabulary, so editing one is still an admin call.
     # Your own custom outcomes are yours.
     existing = db.get_call_outcome(key)
-    if existing and existing["is_builtin"] and not session.get("is_admin"):
+    if existing and existing["is_builtin"] and not is_admin():
         return jsonify({"ok": False, "error": "Built-in outcomes are shared — ask an admin"}), 403
     if not db.update_call_outcome(key, owner_id=me(), **(request.json or {})):
         return jsonify({"ok": False, "error": "Nothing to update, or unknown outcome"}), 400
@@ -2590,7 +2659,12 @@ def api_enroll_businesses():
 @app.route("/api/dashboard", methods=["GET"])
 @login_required
 def api_dashboard():
-    return jsonify(db.get_dashboard(owner_id=me(), since=request.args.get("since") or None))
+    # The watchdog (audit B-23): a dead sender thread is restarted here,
+    # since this is the page everyone opens first.
+    scheduler.ensure_running()
+    data = db.get_dashboard(owner_id=me(), since=request.args.get("since") or None)
+    data["sender"] = scheduler.status()
+    return jsonify(data)
 
 
 # ── API: Lead lists (one per import) ──────────────────────────────────────────
@@ -2957,7 +3031,10 @@ def api_remove_call_campaign_members(cid):
 
 @app.route("/api/calls/<int:cid>/reopen", methods=["POST"])
 @login_required
-@owned("call_lead", "cid")
+# A business id, like every calling route (audit B-22): guarding it as a
+# call-lead id answered 404 for the operator's own lead whenever the two
+# numbers differed. Another operator's business is still a 404.
+@owned("business", "cid")
 def api_reopen_call_lead(cid):
     """
     Return a closed-out lead to the queue — the undo for a misclick.

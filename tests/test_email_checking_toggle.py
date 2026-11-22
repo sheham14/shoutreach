@@ -113,7 +113,10 @@ def main():
 
         print("\n4. THE GATE LIVES WHERE THE LOOP ACTUALLY RUNS, NOT JUST IN A HELPER")
         import inspect
-        loop_src = inspect.getsource(scheduler._run_loop)
+        # The loop body moved into _one_pass (audit B-23: _run_loop now only
+        # guards each pass), so the gate is looked for in both.
+        loop_src = inspect.getsource(scheduler._run_loop) + inspect.getsource(scheduler._one_pass)
+        check("_run_loop runs _one_pass", "_one_pass()" in inspect.getsource(scheduler._run_loop))
         check("_run_loop actually calls the gate rather than re-deriving it inline",
               "email_checking_enabled()" in loop_src, loop_src[:200])
         check("a manual trigger is still checked first (or'd), so it can't be gated out",

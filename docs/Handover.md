@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-10-29 (meetings on Zoho Calendar deployed as `fa6ca7f`; Zoho Console setup still to do) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-11-22 (Plan 1 · Fix now built on `claude/vibrant-archimedes-i2ilk9`, not yet merged — §9) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -264,6 +264,12 @@ visibility into anyone else's leads.
   - `reap_stale_scrape_jobs`.
   - `purge_deleted_leads` — empties Recently deleted after 30 days, from the
     scheduler, for everyone.
+  - `suppressed_addresses` and everything that reads or writes it
+    (`_record_suppression`, `_apply_suppression`, `address_suppression`, the
+    `NOT EXISTS` in `get_due_enrollments`). Every unsubscribe and bounce is
+    remembered there by address alone, even with no row to mark, and any copy
+    of the address created, restored or re-addressed later is made to match
+    (audit B-1). `tests/test_suppression.py`.
 - **Overlap between operators is advisory only** (`find_cross_owner_matches`).
   The import goes ahead; the notice shows business name, channel and date,
   never contact details; nothing is merged. Matching is heuristic
@@ -869,6 +875,13 @@ at computer and phone size against the same fake Zoho.
 - **Server:** GCP e2-micro, Debian 12, app in `~/shoutreach`, gunicorn with
   `--workers 1` (the scheduler runs in-process — never raise this), nginx, the
   systemd unit `shoutreach`, SQLite `outreach.db`.
+- **The email sender can't die quietly any more** (audit B-6, B-23): one
+  campaign's error is logged and the next campaign still runs; a pass that
+  raises doesn't end the thread; `add_log` never raises; opening the
+  Dashboard restarts a dead thread (`scheduler.ensure_running`), and its
+  Email card says when the sender last ran, in amber past ten minutes.
+  Campaign settings are range-checked on save. `SHOUTREACH_NO_SCHEDULER=1`
+  stops `app.py` starting the scheduler — set it in tests.
 - **Deploying = pushing to `master`.** GitHub Actions SSHes in and runs
   `git pull`, `pip install -r requirements.txt` and
   `sudo systemctl restart shoutreach`. `init_db()` runs on restart, so
@@ -890,7 +903,11 @@ at computer and phone size against the same fake Zoho.
   `cp ~/shoutreach/outreach.db ~/outreach.db.bak-$(date +%F)`.
 - **Users:** Settings → Users (admins only). Passwords need 12+ characters. An
   admin can reset someone else's password without knowing it; changing your
-  own needs your current one. If the only admin is locked out, on the VM:
+  own needs your current one. **A password change signs that account out everywhere**
+  (`users.session_version`, checked on every request in `_require_login`);
+  changing your own keeps the device you did it on. Deleting an account ends
+  its sessions on their next request, and admin rights are read from the
+  database each request, never from the cookie (audit B-3). If the only admin is locked out, on the VM:
   `cd ~/shoutreach && source venv/bin/activate && python reset_password.py`.
 - **The first admin** is created from the login page, and only while there
   are no users at all, using a setup token printed to the server log at boot.
@@ -1121,40 +1138,41 @@ importing runs `init_db()` against `./outreach.db`.
 **From the full audit** — `docs/audits/Full Audit 2026-11-21.md` (the repo is
 private, and has to stay so: it describes unfixed holes). It replaces both
 older audits, whose open items it re-checked and carries in its §7; its
-status block says what's done. Nothing in it has been built yet. It is mostly
-a front-end audit with a proposed redesign (§4, not yet agreed with the
-operator) and a build order (§8). Its fix-now list (§2) is independent of the
-redesign; the biggest items:
+status block says what's done. It is mostly a front-end audit with a
+proposed redesign (§4) and a build order (§8), turned into three build plans
+in `docs/plans/`.
 
-- **B-1:** an opt-out is only a status on whichever rows exist at the time.
-  An address that unsubscribed or bounced is sendable again if the other
-  operator imports it later, if its lead is restored from Recently deleted,
-  or if `status` is edited back — each reproduced as far as the send loop's
-  due list. This is a gap in the suppression rule of §3, not a change to it:
-  the fix is a suppressed-addresses table checked on create, on restore and
-  in `get_due_enrollments`.
-- **B-3:** sessions are trusted from the cookie alone, so deleting a user or
-  changing a password doesn't end an open session.
-- **B-6:** the send loop wraps every operator's campaigns in one try/except,
-  so an error in one campaign stops all the campaigns after it.
-- **B-22:** Calling → Reopen 404s: `@owned("call_lead", "cid")` on a route
-  that is sent a business id.
-- **B-23:** `_run_loop` has no outer try, and the jobs' own error handlers
-  call `add_log`; when that write hits "database is locked" the scheduler
-  thread ends and nothing restarts it. Reproduced with an 11-second lock.
-- **B-24:** the only backups are the deploy's own, on the VM's disk.
-- **B-2:** `GET /api/logs` has no admin check; the log holds both operators'
-  recipient addresses and subjects.
-- **B-9:** activating a campaign, and "Enroll All Active", start real sending
-  with no confirmation or count.
-- **B-13:** secrets stored in plaintext — SMTP/IMAP passwords, AI keys, Zoho
-  tokens, the session key — and now also in each deploy's database backup.
-- **B-12:** the bounce scanner downloads whole messages with no cap — an
-  out-of-memory risk on a 1 GB server.
-- **F-23, F-24:** WhatsApp → Booked — the count reads 0 until the tab is
-  opened, and on a phone the meeting time is cut off. Decide these together
-  with `docs/Cal.com Booking Handoff.md`: that plan may replace this Booked
-  list and the Zoho booking behind it.
+**Plan 1 (Fix now) is built, on branch `claude/vibrant-archimedes-i2ilk9`,
+not merged or deployed** (2026-11-22). 16 of the audit's 19 fix-now items:
+B-1 (opt-outs permanent: `suppressed_addresses`, §3), B-2 (Activity log
+admin-only; owners on log lines still open), B-3 (sessions end on delete or
+password change, §6), B-6 and B-23 (the sender survives errors and restarts
+itself, §6), B-9 (Activate and Enroll All confirm with real counts), B-22
+(Calling → Reopen), and the visible faults F-9, F-20, F-21/F-33 (`fmtWhen`,
+§10), F-22, F-25, F-30, B-10, B-14, B-15. The record of the build, with every
+choice that differs from the plan, is `docs/plans/1 Fix now - build log.md`.
+**Deploying it** runs two additions on the live database, both rehearsed on
+a database built by the previous code (`c92729a`): a `users.session_version`
+column (default 0, so open sessions keep working) and
+`_migrate_suppressed_addresses`, which copies existing opt-outs and bounces
+**and applies them to every copy of each address**: a copy the old B-1 hole
+left active (the other operator's import after an opt-out) becomes
+unsubscribed or bounced, and an unsubscribe marks its business do not
+contact. On the rehearsal database it changed only the one planted copy.
+Take a backup first anyway.
+
+Still open from the fix-now list:
+
+- **B-24:** the only backups are the deploy's own, on the VM's disk — the
+  operator's job, no code (see `docs/plans/README.md`).
+- **F-23, F-24:** WhatsApp → Booked — moved to Plan 2, where a Meetings page
+  replaces that tab.
+
+Next: Plan 2 (Cal.com) and Plan 3 (redesign phase 1) both build on this.
+Also still open and real: B-13 (secrets stored in plaintext — SMTP/IMAP
+passwords, AI keys, Zoho tokens, the session key — and in each deploy's
+backup), B-12 (the bounce scanner's memory use), B-4 and B-5 (the lead
+audit fetching internal addresses or stalling on a hostile page).
 
 **Still deliberately deferred** (reasons in the WhatsApp handover §6): renaming
 the `/api/contacts/*` URLs (the worker posts to them), `.xlsx` import, a
@@ -1191,7 +1209,11 @@ retired `contacts` table.
   laptop worker.
 - `static/js/tables.js` — shared frontend pieces: tabs (`setTab`/`onTab`),
   `createLeadTable` (every leads table), `chooseDialog` (replaces `prompt()`),
-  pills, `fillPlaceholders`. Row ⋯ menus are `position: fixed`, placed by
+  pills, `fillPlaceholders`, and **`fmtWhen(value, kind)`, the one way to
+  show a time** (audit F-33): `'utc'` for database timestamps (converted to
+  the viewer's time), `'wall'` for times a person typed (`next_call_at`,
+  `next_action_at`, `meetings.starts_at`; never converted, §5c). Don't chop
+  raw timestamp strings for display. Row ⋯ menus are `position: fixed`, placed by
   `toggleRowMenu` against the window (opening upward when there's no room
   below) and re-placed on scroll, closing once their button leaves the
   screen: inside a table's `overflow-x: auto` wrapper an absolute menu was

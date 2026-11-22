@@ -609,6 +609,19 @@ def init_db():
                 deleted_at   TEXT    NOT NULL DEFAULT (datetime('now'))
             );
 
+            -- Every address that must never be mailed again, whoever holds
+            -- it and whether or not any lead row for it exists right now.
+            -- Written by every unsubscribe and bounce; read when an address
+            -- is created, restored or edited, and by the send loop itself.
+            -- NO owner column, on purpose: an opt-out binds every operator
+            -- sending from the shared domain (Handover §3, audit B-1).
+            -- `reason` is 'unsubscribed' or 'bounced'; unsubscribed wins.
+            CREATE TABLE IF NOT EXISTS suppressed_addresses (
+                email      TEXT PRIMARY KEY,
+                reason     TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
             -- An operator's Zoho Calendar connection (zoho_calendar.py). Its
             -- own table, like worker_keys, so the refresh token never rides
             -- along in a row loaded or serialised for something else. One per
@@ -683,6 +696,10 @@ def init_db():
         # across. Adding a column to a new table means editing its CREATE and
         # adding one line here, nothing else.
         for _col_sql in [
+            # Bumped by a password change, so every session signed in before
+            # it stops working (audit B-3). A session carries the version it
+            # was issued with; one with none counts as 0.
+            "ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE sends ADD COLUMN account_id INTEGER",
             "ALTER TABLE enrollments ADD COLUMN variant_label TEXT",
             "ALTER TABLE campaigns ADD COLUMN timezone TEXT DEFAULT NULL",
@@ -798,6 +815,7 @@ def init_db():
         _migrate_lead_batches(conn)
         _migrate_wa_followup_counts(conn)
         _migrate_email_reply_todo(conn)
+        _migrate_suppressed_addresses(conn)
 
         # Uniqueness is per owner, not global. The old global index is dropped
         # rather than left in place: while it exists, a second operator
@@ -836,6 +854,10 @@ def init_db():
             # fuzzy phone match across one shared table.
             "CREATE INDEX IF NOT EXISTS email_leads_business_idx ON email_leads(business_id)",
             "CREATE INDEX IF NOT EXISTS email_leads_status_idx   ON email_leads(status)",
+            # Suppression matches an address however it was typed (audit B-1
+            # review): stored rows can hold "Loud@SHOUTY.ae" from before every
+            # write path lower-cased, and the backstop exists for exactly them.
+            "CREATE INDEX IF NOT EXISTS email_leads_email_lc_idx ON email_leads(lower(trim(email)))",
             "CREATE INDEX IF NOT EXISTS call_leads_business_idx  ON call_leads(business_id)",
             "CREATE INDEX IF NOT EXISTS call_leads_next_call_idx ON call_leads(next_call_at) WHERE next_call_at IS NOT NULL",
             "CREATE INDEX IF NOT EXISTS call_leads_status_idx    ON call_leads(call_status)",
@@ -923,7 +945,8 @@ def init_db():
 # (find_cross_owner_matches) and never merged.
 #
 # Deliberately NOT owner-scoped, and it must stay that way:
-#   unsubscribe_contact / mark_bounced / increment_soft_bounce
+#   unsubscribe_contact / mark_bounced / increment_soft_bounce, and the
+#   suppressed_addresses table with every helper that reads or writes it
 # Suppression is a promise made to the person on the other end, not to one
 # operator's copy of them. Those functions match on the address across every
 # owner, because everyone here sends from the same accounts and the same
@@ -1900,9 +1923,69 @@ def get_campaign(cid):
         return dict(row) if row else None
 
 
+CAMPAIGN_STATUSES = ("draft", "active", "paused", "completed")
+
+# (low, high) for each number a campaign stores. The send loop reads these
+# straight into range() and sleep(), so a value outside them -- text, a
+# negative, a week-long pause -- would stop or park sending for everyone
+# (audit B-6).
+_CAMPAIGN_NUMBER_BOUNDS = {
+    "daily_limit":      (0, 2000, "Daily limit"),
+    "send_start_hour":  (0, 24,   "Start hour"),
+    "send_end_hour":    (0, 24,   "End hour"),
+    "min_delay_secs":   (0, 3600, "Shortest pause between emails"),
+    "max_delay_secs":   (0, 3600, "Longest pause between emails"),
+    "bounce_pause_pct": (0, 100,  "Bounce-rate pause"),
+}
+
+
+class CampaignValueError(ValueError):
+    """A campaign setting out of range. The message is for the operator."""
+
+
+def _check_campaign_fields(fields: dict, current: dict = None) -> dict:
+    """
+    Check and normalise what a campaign is about to store. Raises
+    CampaignValueError with a plain sentence. `current` is the stored row,
+    so a change to one delay is checked against the other.
+    """
+    out = dict(fields)
+    for key, (low, high, label) in _CAMPAIGN_NUMBER_BOUNDS.items():
+        if key not in out:
+            continue
+        raw = out[key]
+        try:
+            if isinstance(raw, bool):
+                raise ValueError
+            value = float(raw) if key == "bounce_pause_pct" else int(str(raw).strip())
+        except (TypeError, ValueError):
+            raise CampaignValueError(f"{label} must be a number.")
+        if not (low <= value <= high):
+            raise CampaignValueError(f"{label} must be between {low} and {high}.")
+        out[key] = value
+    if "status" in out and out["status"] not in CAMPAIGN_STATUSES:
+        raise CampaignValueError("That isn't a campaign status.")
+    if "min_delay_secs" not in out and "max_delay_secs" not in out:
+        return out   # an old stored pair is fixed by editing it, not by refusing a pause or a rename
+    merged = {**(current or {}), **out}
+    try:
+        lo, hi = int(merged["min_delay_secs"]), int(merged["max_delay_secs"])
+    except (KeyError, TypeError, ValueError):
+        lo = hi = None   # one is missing, or an old bad value the edit is fixing
+    if lo is not None and lo > hi:
+        raise CampaignValueError("The shortest pause between emails can't be longer than the longest.")
+    return out
+
+
 def create_campaign(name, daily_limit=30, start_hour=9, end_hour=17,
                     min_delay=45, max_delay=120, timezone=None, variables='{}',
                     send_days='0,1,2,3,4', owner_id=None):
+    checked = _check_campaign_fields({
+        "daily_limit": daily_limit, "send_start_hour": start_hour, "send_end_hour": end_hour,
+        "min_delay_secs": min_delay, "max_delay_secs": max_delay})
+    daily_limit, start_hour, end_hour = (checked["daily_limit"], checked["send_start_hour"],
+                                         checked["send_end_hour"])
+    min_delay, max_delay = checked["min_delay_secs"], checked["max_delay_secs"]
     with get_db() as conn:
         cur = conn.execute(
             "INSERT INTO campaigns(name,daily_limit,send_start_hour,send_end_hour,"
@@ -1921,8 +2004,10 @@ def update_campaign(cid, **fields):
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return
-    set_clause = ", ".join(f"{k}=?" for k in updates)
     with get_db() as conn:
+        row = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+        updates = _check_campaign_fields(updates, dict(row) if row else None)
+        set_clause = ", ".join(f"{k}=?" for k in updates)
         conn.execute(f"UPDATE campaigns SET {set_clause} WHERE id=?",
                      (*updates.values(), cid))
 
@@ -2392,6 +2477,10 @@ def upsert_businesses(rows, owner_id=None):
                     "status":      status,
                     "mx_valid":    r.get("mx_valid"),
                 })
+                # A new copy of an address someone opted out of is created
+                # opted out; the conflict branch above never touches status,
+                # so an existing suppressed row stays suppressed.
+                _apply_suppression(conn, email)
                 conn.execute(
                     "UPDATE businesses SET web_status='has_email' WHERE id=? AND web_status=''",
                     (business_id,),
@@ -3149,6 +3238,8 @@ def create_email_lead(email: str, first_name='', last_name='', company='',
                 "VALUES(?,?,?,?,?,?)",
                 (business_id, owner_id, email, first_name, last_name, status)
             )
+            # An address someone opted out of arrives opted out.
+            _apply_suppression(conn, email)
             conn.execute(
                 "UPDATE businesses SET web_status='has_email' WHERE id=? AND web_status=''",
                 (business_id,),
@@ -3176,7 +3267,22 @@ def update_email_lead(email_lead_id: int, fields: dict):
     if not lead_updates and not biz_updates:
         return True, None
     if 'email' in lead_updates:
-        lead_updates['email'] = lead_updates['email'].strip().lower()
+        lead_updates['email'] = (lead_updates['email'] or '').strip().lower()
+
+    # An address that unsubscribed or bounced stays that way (audit B-1).
+    # Setting either by hand is allowed and remembered like a real one;
+    # moving a suppressed address to anything else is refused.
+    new_status = lead_updates.get('status')
+    if 'status' in lead_updates or 'email' in lead_updates:
+        with get_db() as conn:
+            row = conn.execute("SELECT email FROM email_leads WHERE id=?",
+                               (email_lead_id,)).fetchone()
+        target = lead_updates.get('email') or (row["email"] if row else "")
+        reason = address_suppression(target)
+        if reason and new_status is not None and new_status not in (reason, 'unsubscribed'):
+            return False, ("This address unsubscribed, so it can't be emailed again."
+                           if reason == 'unsubscribed' else
+                           "Email to this address bounced, so it can't be emailed again.")
 
     try:
         with get_db() as conn:
@@ -3186,6 +3292,13 @@ def update_email_lead(email_lead_id: int, fields: dict):
                     f'UPDATE email_leads SET {set_clause} WHERE id=?',
                     (*lead_updates.values(), email_lead_id)
                 )
+                email_now = conn.execute("SELECT email FROM email_leads WHERE id=?",
+                                         (email_lead_id,)).fetchone()
+                if email_now:
+                    if new_status in SUPPRESSION_REASONS:
+                        _record_suppression(conn, email_now["email"], new_status)
+                    # Also covers an address changed to one that opted out.
+                    _apply_suppression(conn, email_now["email"])
             if biz_updates:
                 if 'website' in biz_updates:
                     biz_updates['domain'] = canonical_domain(biz_updates['website'])
@@ -3205,33 +3318,104 @@ def delete_email_lead(email_lead_id: int):
         conn.execute("UPDATE email_leads SET status='deleted' WHERE id=?", (email_lead_id,))
 
 
-def unsubscribe_contact(email):
-    """
-    Mark an address unsubscribed and propagate to ALL its enrollments
-    regardless of current status (a paused or replied enrollment must also
-    stop sending if they opt out later).
+# ── Suppression ───────────────────────────────────────────────────────────────
+#
+# An unsubscribe or a bounce is remembered in suppressed_addresses, by address
+# alone, for good. The status on email_leads rows is a copy of that fact: rows
+# that exist when it happens are updated, and any row created or restored
+# later is made to match by _apply_suppression. Nothing here takes or filters
+# on an owner -- see the Ownership notes above.
 
-    An unsubscribe is also recorded on the business, which suppresses the
-    clinic on calling and WhatsApp too. Someone who asked to be left alone
-    did not mean "by email only", and the old schema had no way to express
-    that.
+SUPPRESSION_REASONS = ("unsubscribed", "bounced")
+
+
+def _clean_address(email) -> str:
+    email = (email or "").strip().lower()
+    return email if "@" in email else ""
+
+
+def _record_suppression(conn, email: str, reason: str):
+    """Remember an opt-out or bounce. 'unsubscribed' replaces 'bounced',
+    never the other way round."""
+    email = _clean_address(email)
+    if not email or reason not in SUPPRESSION_REASONS:
+        return
+    conn.execute("""
+        INSERT INTO suppressed_addresses(email, reason) VALUES(?, ?)
+        ON CONFLICT(email) DO UPDATE SET reason = 'unsubscribed'
+         WHERE excluded.reason = 'unsubscribed'
+    """, (email, reason))
+
+
+def _suppressed_reason(conn, email: str) -> str:
+    email = _clean_address(email)
+    if not email:
+        return ""
+    row = conn.execute("SELECT reason FROM suppressed_addresses WHERE email=?",
+                       (email,)).fetchone()
+    return row["reason"] if row else ""
+
+
+def _apply_suppression(conn, email: str, reason: str = None) -> str:
     """
-    email_lc = email.lower()
-    with get_db() as conn:
-        conn.execute("UPDATE email_leads SET status='unsubscribed' WHERE email=?", (email_lc,))
-        # IN, not =. An address can now exist once per operator, and a scalar
+    Make every copy of this address what an opt-out at the time would have
+    made it -- the one place that does so, called when it happens and again
+    whenever a copy is created, restored or re-addressed later. Returns the
+    reason applied, or '' when the address isn't suppressed.
+
+    Unsubscribed: every row of the address, its businesses marked do not
+    contact (someone who asked to be left alone didn't mean "by email only"),
+    and every enrollment still going. Bounced: the rows, and queued
+    enrollments.
+    """
+    email = _clean_address(email)
+    if not email:
+        return ""
+    reason = reason or _suppressed_reason(conn, email)
+    if reason == "unsubscribed":
+        conn.execute("UPDATE email_leads SET status='unsubscribed' WHERE lower(trim(email))=?", (email,))
+        # IN, not =. An address can exist once per operator, and a scalar
         # subquery would silently pick whichever row it saw first -- stopping
         # one person's campaign while the other kept mailing someone who had
         # just asked to be left alone, over the same shared accounts.
         conn.execute("""
             UPDATE businesses SET do_not_contact=1
-             WHERE id IN (SELECT business_id FROM email_leads WHERE email=?)
-        """, (email_lc,))
+             WHERE id IN (SELECT business_id FROM email_leads WHERE lower(trim(email))=?)
+        """, (email,))
         conn.execute("""
             UPDATE enrollments SET status='unsubscribed'
-            WHERE email_lead_id IN (SELECT id FROM email_leads WHERE email=?)
+            WHERE email_lead_id IN (SELECT id FROM email_leads WHERE lower(trim(email))=?)
               AND status NOT IN ('unsubscribed','bounced','completed','replied')
-        """, (email_lc,))
+        """, (email,))
+    elif reason == "bounced":
+        # A dead address is dead for everyone who holds it. A row that
+        # unsubscribed keeps saying so: that's the stronger fact.
+        conn.execute("UPDATE email_leads SET status='bounced' "
+                     "WHERE lower(trim(email))=? AND status != 'unsubscribed'", (email,))
+        conn.execute("""
+            UPDATE enrollments SET status='bounced'
+            WHERE email_lead_id IN (SELECT id FROM email_leads WHERE lower(trim(email))=?)
+              AND status='queued'
+        """, (email,))
+    else:
+        return ""
+    return reason
+
+
+def unsubscribe_contact(email):
+    """
+    Mark an address unsubscribed, for good and for every operator, and
+    propagate to ALL its enrollments regardless of current status (a paused
+    or replied enrollment must also stop sending if they opt out later).
+
+    Recorded even when no lead row holds the address right now -- one in
+    Recently deleted, say -- so a copy that turns up later is unsubscribed
+    too. An unsubscribe is also recorded on the business, which suppresses
+    the clinic on calling and WhatsApp too.
+    """
+    with get_db() as conn:
+        _record_suppression(conn, email, "unsubscribed")
+        _apply_suppression(conn, email, "unsubscribed")
 
 
 def get_unsubscribed_contacts(owner_id=None):
@@ -3263,41 +3447,34 @@ def get_invalid_mx_contacts(owner_id=None):
 
 
 def mark_bounced(email):
+    """A hard bounce: remembered for good, for every operator, and applied to
+    every copy (see _apply_suppression)."""
     with get_db() as conn:
-        conn.execute("UPDATE email_leads SET status='bounced' WHERE email=?", (email.lower(),))
-        # IN, not = -- see unsubscribe_contact. A dead address is dead for
-        # everyone who holds it.
-        conn.execute("""
-            UPDATE enrollments SET status='bounced'
-            WHERE email_lead_id IN (SELECT id FROM email_leads WHERE email=?)
-              AND status='queued'
-        """, (email.lower(),))
+        _record_suppression(conn, email, "bounced")
+        _apply_suppression(conn, email)
 
 
 def increment_soft_bounce(email: str, threshold: int = 3):
     """
     Increment soft-bounce counter for an address.
-    Once the counter hits threshold, treat it as a hard bounce.
+    Once the counter hits threshold, treat it as a hard bounce -- remembered
+    in suppressed_addresses like any other.
     Everything runs in one transaction to avoid deadlocks.
     """
-    email = email.lower()
+    email = (email or "").strip().lower()
     with get_db() as conn:
         conn.execute(
-            "UPDATE email_leads SET soft_bounce_count = soft_bounce_count + 1 WHERE email=?",
+            "UPDATE email_leads SET soft_bounce_count = soft_bounce_count + 1 WHERE lower(trim(email))=?",
             (email,)
         )
         row = conn.execute(
-            "SELECT soft_bounce_count FROM email_leads WHERE email=?", (email,)
+            "SELECT MAX(soft_bounce_count) AS n FROM email_leads WHERE lower(trim(email))=?", (email,)
         ).fetchone()
-        count = row["soft_bounce_count"] if row else 0
+        count = (row["n"] or 0) if row else 0
 
         if count >= threshold:
-            conn.execute("UPDATE email_leads SET status='bounced' WHERE email=?", (email,))
-            conn.execute("""
-                UPDATE enrollments SET status='bounced'
-                WHERE email_lead_id IN (SELECT id FROM email_leads WHERE email=?)
-                  AND status='queued'
-            """, (email,))
+            _record_suppression(conn, email, "bounced")
+            _apply_suppression(conn, email)
             conn.execute(
                 "INSERT INTO logs(level,message) VALUES(?,?)",
                 ("WARN", f"⛔ Soft bounce threshold ({threshold}) reached — marked bounced: {email}")
@@ -3611,6 +3788,44 @@ def get_campaign_contact_report(campaign_id: int):
         return [dict(r) for r in rows]
 
 
+def get_campaign_send_preview(campaign_id: int, owner_id=None) -> dict:
+    """
+    The numbers the "Start sending?" and "Enroll all?" confirmations state
+    (audit B-9). Both are this operator's own, and both count only people the
+    send loop would really email: active, not suppressed, business not do not
+    contact.
+
+      sendable   -- enrolled in this campaign and still queued
+      enrollable -- active addresses "Enroll All Active" would add: not in
+                    this campaign, not a duplicate address, not mid-sequence
+                    in another campaign
+    """
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        sendable = conn.execute("""
+            SELECT COUNT(*) FROM enrollments e
+              JOIN email_leads el ON el.id = e.email_lead_id
+              JOIN businesses  b  ON b.id  = el.business_id
+             WHERE e.campaign_id = ? AND el.owner_id = ?
+               AND e.status = 'queued' AND el.status = 'active'
+               AND b.do_not_contact = 0
+               AND NOT EXISTS (SELECT 1 FROM suppressed_addresses s WHERE s.email = lower(trim(el.email)))
+        """, (campaign_id, owner)).fetchone()[0]
+        enrollable = conn.execute("""
+            SELECT COUNT(*) FROM email_leads el
+              JOIN businesses b ON b.id = el.business_id
+             WHERE el.owner_id = ? AND el.status = 'active'
+               AND el.duplicate_of IS NULL AND b.do_not_contact = 0
+               AND NOT EXISTS (SELECT 1 FROM suppressed_addresses s WHERE s.email = lower(trim(el.email)))
+               AND NOT EXISTS (SELECT 1 FROM enrollments e
+                                WHERE e.email_lead_id = el.id AND e.campaign_id = ?)
+               AND NOT EXISTS (SELECT 1 FROM enrollments e
+                                WHERE e.email_lead_id = el.id AND e.campaign_id != ?
+                                  AND e.status NOT IN ('completed','replied','unsubscribed','bounced'))
+        """, (owner, campaign_id, campaign_id)).fetchone()[0]
+    return {"sendable": sendable, "enrollable": enrollable}
+
+
 def enroll_contacts_bulk(campaign_id, email_lead_ids, owner_id=None):
     """
     Enroll addresses, skipping any that would produce a duplicate approach.
@@ -3758,6 +3973,10 @@ def get_due_enrollments(campaign_id, limit=20):
               -- An opt-out on any channel stops the send here, not just an
               -- unsubscribe on this address.
               AND b.do_not_contact = 0
+              -- The backstop: an address that unsubscribed or bounced is
+              -- never sent, however its row came to say 'active'. No owner
+              -- here, on purpose (suppressed_addresses has none).
+              AND NOT EXISTS (SELECT 1 FROM suppressed_addresses s WHERE s.email = lower(trim(el.email)))
               AND (e.next_send_at IS NULL OR e.next_send_at <= ?)
             ORDER BY e.next_send_at ASC NULLS FIRST
             LIMIT ?
@@ -3839,6 +4058,45 @@ def _migrate_email_reply_todo(conn):
     conn.execute("UPDATE enrollments SET reply_done_at=datetime('now') "
                  "WHERE status='replied' AND reply_done_at IS NULL")
     conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('_migrated_email_reply_todo', '1')")
+
+
+def _migrate_suppressed_addresses(conn):
+    """
+    Remember every opt-out and bounce recorded before suppressed_addresses
+    existed, for every owner (B-1), and apply each to every copy of the
+    address. Unsubscribed first, so it wins where one copy unsubscribed and
+    another bounced. Guarded by a settings marker; it only ever adds
+    suppression, so a re-run couldn't undo anything either.
+    """
+    if conn.execute("SELECT 1 FROM settings WHERE key='_migrated_suppressed_addresses'").fetchone():
+        return
+    for reason in SUPPRESSION_REASONS:
+        conn.execute("""
+            INSERT OR IGNORE INTO suppressed_addresses(email, reason)
+            SELECT DISTINCT lower(trim(email)), ? FROM email_leads
+             WHERE status = ? AND email LIKE '%@%'
+        """, (reason, reason))
+    # Recording isn't enough (review of B-1): the old hole left copies that
+    # are still 'active' -- another operator's import after the opt-out, a
+    # restore -- with their business still contactable on calls and
+    # WhatsApp. Each one is made what it would have been had it existed at
+    # the time, exactly as a late copy is from now on.
+    applied = 0
+    for row in conn.execute("SELECT email, reason FROM suppressed_addresses").fetchall():
+        stale = conn.execute("""
+            SELECT 1 FROM email_leads el JOIN businesses b ON b.id = el.business_id
+             WHERE lower(trim(el.email)) = ?
+               AND (el.status NOT IN ('unsubscribed', 'bounced')
+                    OR (? = 'unsubscribed' AND (el.status != 'unsubscribed' OR b.do_not_contact = 0)))
+             LIMIT 1
+        """, (row["email"], row["reason"])).fetchone()
+        _apply_suppression(conn, row["email"], row["reason"])
+        applied += 1 if stale else 0
+    if applied:
+        logger.info("Suppression: applied %d remembered opt-out(s)/bounce(s) to copies "
+                    "that had missed them", applied)
+    conn.execute("INSERT OR REPLACE INTO settings(key, value) "
+                 "VALUES('_migrated_suppressed_addresses', '1')")
 
 
 def get_email_replies(owner_id=None, done: bool = False, limit: int = 500) -> list:
@@ -4789,8 +5047,9 @@ def save_meeting(business_id: int, **fields) -> dict:
 
 def address_suppression(email: str) -> str:
     """
-    'unsubscribed' or 'bounced' if ANY operator's copy of this address says
-    so, else ''. Across every owner on purpose, like unsubscribe_contact: an
+    'unsubscribed' or 'bounced' if this address may not be emailed -- it's in
+    suppressed_addresses, or ANY operator's copy of it says so -- else ''.
+    The single answer to "may this address be emailed?". Across every owner on purpose, like unsubscribe_contact: an
     opt-out binds everyone sending from the shared domain. Says nothing about
     whose list it was on.
     """
@@ -4798,8 +5057,13 @@ def address_suppression(email: str) -> str:
     if not email:
         return ""
     with get_db() as conn:
+        remembered = _suppressed_reason(conn, email)
+        if remembered:
+            return remembered
+        # Rows from before suppressed_addresses existed are copied into it
+        # by _migrate_suppressed_addresses; this scan is the belt to that.
         rows = {r["status"] for r in conn.execute(
-            "SELECT DISTINCT status FROM email_leads WHERE email=? "
+            "SELECT DISTINCT status FROM email_leads WHERE lower(trim(email))=? "
             "AND status IN ('unsubscribed','bounced')", (email,))}
     return "unsubscribed" if "unsubscribed" in rows else ("bounced" if rows else "")
 
@@ -4830,9 +5094,11 @@ def add_business_email(business_id: int, email: str, owner_id=None):
                 return False, "That address is already on another of your leads"
             if existing["status"] == "deleted":
                 conn.execute("UPDATE email_leads SET status=? WHERE id=?", (status, existing["id"]))
+            _apply_suppression(conn, email)
             return True, None
         conn.execute("INSERT INTO email_leads(business_id, owner_id, email, status) VALUES(?,?,?,?)",
                      (int(business_id), owner, email, status))
+        _apply_suppression(conn, email)
         conn.execute("UPDATE businesses SET web_status='has_email' WHERE id=? AND web_status=''",
                      (int(business_id),))
         _pick_business_winner(conn, int(business_id))
@@ -6995,6 +7261,7 @@ def upsert_wa_leads(rows: list, default_country: str = "", owner_id=None,
                     "first_name": r.get("first_name", ""), "last_name": r.get("last_name", ""),
                     "status": status, "mx_valid": r.get("mx_valid"),
                 })
+                _apply_suppression(conn, email)  # see upsert_businesses
                 conn.execute(
                     "UPDATE businesses SET web_status='has_email' WHERE id=? AND web_status=''",
                     (business_id,),
@@ -8362,6 +8629,12 @@ def _restore_one(conn, tables: list, owner_id: int) -> str:
         conn.execute("ROLLBACK TO restore_lead")
         conn.execute("RELEASE restore_lead")
         return "exists"
+    # Anyone who opted out or bounced while this lead was in Recently deleted
+    # comes back opted out, exactly as if the lead had never left.
+    for table, rows in tables:
+        if table == "email_leads":
+            for row in rows:
+                _apply_suppression(conn, row.get("email"))
     conn.execute("RELEASE restore_lead")
     return "restored"
 
@@ -8539,10 +8812,25 @@ def get_stats(campaign_id=None, owner_id=None):
         # reply_rate = % of people we emailed who replied (industry-standard definition)
         reply_rate = round(replied / sent_to * 100, 1) if sent_to > 0 else 0
 
+        # "today" is this operator's (or this campaign's) own sends today
+        # (audit B-10); it used to be the shared cap's tally, so a brand-new
+        # account read "Sent today 67". The shared tally and its limit are
+        # returned separately, labelled as everyone's. Compared in SQL, in
+        # UTC like sent_at (Handover §6a).
+        today = conn.execute(
+            f"SELECT COUNT(*) FROM sends {scope} AND DATE(sent_at) = DATE('now')", args
+        ).fetchone()[0]
+        cap = conn.execute("SELECT value FROM settings WHERE key='global_daily_cap'").fetchone()
+        try:
+            cap_limit = int(cap["value"]) if cap and cap["value"] != "" else 200
+        except (TypeError, ValueError):
+            cap_limit = 200
+
         return {
             "total": total, "sent": sent, "replied": replied,
             "bounced": bounced, "completed": completed,
-            "queued": queued, "today": get_today_count(),
+            "queued": queued, "today": today,
+            "all_accounts_today": get_today_count(), "all_accounts_limit": cap_limit,
             "reply_rate": reply_rate,
         }
 
@@ -8550,8 +8838,19 @@ def get_stats(campaign_id=None, owner_id=None):
 # ── Activity Log ──────────────────────────────────────────────────────────────
 
 def add_log(message, level="INFO"):
-    with get_db() as conn:
-        conn.execute("INSERT INTO logs(level,message) VALUES(?,?)", (level, message))
+    """
+    Never raises (audit B-23). The scheduler's own error handlers call this,
+    so a write that fails -- "database is locked", above all -- must not
+    take the thread down with it. The line goes to the process log instead.
+    """
+    try:
+        with get_db() as conn:
+            conn.execute("INSERT INTO logs(level,message) VALUES(?,?)", (level, message))
+    except Exception as exc:
+        try:
+            logger.warning("Activity log write failed (%s); line was: [%s] %s", exc, level, message)
+        except Exception:
+            pass
 
 
 def get_logs(limit=50):
@@ -8708,12 +9007,21 @@ def delete_user(uid: int) -> tuple:
     return True, None
 
 
-def change_password(uid: int, new_password: str):
+def change_password(uid: int, new_password: str, end_sessions: bool = True) -> int:
+    """
+    Set a password. By default this also signs the account out everywhere,
+    by bumping users.session_version (audit B-3); the caller re-issues the
+    current session if it should survive. Returns the new version.
+    end_sessions=False is only for re-hashing the same password at sign-in.
+    """
     with get_db() as conn:
         conn.execute(
-            "UPDATE users SET password_hash=? WHERE id=?",
-            (_hash_password(new_password), uid),
+            "UPDATE users SET password_hash=?, "
+            "session_version = session_version + ? WHERE id=?",
+            (_hash_password(new_password), 1 if end_sessions else 0, uid),
         )
+        row = conn.execute("SELECT session_version FROM users WHERE id=?", (uid,)).fetchone()
+        return row["session_version"] if row else 0
 
 
 def verify_user_password(user: dict, password: str) -> bool:
@@ -8734,7 +9042,7 @@ def authenticate(username: str, password: str):
         return None
     if _hash_needs_upgrade(stored):
         try:
-            change_password(user["id"], password)
+            change_password(user["id"], password, end_sessions=False)
             logger.info("Upgraded password hash for uid=%s", user["id"])
         except Exception as exc:
             logger.warning("Hash upgrade failed for uid=%s: %s", user["id"], exc)
