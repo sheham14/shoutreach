@@ -20,7 +20,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["SHOUTREACH_NO_SCHEDULER"] = "1"
 
 _failures = []
-ARRIVED = datetime.datetime(2026, 11, 22, 10, 0, 0)
+# Two days ahead of the real clock, on the hour. The job takes an injected
+# "now", but enroll_contacts_bulk compares a first send's "not before" with the
+# real clock -- so a fixed date passes only until the real day catches up
+# with it. (It did: this test went red on 22 Nov after 12:00 UTC.)
+ARRIVED = (datetime.datetime.utcnow() + datetime.timedelta(days=2)).replace(minute=0, second=0, microsecond=0)
+
+
+def ts(minutes):
+    """ARRIVED plus this many minutes, as the database writes it."""
+    return (ARRIVED + datetime.timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def check(label, cond, detail=""):
@@ -85,12 +94,12 @@ def main():
               and q(path, "SELECT COUNT(*) FROM wa_log")[0][0] == 0)
         enrol = q(path, "SELECT campaign_id, status, next_send_at FROM enrollments")
         check("and enrolled in the chosen email campaign, first email at arrival + 24 hours",
-              enrol == [(email_camp, "queued", "2026-11-23 10:00:00")], str(enrol))
-        check("marked queued", q(path, "SELECT followup_queued_at FROM website_enquiries") == [("2026-11-22 10:31:00",)])
+              enrol == [(email_camp, "queued", ts(24 * 60))], str(enrol))
+        check("marked queued", q(path, "SELECT followup_queued_at FROM website_enquiries") == [(ts(31),)])
         db.run_website_followups(now=at(90))
         check("run twice, queued once",
               q(path, "SELECT COUNT(*) FROM wa_leads")[0][0] == 1 and q(path, "SELECT COUNT(*) FROM enrollments")[0][0] == 1
-              and q(path, "SELECT followup_queued_at FROM website_enquiries") == [("2026-11-22 10:31:00",)])
+              and q(path, "SELECT followup_queued_at FROM website_enquiries") == [(ts(31),)])
         with db.get_db() as conn:
             conn.execute("UPDATE campaigns SET status='active' WHERE id=?", (email_camp,))
         check("the email isn't due before its time", not db.get_due_enrollments(email_camp, 10))
@@ -112,7 +121,7 @@ def main():
               q(path, "SELECT COUNT(*) FROM wa_leads")[0][0] == 0 and q(path, "SELECT COUNT(*) FROM enrollments")[0][0] == 0)
         check("and it isn't looked at again", q(path, "SELECT followup_queued_at IS NOT NULL FROM website_enquiries") == [(1,)])
         bid2 = enquire(db, path, "handbooked@clinic.co.uk", business="Other Clinic", phone="07700 900999")
-        db.set_business_pipeline(bid2, "booked", "call", next_action_at="2026-11-25 10:00", owner_id=b)
+        db.set_business_pipeline(bid2, "booked", "call", next_action_at=ts(3 * 24 * 60)[:16], owner_id=b)
         db.run_website_followups(now=at(31))
         check("booked by hand on another channel: neither either",
               q(path, "SELECT COUNT(*) FROM wa_leads")[0][0] == 0 and q(path, "SELECT COUNT(*) FROM enrollments")[0][0] == 0)
@@ -149,7 +158,7 @@ def main():
         db.run_website_followups(now=at(121))
         check("both after it; the email held to arrival + 2 hours",
               q(path, "SELECT COUNT(*) FROM wa_leads")[0][0] == 1
-              and q(path, "SELECT next_send_at FROM enrollments") == [("2026-11-22 12:00:00",)],
+              and q(path, "SELECT next_send_at FROM enrollments") == [(ts(120),)],
               str(q(path, "SELECT next_send_at FROM enrollments")))
 
         print("\n6. THE SCHEDULER RUNS IT, AND IT CAN'T STOP THE LOOP")
