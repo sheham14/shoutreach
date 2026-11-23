@@ -4,11 +4,11 @@ Written 2026-11-21 from [the full audit](../audits/Full%20Audit%202026-11-21.md)
 and [the Cal.com handoff](../Cal.com%20Booking%20Handoff.md). Each plan is for
 a coding session that has not seen the conversations behind it.
 
-| Plan | What | Status (2026-11-22) |
+| Plan | What | Status (2026-11-23) |
 |---|---|---|
 | [1 · Fix now](1%20Fix%20now.md) | Three security holes, the sender's reliability, and a dozen visible faults. Nothing looks different afterwards | **Deployed** 2026-11-22 (`bea9be1`). [Build log](1%20Fix%20now%20-%20build%20log.md) |
 | [2 · Cal.com integration](2%20Cal.com%20integration.md) | Website enquiries and bookings arrive in ShoutReach; a Meetings page; ShoutReach's own Zoho booking is removed | **Deployed** 2026-11-22 (`3eed5be`, then `4f5b303`). [Build log](2%20Cal.com%20integration%20-%20build%20log.md). What it left open is listed below |
-| [3 · Redesign, phase 1](3%20Redesign%20phase%201.md) | The new colours, typeface, icons and controls on today's layouts. Nothing moves | **Built, awaiting review** on `plan-3-redesign-phase-1` (2026-11-22; not merged). [Build log and hand-back](3%20Redesign%20phase%201%20-%20build%20log.md) |
+| [3 · Redesign, phase 1](3%20Redesign%20phase%201.md) | The new colours, typeface, icons and controls on today's layouts. Nothing moves | **Reviewed, fixes in, ready to merge** on `plan-3-redesign-phase-1` (built 2026-11-22, reviewed and fixed 2026-11-23; not merged). [Build log and hand-back](3%20Redesign%20phase%201%20-%20build%20log.md) |
 | [4 · Back-end hardening](4%20Back-end%20hardening.md) | Deploys that test and roll back, a real test of the sender, secrets encrypted at rest, failed sends and missed replies, the lead audit's safety, imports that don't lock the database, errors you can see | **Draft. Do not build from it.** It was reviewed on 2026-11-22 and has to be rewritten first: see [its review notes](4%20Back-end%20hardening%20-%20review%20notes.md) |
 
 Later plans, not written yet: redesign phases 2 to 5 (audit §8).

@@ -560,3 +560,18 @@ The review passed Plan 3 with one fix and tidy-ups. All in one commit;
   sideways with "Messages" off the edge (F-17, layout). Everything under
   44 px is outside the plan's three screens (WhatsApp To do, the lead
   sheet, the Calling lead), which are all 0.
+
+## Second review (2026-11-23)
+
+The fix round was confirmed at `393d1f5` (suite 34/34 on Python 3.13 and
+3.11). Three small edits before merge, one commit, no Python changes:
+
+- **N1.** The overlap notice's date is plain: `fmtWhen(m.since, 'wall',
+  { sentence: true, absolute: true })`. `since` is `created_at[:10]`, a UTC
+  day; read as a local day, R4's relative form said "added tomorrow" west of
+  UTC. Checked with the review's case (browser at UTC−3:30 at 21:00 on the
+  23rd, `since` '2026-11-24'): before "added tomorrow", after "added on Tue
+  24 Nov". It still shows the UTC day, by design. `db.py` untouched.
+- **N2.** "Help & guide" in the sidebar and as the Help page title.
+- **N3.** Plans README: Plan 3 "Reviewed, fixes in, ready to merge"; the
+  table's date is 2026-11-23.

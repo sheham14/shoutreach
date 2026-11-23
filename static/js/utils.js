@@ -108,7 +108,9 @@ async function notifyCrossOwnerOverlap(res) {
   if (!found.length) return;
   const items = found.slice(0, 8).map(m => {
     const where = (m.channel_labels || []).join(', ') || 'their list';
-    const since = m.since ? `, added ${fmtWhen(m.since, 'wall', { sentence: true })}` : '';
+    // `since` is a UTC day (created_at[:10]); read as a local day it can be
+    // tomorrow's west of UTC, so a plain date, never "tomorrow".
+    const since = m.since ? `, added ${fmtWhen(m.since, 'wall', { sentence: true, absolute: true })}` : '';
     return `<li><b>${esc(m.business_name || 'Unnamed business')}</b> — ${esc(m.owner_name)} has this on ${esc(where)}${esc(since)}</li>`;
   }).join('');
   const more = found.length > 8 ? `<li>…and ${found.length - 8} more</li>` : '';
