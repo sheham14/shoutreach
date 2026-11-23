@@ -453,3 +453,110 @@ for f in static/js/*.js; do node --check "$f"; done
   screen with the layouts.
 - The Help page's prose still names some buttons in Title Case.
 - `infoDot` is still unused; the hover-only tooltips remain (F-8).
+
+## Review fixes (2026-11-23) — `459e364`
+
+The review passed Plan 3 with one fix and tidy-ups. All in one commit;
+`db.py`, `scheduler.py` and `sender.py` untouched.
+
+- **R1, the fix.** `[hidden] { display: none !important; }` sits beside the
+  reset in `main.css`. Before: at 390×844 as `cofounder` (none marked),
+  `#wa-no-wa-link` had `hidden` set and computed `display: flex`, 44 px tall,
+  reading "0 marked not on WhatsApp →". After: `display: none`, 0 px; as
+  `sheham` (6 marked) it still shows. Every element that uses the attribute
+  (run-now button, `wa-crumb`, `wl-filter-note`, the link) is shown with
+  `el.hidden = false`, never `style.display`, and none sits under an
+  `!important` display rule, so the reset traps nothing; listed on the
+  harness, no hidden element is drawn for either user. New
+  `tests/test_css.py`: the rule is top-level (not in `@media`) and
+  `!important`, and nothing toggled with `.hidden` is also set with
+  `style.display`. It fails with `!important` removed.
+- **R2, walk-throughs.** `plan-desktop-2.json`: `wa-todo-1280` and
+  `wa-leads-1280` now call `showSection('whatsapp')`; `getleads-import` and
+  `getleads-history` use `setTab('getleads', …)`, as does `getleads-import`
+  in `plan-phone-1.json`. No other `setTab('scraper'` in the plans. Looked
+  at the five shots: each shows its screen.
+  - **`measure.py` had the same faults:** `getleads-import` used
+    `setTab('scraper', …)`, and `wa-booked` opened the WhatsApp Booked tab
+    that Plan 2 removed (it measured whatever was on screen). Now
+    `setTab('getleads', …)` and a `meetings` step; `wa-messages` opens
+    WhatsApp itself. It also read Calling's queue before the queue loaded
+    (first row "None" on one run, 555 px on the next); it now waits for the
+    first row. Two runs since give the same numbers.
+  - **Found on the newly reached screen:** Get leads → Import showed the
+    browser's grey "Choose File" (package 2's field rule skips
+    `type=file`). Its button is now a secondary button
+    (`::file-selector-button`), 44 px on a phone.
+- **R3.** `chooseDialog({ cancel: false })` hides Cancel (the button got
+  `id="choose-cancel"`, set on every call since the dialog is shared; the
+  close button stays). `notifyCrossOwnerOverlap` uses it. Driven on the
+  harness: the notice shows OK and the close button only; the next
+  `confirmDialog` has Cancel back; no page error.
+- **R4.** Overlap notice: `fmtWhen(…, 'wall', { sentence: true })` → "added
+  yesterday", "added on Mon 2 Mar". Audit dates: `{ absolute: true }` →
+  "certificate until Tue 24 Nov", "site first seen Wed 2 Mar 2016", never
+  "Tomorrow". Checked with today, tomorrow, yesterday and a 2016 date.
+  Other `'wall'` dates ("next call Today 3:30 pm", "due …") read as labels,
+  not mid-sentence; unchanged.
+- **R5.** Sentence case: IMAP host; AI provider, Anthropic / OpenAI / Worker
+  API key, Company physical address, SMTP host, Email accounts, Global
+  sending rules, Domain warmup schedule, AI features (settings.html); City +
+  country, Search settings, Live log (scraper.html); Email sequence; A/B
+  variants; `<title>Sign in — ShoutReach</title>`. Text naming them:
+  "Settings → AI features" (the four messages in campaigns.js that show it;
+  the error strings they are matched against are untouched), and the step
+  editor's "Campaign variables live under Settings → Campaign variables"
+  (was "Edit Settings → Variables"; the campaign's window is "Settings" and
+  its field "Campaign variables"). "Settings → Email accounts" already read
+  that way. The two "Import a file, paste or scrape →" buttons end in the
+  arrow icon. A re-scan of every label, card title, heading, table heading,
+  button and option found one more group, the AI model menu's "Input MTok /
+  Output MTok", now lower case. What the scan still lists is proper names
+  (Gemini, ChatGPT, the "To do" tab, model names) or sentence starts.
+  - **Also:** the last two per-row ✕ buttons (remove an audit link in
+    Settings, remove a message version in WhatsApp → Messages) were still
+    plain ghost buttons, 40 px wide on a phone; they are `.btn-icon` like
+    every other row ✕ (package 2).
+- **R6.** The review has no R6.
+- **R7.** Handover line 3: last updated 2026-11-23; Plans 1 and 2 deployed;
+  Plan 3 built, reviewed, fixes in, not merged. §8: 34 test files, and what
+  `test_css.py` pins.
+- **Not done:** the optional phone-height items (keeping a 44 px tap area on
+  the "sent today" pill and the "marked not on WhatsApp" link without
+  growing the line, the segmented control's padding, the row menu button's
+  row height). The review left them for the operator to ask for.
+- **On the way:** the harness's sign-in rate limit (429) tripped after many
+  scripted sign-ins and one `measure.py` run failed at sign-in, leaving the
+  previous JSON in place. Restarting the harness clears it. The numbers
+  below are from runs whose output was checked.
+
+**Output**
+
+- Suite, against `459e364` in a separate worktree (Python 3.13): 34 of 34 files pass, none fail.
+- Walk-throughs: `plan-desktop-1` TOTAL PROBLEMS: 0; `plan-desktop-2`
+  TOTAL PROBLEMS: 0; `plan-phone-1` TOTAL PROBLEMS: 0.
+- `python tools/audit/measure.py phone` (390×844):
+
+  | Screen | Under 44 px | First row / rows in view | Text |
+  |---|---|---|---|
+  | dashboard | 0 | | Inter |
+  | wa-todo | 0 | 396 px / 4 | Inter |
+  | wa-todo-lead | 0 | | Inter |
+  | wa-todo-did-it-send | 0 | | Inter |
+  | wa-leads | 46: list tick boxes, 20 × 20 | 570 px / 3 | Inter |
+  | wa-leads-panel | 38: the same tick boxes | | Inter |
+  | meetings | 0 | | Inter |
+  | wa-messages | 12: placeholder buttons (35 px), campaign fields (42 px) | | Inter |
+  | wa-campaigns | 0 | | Inter |
+  | calling-todo | 1: "No website only" tick box, 13 × 13 | 555 px / 3 | Inter |
+  | calling-lead | 0 | | Inter |
+  | contacts | 44: list tick boxes | 518 px / 3 | Inter |
+  | email-todo | 1: a 13 × 13 tick box | 345 px / 3 | Inter |
+  | email-campaigns | 0 | | Inter |
+  | getleads-import | 1: the "copy the format" text link, 35 px | | Inter |
+  | settings | 3: fields at 38–42 px | | Inter, and the coding font on the terminal commands |
+
+  No sideways overflow on any screen. The WhatsApp tabs still scroll
+  sideways with "Messages" off the edge (F-17, layout). Everything under
+  44 px is outside the plan's three screens (WhatsApp To do, the lead
+  sheet, the Calling lead), which are all 0.
