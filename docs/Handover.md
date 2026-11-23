@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-11-22 (Plan 1 · Fix now built on `claude/vibrant-archimedes-i2ilk9`, not yet merged — §9) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-11-23 (Plans 1 and 2 deployed; Plan 3 · Redesign phase 1 built on `plan-3-redesign-phase-1`, reviewed, fixes in, not yet merged — [plans/README.md](plans/README.md)) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -1060,8 +1060,9 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-33 files, all passing as of Plan 3 package 3 (which added
-`test_icons.py`; Plan 2 package 8 deleted `test_zoho_calendar.py`). `test_rendering.py` once
+34 files, all passing as of the Plan 3 review fixes (Plan 3 added
+`test_icons.py` and `test_css.py`; Plan 2 package 8 deleted
+`test_zoho_calendar.py`). `test_rendering.py` once
 failed with "database is locked" mid-suite and passed on its own and on a
 re-run — watch for it.
 
@@ -1080,6 +1081,12 @@ template or script exists (a typo would otherwise draw nothing, silently),
 no icon call is printed as text (the Help page is inside `{% raw %}`, so its
 icons step out one at a time), and the mark is the tab icon and sits beside
 the name on both pages.
+
+`tests/test_css.py` pins rules in `main.css` that code relies on: a
+top-level `[hidden] { display: none !important; }`, so no later `display:`
+rule can draw an element the scripts hid with `el.hidden` (a phone rule
+once drew "0 marked not on WhatsApp"), and no element toggled with `.hidden`
+is also shown with `style.display`.
 
 `tests/test_pipeline.py` covers stages (§5a/§5c): the built-ins and inventing
 your own, one stage read from all three channels, the cadence stopping on set

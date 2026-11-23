@@ -76,6 +76,12 @@
   }
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  /* The hidden attribute always wins. Without !important any later
+     `display:` rule on the same element shows it anyway (Plan 3 review R1:
+     the phone rule for #wa-no-wa-link drew "0 marked not on WhatsApp").
+     Elements that use it are shown with el.hidden = false, never with
+     style.display. */
+  [hidden] { display: none !important; }
 
   body {
     background: var(--bg);
@@ -304,6 +310,16 @@
     transition: border-color .14s;
   }
   input::placeholder, textarea::placeholder { color: var(--text-2); opacity: .8; }
+  /* The file picker (Get leads -> Import): its button is a secondary button,
+     not the browser's grey one. Found when review R2 made the walk-through
+     reach that tab. */
+  input[type=file] { color: var(--text-2); font: var(--fs-sm) var(--font); padding: 0; border: 0; background: none; }
+  input[type=file]::file-selector-button {
+    margin-right: var(--sp-3); padding: var(--sp-2) var(--sp-4); border: 0; border-radius: var(--r-control);
+    background: var(--raised); color: var(--text); font: 600 var(--fs-sm) var(--font); cursor: pointer;
+    transition: background-color .14s;
+  }
+  input[type=file]::file-selector-button:hover { background: var(--line); }
   /* Tick boxes and radios in the app's colour, dark (F-35). */
   input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 
@@ -1077,6 +1093,7 @@
        call outcome buttons. */
     .btn, .chip, .tab, select, .outcome-btn, .sidebar-toggle { min-height: 44px; }
     .row-menu > .btn, .btn-icon { min-width: 44px; }
+    input[type=file]::file-selector-button { min-height: 44px; }
     .sidebar-toggle { width: 44px; height: 44px; }
     .lead-table input[type=checkbox] { width: 20px; height: 20px; }
     .chip { padding: var(--sp-2) var(--sp-3); font-size: var(--fs-base); }

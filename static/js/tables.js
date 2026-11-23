@@ -406,8 +406,11 @@ function insertAtCursor(el, text) {
 let _chooseResolve = null;
 let _chooseCollect = null;
 
-function chooseDialog({ title, body, confirm = 'OK', danger = false, collect = () => true, width = 480 }) {
+// cancel: false for a notice, where there is nothing to decline (the close
+// button stays). Set on every call, since the one dialog is reused.
+function chooseDialog({ title, body, confirm = 'OK', danger = false, cancel = true, collect = () => true, width = 480 }) {
   document.getElementById('choose-title').textContent = title;
+  document.getElementById('choose-cancel').hidden = !cancel;
   document.getElementById('choose-body').innerHTML = body;
   const btn = document.getElementById('choose-confirm');
   btn.textContent = confirm;

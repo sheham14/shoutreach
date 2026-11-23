@@ -1067,10 +1067,10 @@ async function openAIReview() {
 
   if (data.error) {
     const hints = {
-      'Invalid API key':   'Double-check your API key in Settings → AI Features.',
-      'not configured':    'Add your API key in Settings → AI Features.',
-      'not enabled':       'Enable AI features in Settings → AI Features.',
-      'Model not found':   'The selected model ID may be wrong or not yet available — check Settings → AI Features.',
+      'Invalid API key':   'Double-check your API key in Settings → AI features.',
+      'not configured':    'Add your API key in Settings → AI features.',
+      'not enabled':       'Enable AI features in Settings → AI features.',
+      'Model not found':   'The selected model ID may be wrong or not yet available — check Settings → AI features.',
       'credits exhausted': 'Top up your account balance with the provider.',
       'Rate limit':        'You\'ve hit the rate limit — wait a moment and try again.',
       'timed out':         'The provider is slow right now — try again in a moment.',

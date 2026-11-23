@@ -87,6 +87,13 @@ def phone(p):
                 out[name] = {"error": str(exc).splitlines()[0][:120]}
                 return
             settle(page)
+        if first_row:
+            # The list loads after networkidle sometimes (Calling's queue):
+            # wait for its first row, or the reading is "no rows".
+            try:
+                page.wait_for_selector(first_row, timeout=5000)
+            except Exception:
+                pass
         m = page.evaluate(TARGETS_JS)
         if first_row:
             m["firstRowTop"] = page.evaluate(
@@ -104,15 +111,15 @@ def phone(p):
     take("wa-todo-did-it-send", tap="#wa-actions .btn-primary")
     take("wa-leads", "closeAllSheets(); setTab('whatsapp','leads')", first_row="#wl-body tbody tr:nth-child(1)")
     take("wa-leads-panel", tap="#wl-body tbody tr:nth-child(2) td.m-card")
-    take("wa-booked", "closeAllSheets(); setTab('whatsapp','booked')")
-    take("wa-messages", "setTab('whatsapp','templates')")
+    take("meetings", "closeAllSheets(); showSection('meetings')")   # was WhatsApp -> Booked (removed in Plan 2)
+    take("wa-messages", "showSection('whatsapp'); setTab('whatsapp','templates')")
     take("wa-campaigns", "setTab('whatsapp','campaigns')")
     take("calling-todo", "showSection('calling'); setTab('calling','todo')", first_row="#cq-table tr:nth-child(1)")
     take("calling-lead", tap="#cq-table tr:nth-child(1) td.m-card")
     take("contacts", "closeAllSheets(); showSection('contacts')", first_row="#section-contacts tbody tr:nth-child(1)")
     take("email-todo", "showSection('email'); setTab('email','todo')", first_row="#er-body tbody tr:nth-child(1)")
     take("email-campaigns", "setTab('email','campaigns')")
-    take("getleads-import", "showSection('scraper'); setTab('scraper','import')")
+    take("getleads-import", "showSection('scraper'); setTab('getleads','import')")
     take("settings", "showSection('settings')")
     # is the tab strip scrollable with something hidden, and is there any hint?
     out["wa-tabs"] = page.evaluate("""() => { showSection('whatsapp'); const t = document.querySelector('[data-tab-group=whatsapp]');

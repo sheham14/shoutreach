@@ -2,15 +2,15 @@ const AI_MODELS = {
   claude: [
     {
       id: "claude-haiku-4-5-20251001",
-      label: "Haiku 4.5 (~$1/ Input MTok + $5/ Output MTok)",
+      label: "Haiku 4.5 (~$1/ input MTok + $5/ output MTok)",
     },
     {
       id: "claude-sonnet-4-6",
-      label: "Sonnet 4.6 (~$3/ Input MTok + $15/ Output MTok)",
+      label: "Sonnet 4.6 (~$3/ input MTok + $15/ output MTok)",
     },
     {
       id: "claude-opus-4-7",
-      label: "Opus 4.7 (~$5/ Input MTok + $25/ Output MTok)",
+      label: "Opus 4.7 (~$5/ input MTok + $25/ output MTok)",
     },
   ],
   gemini: [
@@ -27,15 +27,15 @@ const AI_MODELS = {
   openai: [
     {
       id: "gpt-5.4-mini",
-      label: "GPT-5.4 Mini (~$0.75/ Input MTok + $4.50/ Output MTok)",
+      label: "GPT-5.4 Mini (~$0.75/ input MTok + $4.50/ output MTok)",
     },
     {
       id: "gpt-5.4",
-      label: "GPT-5.4 (~$2.5/ Input MTok + $15/ Output MTok)",
+      label: "GPT-5.4 (~$2.5/ input MTok + $15/ output MTok)",
     },
     {
       id: "gpt-5.5",
-      label: "GPT-5.5 (~$5/ Input MTok + $30/ Output MTok)",
+      label: "GPT-5.5 (~$5/ input MTok + $30/ output MTok)",
     },
   ],
 };
@@ -261,7 +261,7 @@ function addAuditLinkRow(label = "", url = "", focus = true) {
   row.innerHTML = `
     <input class="al-label soft-input" placeholder="Semrush" value="${esc(label)}" style="flex:1" />
     <input class="al-url soft-input mono" placeholder="https://…{domain}" value="${esc(url)}" style="flex:3;font-size:12.5px" />
-    <button class="btn btn-ghost btn-sm" onclick="this.closest('.audit-link-row').remove()" title="Remove" aria-label="Remove">${icon('x')}</button>`;
+    <button class="btn btn-icon btn-sm" onclick="this.closest('.audit-link-row').remove()" title="Remove" aria-label="Remove">${icon('x')}</button>`;
   document.getElementById("cfg-audit-links").appendChild(row);
   if (focus) row.querySelector(".al-label").focus();
 }

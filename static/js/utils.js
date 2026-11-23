@@ -108,7 +108,7 @@ async function notifyCrossOwnerOverlap(res) {
   if (!found.length) return;
   const items = found.slice(0, 8).map(m => {
     const where = (m.channel_labels || []).join(', ') || 'their list';
-    const since = m.since ? `, added ${fmtWhen(m.since, 'wall')}` : '';
+    const since = m.since ? `, added ${fmtWhen(m.since, 'wall', { sentence: true })}` : '';
     return `<li><b>${esc(m.business_name || 'Unnamed business')}</b> — ${esc(m.owner_name)} has this on ${esc(where)}${esc(since)}</li>`;
   }).join('');
   const more = found.length > 8 ? `<li>…and ${found.length - 8} more</li>` : '';
@@ -118,6 +118,7 @@ async function notifyCrossOwnerOverlap(res) {
       <p class="dialog-p">They have been added to yours anyway — nothing was merged or shared.
       This is only so you don't both approach the same business.</p>`,
     confirm: 'OK',
+    cancel: false,   // a notice: the import has already happened
   });
 }
 

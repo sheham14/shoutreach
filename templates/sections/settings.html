@@ -32,7 +32,7 @@
       worker with their own key. Treat it like a password.
     </div>
     <div class="form-group">
-      <label>Worker API Key</label>
+      <label>Worker API key</label>
       <div class="flex gap-2">
         <input id="cfg-worker-key" type="password" readonly value="••••••••••••" style="flex:1" />
         <button class="btn btn-ghost btn-sm" onclick="revealWorkerKey()" id="cfg-worker-reveal">Show</button>
@@ -110,20 +110,20 @@
 
     <div class="card" style="padding:24px;grid-column:1/-1">
       <div class="flex items-center" style="margin-bottom:16px">
-        <div class="card-title">Email Accounts</div>
+        <div class="card-title">Email accounts</div>
         <button class="btn btn-ghost btn-sm ml-auto" onclick="openAddAccountModal()">+ Add account</button>
       </div>
       <p class="text-muted text-small" style="margin-bottom:16px">Add the accounts you want to use for sending. Assign them to campaigns in the campaign detail view — selected accounts rotate automatically.</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Name</th><th>Email</th><th>SMTP Host</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Email</th><th>SMTP host</th><th>Status</th><th></th></tr></thead>
           <tbody id="accounts-table"><tr><td colspan="5" class="empty-state"><p>No accounts configured.</p></td></tr></tbody>
         </table>
       </div>
     </div>
 
     <div class="card" style="padding:24px">
-      <div class="card-title" style="margin-bottom:20px">Global Sending Rules</div>
+      <div class="card-title" style="margin-bottom:20px">Global sending rules</div>
       <!-- Reply/bounce checking logs in on IMAP every 5 minutes whether or not
            any campaign is actually running, which costs real time on a small
            server and fills the log table with nothing worth reading when
@@ -161,7 +161,7 @@
         <div class="form-hint">Required by Gmail if you send 5,000+ emails/day. Turn off for low-volume cold outreach to avoid the Promotions tab. A plain-text "reply to unsubscribe" notice is always included regardless.</div>
       </div>
       <div class="form-group">
-        <label>Company Physical Address <span style="color:var(--danger);font-size:11px">CAN-SPAM required</span></label>
+        <label>Company physical address <span style="color:var(--danger);font-size:11px">CAN-SPAM required</span></label>
         <textarea id="cfg-company-address" rows="2" placeholder="123 Main St, Toronto, ON M5V 1A1, Canada" style="resize:vertical"></textarea>
         <div class="form-hint">Required by law (CAN-SPAM / CASL). Appended to the footer of every email.</div>
       </div>
@@ -169,7 +169,7 @@
     </div>
 
     <div class="card" style="padding:24px">
-      <div class="card-title" style="margin-bottom:12px">Domain Warmup Schedule</div>
+      <div class="card-title" style="margin-bottom:12px">Domain warmup schedule</div>
       <p class="text-muted text-small" style="margin-bottom:14px">Follow this ramp-up to avoid hitting spam filters on a new domain.</p>
       <div class="table-wrap">
         <table>
@@ -189,7 +189,7 @@
 
   <div class="card" style="padding:24px;margin-top:24px">
     <div class="flex items-center" style="margin-bottom:4px">
-      <div class="card-title">AI Features</div>
+      <div class="card-title">AI features</div>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-left:auto">
         <input type="checkbox" id="cfg-ai-enabled" style="cursor:pointer" />
         <span style="font-size:13px;color:var(--text-2)">Enable</span>
@@ -199,7 +199,7 @@
 
     <div class="responsive-grid-2" style="gap:16px">
       <div class="form-group" style="margin-bottom:0">
-        <label>AI Provider</label>
+        <label>AI provider</label>
         <select id="cfg-ai-provider" onchange="aiProviderChanged()">
           <option value="claude">Anthropic (Claude)</option>
           <option value="gemini">Google (Gemini)</option>
@@ -214,7 +214,7 @@
     <div class="form-hint" style="margin-bottom:16px" id="cfg-ai-model-hint"></div>
 
     <div class="form-group" id="cfg-key-group-claude">
-      <label>Anthropic API Key</label>
+      <label>Anthropic API key</label>
       <input id="cfg-anthropic-key" type="password" placeholder="sk-ant-..." autocomplete="off" />
       <div class="form-hint">Get a key at <strong>console.anthropic.com</strong> → API Keys. Add $5 credit to get started.</div>
     </div>
@@ -226,7 +226,7 @@
     </div>
 
     <div class="form-group" id="cfg-key-group-openai" style="display:none">
-      <label>OpenAI API Key</label>
+      <label>OpenAI API key</label>
       <input id="cfg-openai-key" type="password" placeholder="sk-..." autocomplete="off" />
       <div class="form-hint">Get a key at <strong>platform.openai.com</strong> → API Keys. Add $5 credit to get started.</div>
     </div>

@@ -31,7 +31,7 @@
     {"name": "contacts-panel", "do": [["tap", "#section-contacts tbody tr:nth-child(1) td.m-card"]]},
     {"name": "email-todo", "do": [["js", "closeAllSheets(); showSection('email'); setTab('email','todo')"]]},
     {"name": "email-campaigns", "do": [["js", "setTab('email','campaigns')"]]},
-    {"name": "getleads-import", "do": [["js", "showSection('scraper'); setTab('scraper','import')"]]},
+    {"name": "getleads-import", "do": [["js", "showSection('scraper'); setTab('getleads','import')"]]},
     {"name": "getleads-import-full", "do": [], "full": true},
     {"name": "settings", "do": [["js", "showSection('settings')"]]}
   ]

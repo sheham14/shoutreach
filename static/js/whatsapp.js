@@ -1380,7 +1380,7 @@ function addWaVariable(key = '', value = '', focus = true) {
     <input class="wt-var-key soft-input mono" placeholder="my_name" value="${esc(key)}" style="flex:1;font-size:12.5px"
            oninput="_refreshAllWaPreviews()" />
     <input class="wt-var-val soft-input" placeholder="Sam" value="${esc(value)}" style="flex:2" oninput="_refreshAllWaPreviews()" />
-    <button class="btn btn-ghost btn-sm" onclick="this.closest('.wt-var').remove();_refreshAllWaPreviews()" title="Remove" aria-label="Remove">${icon('x')}</button>`;
+    <button class="btn btn-icon btn-sm" onclick="this.closest('.wt-var').remove();_refreshAllWaPreviews()" title="Remove" aria-label="Remove">${icon('x')}</button>`;
   document.getElementById('wt-vars').appendChild(row);
   if (focus) row.querySelector('.wt-var-key').focus();
 }
