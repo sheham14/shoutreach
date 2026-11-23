@@ -575,3 +575,15 @@ The fix round was confirmed at `393d1f5` (suite 34/34 on Python 3.13 and
 - **N2.** "Help & guide" in the sidebar and as the Help page title.
 - **N3.** Plans README: Plan 3 "Reviewed, fixes in, ready to merge"; the
   table's date is 2026-11-23.
+
+## Deployed (2026-11-23)
+
+Merged as pull request #5 (`a3d188e`) and deployed by the GitHub Actions run
+45276459308 (green; the log shows `Updating 52b0eb9..a3d188e`, fast-forward,
+after the database backup step). Checked on https://shoutreach.hexiv.co
+afterwards: `/login` 200 with the mark and "Sign in — ShoutReach";
+`/api/users/me` 401 signed out; `/static/css/main.css`, the mark and
+`InterVariable.woff2` 200 signed out, and the served `main.css` has the
+`[hidden]` rule (so the new code is what's running); `/static/js/app.js` and
+`/static/js/icons.js` still 302 to sign-in. No request to Google Fonts from
+the sign-in page. Not checked by hand signed in on the live site.
