@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-11-23 (Plans 1 and 2 deployed; Plan 3 · Redesign phase 1 built on `plan-3-redesign-phase-1`, reviewed, fixes in, not yet merged — [plans/README.md](plans/README.md)) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-11-23 (Plans 1, 2 and 3 deployed; Plan 3 · Redesign phase 1 is `a3d188e` — [plans/README.md](plans/README.md)) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -110,6 +110,7 @@ fix this file.
 
 | Commit | Date | What | Live? |
 |---|---|---|---|
+| `a3d188e` | 11-23 | Plan 3 (Redesign, phase 1): hexiv.co's palette and Inter, one icon set and the Hexiv mark, restyled controls, the app's own dialog for every confirmation; nothing moved. `/static/css`, `/static/img` and `/static/fonts` load signed out (`docs/plans/`) | Yes |
 | `4f5b303` | 11-22 | Plan 2, packages 3–8 and the review fixes: Cal.com bookings update the lead, follow-up for people who don't book, the Meetings page, the other operator's copy, team emails, ShoutReach's Zoho booking removed (§9, `docs/plans/`) | Yes |
 | `3eed5be` | 11-22 | Plan 2, packages 1–2: the two inbound routes, website settings, an enquiry becomes a lead | Yes |
 | `bea9be1` | 11-22 | Plan 1 (Fix now): opt-outs permanent, sessions end on delete or password change, the sender survives errors, confirmations, a dozen visible faults | Yes |
