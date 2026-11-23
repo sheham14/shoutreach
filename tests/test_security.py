@@ -156,6 +156,85 @@ def test_logs_admin_only(db, app_mod):
     check("signed out gets 401", r.status_code == 401, f"got {r.status_code}")
 
 
+def test_public_static(db, app_mod):
+    """Plan 3 -- css, img and fonts load signed out (the sign-in page uses
+    them); js and every /api/ route answer exactly as before."""
+    print("\n8. SIGNED OUT: CSS, IMAGES AND FONTS LOAD; NOTHING ELSE DOES (Plan 3)")
+    client = app_mod.app.test_client()
+    for path in ("/static/css/main.css", "/static/img/hexiv-mark.svg",
+                 "/static/fonts/InterVariable.woff2"):
+        r = client.get(path)
+        check(f"{path} answers 200 signed out", r.status_code == 200, f"got {r.status_code}")
+        r.close()
+
+    js_body = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "static", "js", "app.js"), "rb").read()
+    climbs = (
+        "/static/js/app.js",
+        "/static/css/../js/app.js",
+        "/static/img/../js/app.js",
+        "/static/fonts/../js/app.js",
+        "/static/css/./../js/app.js",
+        "/static/css/%2e%2e/js/app.js",
+        "/static/css/..%2fjs/app.js",
+        "/static/css/%2E%2E%2Fjs%2Fapp.js",
+        "/static/fonts/../../app.py",
+        "/static/css/..\\js\\app.js",
+    )
+    for path in climbs:
+        r = client.get(path)
+        leaked = r.status_code == 200 or js_body[:200] in r.data
+        check(f"{path} is not served signed out",
+              not leaked and r.status_code == 302 and "/login" in r.headers.get("Location", ""),
+              f"got {r.status_code}")
+        r.close()
+
+    # Every /api/ route, every method, signed out: the same answer with and
+    # without the public-static rule, and 401 for all but the routes that
+    # carry their own credential (worker key, website key, Cal.com signature).
+    own_credential = set(app_mod._WORKER_PATHS) | set(app_mod._INBOUND_PATHS)
+    real = app_mod._is_public_static
+    checked, differ, open_routes = 0, [], []
+    for rule in app_mod.app.url_map.iter_rules():
+        if not rule.rule.startswith("/api/"):
+            continue
+        args = {}
+        for name, conv in rule._converters.items():
+            args[name] = 1 if type(conv).__name__ in ("IntegerConverter", "NumberConverter") else "x"
+        with app_mod.app.test_request_context():
+            url = app_mod.app.url_for(rule.endpoint, **args)
+        for method in sorted(rule.methods - {"HEAD", "OPTIONS"}):
+            answers = []
+            for rule_on in (True, False):
+                app_mod._is_public_static = real if rule_on else (lambda: False)
+                r = client.open(url, method=method, json={})
+                answers.append(r.status_code)
+                r.close()
+            app_mod._is_public_static = real
+            checked += 1
+            if answers[0] != answers[1]:
+                differ.append(f"{method} {url} {answers}")
+            path = url.split("?")[0]
+            if path in own_credential or path.startswith("/api/scraper/jobs/"):
+                if 200 <= answers[0] < 300:
+                    open_routes.append(f"{method} {url} {answers[0]}")
+            elif answers[0] != 401:
+                open_routes.append(f"{method} {url} {answers[0]}")
+    check(f"all {checked} /api/ route+method pairs answer the same as without the rule",
+          checked > 100 and not differ, "; ".join(differ[:5]))
+    check("and every one refuses a signed-out caller", not open_routes, "; ".join(open_routes[:5]))
+
+    # Signed in, js still loads (the rule only adds, never removes).
+    uid = db.create_user("staticuser", "test-password-123", is_admin=False)
+    c = app_mod.app.test_client()
+    with c.session_transaction() as sess:
+        sess["user_id"] = uid
+        sess["csrf_token"] = "t"
+    r = c.get("/static/js/app.js")
+    check("signed in, /static/js/app.js still loads", r.status_code == 200, f"got {r.status_code}")
+    r.close()
+
+
 def main():
     work = tempfile.mkdtemp(prefix="sec_")
     try:
@@ -168,6 +247,7 @@ def main():
         test_worker_routes_still_authenticated(app_mod)
         db.init_db()
         test_logs_admin_only(db, app_mod)
+        test_public_static(db, app_mod)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

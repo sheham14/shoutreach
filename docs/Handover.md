@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-11-22 (Plan 1 · Fix now built on `claude/vibrant-archimedes-i2ilk9`, not yet merged — §9) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-11-23 (Plans 1 and 2 deployed; Plan 3 · Redesign phase 1 built on `plan-3-redesign-phase-1`, reviewed, fixes in, not yet merged — [plans/README.md](plans/README.md)) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -950,8 +950,10 @@ at computer and phone size against the same fake Zoho.
   succeeds even if the app crashes a moment later. Check that
   `https://shoutreach.hexiv.co/login` returns **200** and `/api/users/me`
   returns **401**; a **502** means startup failed, most likely in `init_db`.
-  `/static/*` needs a login (302), so it can't prove new code shipped — the
-  run log's `git pull` line (`Updating <old>..<new>`) can.
+  `/static/js/*` needs a login (302), so it can't prove new code shipped — the
+  run log's `git pull` line (`Updating <old>..<new>`) can. (Since Plan 3,
+  `/static/css/`, `/static/img/` and `/static/fonts/` load signed out, for
+  the sign-in page; a changed `main.css` is visible there.)
 - **Deploy SSH key:** ed25519. The public half is in the Cloud Console under
   **VM → Edit → SSH Keys** (username `sheham_shahid`); the private half exists
   only in the GitHub secret `SSH_PRIVATE_KEY`. On 2026-09-15 the old,
@@ -1058,10 +1060,33 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-32 files, all passing as of Plan 2 package 8 (which deleted
+34 files, all passing as of the Plan 3 review fixes (Plan 3 added
+`test_icons.py` and `test_css.py`; Plan 2 package 8 deleted
 `test_zoho_calendar.py`). `test_rendering.py` once
 failed with "database is locked" mid-suite and passed on its own and on a
 re-run — watch for it.
+
+`tests/test_security.py` section 8 pins the one thing a signed-out visitor
+can reach besides `/login` (Plan 3 package 1, `_is_public_static` in
+`app.py`): a file under `/static/css/`, `/static/img/` or `/static/fonts/`
+answers 200, so the sign-in page can use `main.css`, the fonts and the mark.
+`/static/js/app.js` and every path that climbs out of those folders
+(`/static/css/../js/app.js`, encoded dots, backslashes) still redirect to
+sign-in, and every `/api/` route and method answers exactly as it does with
+the rule switched off. A prefix-only rule fails it.
+
+`tests/test_icons.py` pins the icon set (Plan 3 package 3): `app.py`
+loads exactly what `static/js/icons.js` holds, every icon name used in a
+template or script exists (a typo would otherwise draw nothing, silently),
+no icon call is printed as text (the Help page is inside `{% raw %}`, so its
+icons step out one at a time), and the mark is the tab icon and sits beside
+the name on both pages.
+
+`tests/test_css.py` pins rules in `main.css` that code relies on: a
+top-level `[hidden] { display: none !important; }`, so no later `display:`
+rule can draw an element the scripts hid with `el.hidden` (a phone rule
+once drew "0 marked not on WhatsApp"), and no element toggled with `.hidden`
+is also shown with `style.display`.
 
 `tests/test_pipeline.py` covers stages (§5a/§5c): the built-ins and inventing
 your own, one stage read from all three channels, the cadence stopping on set
@@ -1282,7 +1307,9 @@ retired `contacts` table.
 - `scraper_worker.py`, `gmaps_email_scraper.py`, `email_validator.py` — the
   laptop worker.
 - `static/js/tables.js` — shared frontend pieces: tabs (`setTab`/`onTab`),
-  `createLeadTable` (every leads table), `chooseDialog` (replaces `prompt()`),
+  `createLeadTable` (every leads table), `chooseDialog` (replaces `prompt()`)
+  and `confirmDialog({title, text, confirm, danger})` on top of it (replaces
+  `confirm()`: there are none left; `danger` draws the confirm solid red),
   pills, `fillPlaceholders`, and **`fmtWhen(value, kind)`, the one way to
   show a time** (audit F-33): `'utc'` for database timestamps (converted to
   the viewer's time), `'wall'` for times a person typed (`next_call_at`,
@@ -1317,6 +1344,13 @@ retired `contacts` table.
   the country picker, opening WhatsApp, the audit section. One JS file per
   page: `contacts.js` (businesses, "Add all to…"), `email_leads.js` (Email →
   Leads and suppression), `calling.js`, `whatsapp.js`, `dashboard.js`.
+- **Icons** — `static/js/icons.js` is the one place: Lucide (ISC,
+  `static/js/Lucide-LICENSE.txt`) path data between two marker comments.
+  Scripts call `icon(name, { size, label })`; templates
+  `{% from "macros/icons.html" import icon %}` then `{{ icon('mail', 16) }}`,
+  which `app.py` feeds by parsing the same block at startup (`_load_icons`).
+  To add one, copy the elements inside lucide-static's `icons/<name>.svg`
+  into the object. An icon-only button needs an `aria-label`.
 - `audit.py` — the lead audit's automatic checks.
 - No calendar code. `zoho_calendar.py` was removed by Plan 2 package 8
   (§5f, retired). Cal.com is the only thing that writes to a calendar, and

@@ -1,3 +1,4 @@
+{% from "macros/icons.html" import icon %}
 <!-- Every booked meeting, from any channel and from the website (Plan 2).
      One table, grouped by when, so the columns line up (audit F-19); each
      row opens its lead beside the list. Cal.com is the only thing that moves
@@ -8,7 +9,7 @@
       <div class="page-title">Meetings</div>
       <div class="page-sub">Everything booked — from a call, WhatsApp, email or the website</div>
     </div>
-    <button class="btn btn-ghost btn-sm" onclick="loadMeetings()">↻ Refresh</button>
+    <button class="btn btn-ghost btn-sm" onclick="loadMeetings()">{{ icon('refresh-cw', 14) }} Refresh</button>
   </div>
   <div class="work-split" id="mt-split" style="grid-template-columns:1fr">
     <div class="card">

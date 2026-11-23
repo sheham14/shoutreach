@@ -43,8 +43,14 @@ def main():
         page = ctx.new_page()
         page.on("console", lambda m: m.type == "error" and problems.append(f"console: {m.text[:200]}"))
         page.on("pageerror", lambda e: problems.append(f"pageerror: {str(e)[:200]}"))
-        page.on("response", lambda r: r.status >= 400 and "/api/" in r.url and
+        page.on("response", lambda r: r.status >= 400 and r.url.startswith(BASE) and
                 problems.append(f"http {r.status}: {r.request.method} {r.url.replace(BASE, '')[:120]}"))
+        # Plan 3: no failed requests, and nothing leaves the machine (fonts
+        # used to come from Google). data: and blob: URLs are local.
+        page.on("requestfailed", lambda r: problems.append(
+            f"failed: {r.method} {r.url.replace(BASE, '')[:120]} ({r.failure})"))
+        page.on("request", lambda r: not r.url.startswith((BASE, "data:", "blob:")) and
+                problems.append(f"external: {r.method} {r.url[:120]}"))
 
         page.goto(BASE + "/login")
         if plan.get("login_shot"):
@@ -53,6 +59,8 @@ def main():
         page.fill('input[name="password"]', "audit-password-123")
         page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")
+        for n in problems:
+            print("   at sign-in:", n)
         if phone:
             page.evaluate("() => { window.openWhatsAppChat_real = window.openWhatsAppChat; }")
 

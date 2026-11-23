@@ -1,7 +1,8 @@
+{% from "macros/icons.html" import icon %}
 <div class="modal-overlay" id="modal-step">
   <div class="modal" style="max-width:640px">
-    <button class="modal-close" onclick="closeModal('modal-step')">✕</button>
-    <h2 id="step-modal-title">Edit Step</h2>
+    <button class="modal-close" onclick="closeModal('modal-step')" aria-label="Close">{{ icon('x', 20) }}</button>
+    <h2 id="step-modal-title">Edit step</h2>
     <input type="hidden" id="step-num-input" />
     <div class="form-group">
       <label>Delay (days since previous step)</label>
@@ -28,11 +29,11 @@
       <div class="form-group">
         <div class="flex items-center gap-2" style="margin-bottom:6px">
           <button type="button" class="btn btn-ghost btn-sm" onclick="toggleVariablePanel()"
-                  id="var-panel-toggle">⊞ Insert variable</button>
+                  id="var-panel-toggle">{{ icon('columns-3') }} Insert variable</button>
           <span class="text-muted text-small" id="var-panel-scope"></span>
         </div>
-        <div id="var-panel" style="display:none;border:1px solid var(--border2);border-radius:8px;
-                                   padding:4px 0;max-height:260px;overflow-y:auto;background:var(--bg2)"></div>
+        <div id="var-panel" style="display:none;border:1px solid var(--line);border-radius:8px;
+                                   padding:4px 0;max-height:260px;overflow-y:auto;background:var(--surface)"></div>
         {# The panel lists every variable with live coverage, so the hint only
            has to cover the one thing it cannot show: the fallback syntax. #}
         {% raw %}
@@ -42,28 +43,28 @@
           </summary>
           <div class="form-hint" style="margin-top:4px">
             <span class="mono">{{first_name|there}}</span> sends
-            <span class="mono">Hi there,</span> when a contact has no first
+            <span class="tnum">Hi there,</span> when a contact has no first
             name. Scraped leads never have one — Maps lists businesses, not
             people — so lean on <span class="mono">{{company}}</span>.
-            Campaign variables live under Edit Settings → Variables.
+            Campaign variables live under Settings → Campaign variables.
           </div>
         </details>
         {% endraw %}
       </div>
 
       <div id="var-gap-warning"
-           style="display:none;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);
-                  border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--amber)"></div>
+           style="display:none;background:var(--warning-soft);border:1px solid var(--warning-edge);
+                  border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--warning)"></div>
     </div>
 
-    <div id="spam-warning" style="display:none;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--amber)">
-      ⚠ Potential spam trigger words detected: <span id="spam-words"></span>
+    <div id="spam-warning" style="display:none;background:var(--warning-soft);border:1px solid var(--warning-edge);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--warning)">
+      {{ icon('triangle-alert', 14) }} Potential spam trigger words detected: <span id="spam-words"></span>
     </div>
 
-    <div style="margin:16px 0;border-top:1px solid var(--border);padding-top:16px">
+    <div style="margin:16px 0;border-top:1px solid var(--line);padding-top:16px">
       <div class="flex items-center gap-2" style="margin-bottom:12px">
-        <span style="font-size:13px;font-weight:600">A/B Variants</span>
-        <button class="btn btn-ghost btn-sm" onclick="addStepVariant()">+ Add Variant</button>
+        <span style="font-size:13px;font-weight:600">A/B variants</span>
+        <button class="btn btn-ghost btn-sm" onclick="addStepVariant()">+ Add variant</button>
         <span class="text-muted text-small" style="margin-left:4px" id="variant-weight-total"></span>
       </div>
       <div id="step-variants-list" style="display:flex;flex-direction:column;gap:12px"></div>
@@ -73,21 +74,21 @@
     </div>
 
     <div class="flex gap-2 items-center" style="flex-wrap:wrap">
-      <button class="btn btn-primary" onclick="saveStep()">Save Step</button>
+      <button class="btn btn-primary" onclick="saveStep()">Save step</button>
       <button class="btn btn-ghost" onclick="openStepPreview()">Preview</button>
-      <button class="btn btn-ghost" id="btn-ai-review" onclick="openAIReview()" title="Requires AI features enabled in Settings">AI Review</button>
+      <button class="btn btn-ghost" id="btn-ai-review" onclick="openAIReview()" title="Requires AI features enabled in Settings">AI review</button>
       <!-- Which arm Preview and AI Review act on. Hidden while the step has a
            single arm, since there is nothing to choose between. -->
       <select id="copy-target" onchange="dismissAIRewrite()"
               title="Which variant Preview and AI Review use"
-              style="display:none;background:var(--bg3);border:1px solid var(--border2);
+              style="display:none;background:var(--raised);border:1px solid var(--line-strong);
                      border-radius:6px;padding:6px 10px;color:var(--text);font-size:12px;
                      font-family:var(--font);cursor:pointer"></select>
       <button class="btn btn-ghost" onclick="closeModal('modal-step')">Cancel</button>
     </div>
 
-    <div id="ai-review-panel" style="display:none;margin-top:16px;padding:14px 16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;font-size:13px">
-      <div id="ai-review-loading" style="display:none;color:var(--muted)">Reviewing…</div>
+    <div id="ai-review-panel" style="display:none;margin-top:16px;padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:8px;font-size:13px">
+      <div id="ai-review-loading" style="display:none;color:var(--text-2)">Reviewing…</div>
       <div id="ai-review-result"></div>
     </div>
   </div>

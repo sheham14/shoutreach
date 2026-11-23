@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import logging
 import os
+import posixpath
 import secrets as _secrets
 import threading
 import time as _time
@@ -50,6 +51,20 @@ logging.basicConfig(
 )
 
 app = Flask(__name__)
+
+
+def _load_icons() -> dict:
+    """The icon set's path data, read from the one place it lives
+    (static/js/icons.js, between its ICONS-JSON markers) so templates draw
+    the same icons the scripts do. Plan 3 package 3."""
+    path = os.path.join(app.root_path, "static", "js", "icons.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    m = re.search(r"/\* ICONS-JSON-START \*/\s*const ICONS = (\{.*?\});\s*/\* ICONS-JSON-END \*/", src, re.S)
+    return json.loads(m.group(1)) if m else {}
+
+
+app.jinja_env.globals["ICONS"] = _load_icons()
 
 # How many proxies sit in front of this app and append to X-Forwarded-For.
 # The GCP deploy runs behind a single Nginx, so 1 is right there. Set to 0 for
@@ -157,6 +172,29 @@ def _login_rate_limited(ip: str) -> bool:
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
 _PUBLIC_PATHS = {"/login", "/logout"}
+
+# The sign-in page uses the app's own stylesheet, fonts and mark (Plan 3), so
+# these three static folders load without a session. /static/js/ stays
+# private. Nothing in them is per-user or secret.
+_PUBLIC_STATIC_PREFIXES = ("/static/css/", "/static/img/", "/static/fonts/")
+
+
+def _is_public_static() -> bool:
+    """A file directly under one of the public static folders, and nothing else.
+
+    request.path is already percent-decoded, so "%2e%2e" arrives as "..".
+    Refuse any ".." segment (and backslashes and NULs) outright: Flask's
+    static route would resolve "/static/css/../js/app.js" to js/app.js, so a
+    prefix test alone would hand out the private scripts.
+    """
+    path = request.path
+    if not path.startswith(_PUBLIC_STATIC_PREFIXES):
+        return False
+    if "\\" in path or "\x00" in path:
+        return False
+    if any(part in ("..", ".") for part in path.split("/")):
+        return False
+    return posixpath.normpath(path).startswith(_PUBLIC_STATIC_PREFIXES)
 _CSRF_EXEMPT_PATHS = {"/login", "/logout"}
 
 # Routes the local scrape worker calls. They authenticate with X-API-Key
@@ -392,6 +430,8 @@ def _same_origin() -> bool:
 def _require_login():
     if request.path in _PUBLIC_PATHS or request.path.startswith("/unsubscribe"):
         return
+    if _is_public_static():
+        return          # css, img, fonts: the sign-in page needs them (Plan 3)
     if _is_worker_route():
         return          # authenticated by X-API-Key in worker_auth_required
     if _is_inbound_route():

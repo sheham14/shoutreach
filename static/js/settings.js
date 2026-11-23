@@ -2,15 +2,15 @@ const AI_MODELS = {
   claude: [
     {
       id: "claude-haiku-4-5-20251001",
-      label: "Haiku 4.5 (~$1/ Input MTok + $5/ Output MTok)",
+      label: "Haiku 4.5 (~$1/ input MTok + $5/ output MTok)",
     },
     {
       id: "claude-sonnet-4-6",
-      label: "Sonnet 4.6 (~$3/ Input MTok + $15/ Output MTok)",
+      label: "Sonnet 4.6 (~$3/ input MTok + $15/ output MTok)",
     },
     {
       id: "claude-opus-4-7",
-      label: "Opus 4.7 (~$5/ Input MTok + $25/ Output MTok)",
+      label: "Opus 4.7 (~$5/ input MTok + $25/ output MTok)",
     },
   ],
   gemini: [
@@ -27,15 +27,15 @@ const AI_MODELS = {
   openai: [
     {
       id: "gpt-5.4-mini",
-      label: "GPT-5.4 Mini (~$0.75/ Input MTok + $4.50/ Output MTok)",
+      label: "GPT-5.4 Mini (~$0.75/ input MTok + $4.50/ output MTok)",
     },
     {
       id: "gpt-5.4",
-      label: "GPT-5.4 (~$2.5/ Input MTok + $15/ Output MTok)",
+      label: "GPT-5.4 (~$2.5/ input MTok + $15/ output MTok)",
     },
     {
       id: "gpt-5.5",
-      label: "GPT-5.5 (~$5/ Input MTok + $30/ Output MTok)",
+      label: "GPT-5.5 (~$5/ input MTok + $30/ output MTok)",
     },
   ],
 };
@@ -261,7 +261,7 @@ function addAuditLinkRow(label = "", url = "", focus = true) {
   row.innerHTML = `
     <input class="al-label soft-input" placeholder="Semrush" value="${esc(label)}" style="flex:1" />
     <input class="al-url soft-input mono" placeholder="https://…{domain}" value="${esc(url)}" style="flex:3;font-size:12.5px" />
-    <button class="btn btn-ghost btn-sm" onclick="this.closest('.audit-link-row').remove()" title="Remove">✕</button>`;
+    <button class="btn btn-icon btn-sm" onclick="this.closest('.audit-link-row').remove()" title="Remove" aria-label="Remove">${icon('x')}</button>`;
   document.getElementById("cfg-audit-links").appendChild(row);
   if (focus) row.querySelector(".al-label").focus();
 }
@@ -274,7 +274,7 @@ async function saveAuditLinks() {
   if (!res || res.error) { toast((res && res.error) || "Could not save the links", "err"); return; }
   _auditLinks = res.links;
   renderAuditLinks(res.links);
-  toast("Audit links saved ✓");
+  toast("Audit links saved");
 }
 
 async function saveSettings() {
@@ -307,7 +307,7 @@ async function saveSettings() {
     payload.google_api_key = googleKey.trim();
   await api("/api/settings", "POST", payload);
   window._aiEnabled = payload.ai_features_enabled === "1";
-  toast("Settings saved ✓");
+  toast("Settings saved");
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
@@ -329,10 +329,10 @@ async function loadUsers() {
     <tr>
       <td style="font-weight:500">${esc(u.username)}</td>
       <td>${u.is_admin ? '<span class="badge badge-blue">Admin</span>' : '<span class="badge">User</span>'}</td>
-      <td class="mono text-muted" style="font-size:11px">${esc(fmtWhen(u.created_at, 'utc', { dateOnly: true }))}</td>
+      <td class="tnum text-muted" style="font-size:11px">${esc(fmtWhen(u.created_at, 'utc', { dateOnly: true }))}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-ghost btn-sm" onclick="openChangePasswordModal(${u.id}, '${escj(u.username)}')">Change password</button>
-        ${u.id !== me.id ? `<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id}, '${escj(u.username)}')">✕</button>` : ""}
+        ${u.id !== me.id ? `<button class="btn btn-icon btn-sm" title="Delete user" aria-label="Delete user" onclick="deleteUser(${u.id}, '${escj(u.username)}')">${icon('x')}</button>` : ""}
       </td>
     </tr>
   `,
@@ -364,7 +364,7 @@ async function saveNewUser() {
     toast(res.error, "err");
     return;
   }
-  toast("User created ✓");
+  toast("User created");
   closeModal("modal-add-user");
   loadUsers();
 }
@@ -406,12 +406,16 @@ async function submitChangePassword() {
     toast(res.error, "err");
     return;
   }
-  toast("Password changed ✓");
+  toast("Password changed");
   closeModal("modal-change-password");
 }
 
 async function deleteUser(uid, username) {
-  if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+  if (!await confirmDialog({
+    title: `Delete user "${username}"?`,
+    text: 'This cannot be undone.',
+    confirm: 'Delete user', danger: true,
+  })) return;
   const res = await api(`/api/users/${uid}`, "DELETE");
   // Refused while they still own leads or campaigns — say so rather than
   // reporting success and leaving the account sitting there.
@@ -441,18 +445,18 @@ async function loadAccounts() {
       return `
     <tr>
       <td>${esc(a.name)}</td>
-      <td class="mono" style="font-size:12px">${esc(a.email)}</td>
-      <td class="mono text-muted" style="font-size:11px">${esc(a.smtp_host)}</td>
+      <td class="tnum" style="font-size:12px">${esc(a.email)}</td>
+      <td class="tnum text-muted" style="font-size:11px">${esc(a.smtp_host)}</td>
       <td>${paused ? '<span class="badge badge-gray">paused</span>' : '<span class="badge badge-green">active</span>'}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-ghost btn-sm" onclick="testAccountSMTPById(${a.id})">Test</button>
         <button class="btn btn-ghost btn-sm" onclick="toggleAccountStatus(${a.id}, ${paused})"
                 title="${paused ? "Resume sending from this account" : "Stop sending from this account, without deleting it"}">
-          ${paused ? "▶ Activate" : "⏸ Pause"}
+          ${paused ? `${icon("play", { size: 14 })} Activate` : `${icon("pause", { size: 14 })} Pause`}
         </button>
-        <button class="btn btn-ghost btn-sm" onclick="openEditAccountModal(${a.id})">✎</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteAccount(${a.id})">✕</button>
-        <span id="acct-row-result-${a.id}" class="mono" style="font-size:11px;margin-left:8px"></span>
+        <button class="btn btn-ghost btn-sm" onclick="openEditAccountModal(${a.id})" title="Edit account" aria-label="Edit account">${icon('pencil', { size: 14 })}</button>
+        <button class="btn btn-icon btn-sm" title="Delete account" aria-label="Delete account" onclick="deleteAccount(${a.id})">${icon('x')}</button>
+        <span id="acct-row-result-${a.id}" class="tnum" style="font-size:11px;margin-left:8px"></span>
       </td>
     </tr>
   `;
@@ -471,14 +475,14 @@ async function toggleAccountStatus(id, currentlyPaused) {
     toast(res.error, "err");
     return;
   }
-  toast(next === "active" ? "Account activated ✓" : "Account paused — it will not send");
+  toast(next === "active" ? "Account activated" : "Account paused — it will not send");
   loadAccounts();
 }
 
 function openAddAccountModal() {
   _accountEditId = null;
   document.getElementById("account-modal-title").textContent =
-    "Add Email Account";
+    "Add an email account";
   [
     "acct-name",
     "acct-email",
@@ -520,7 +524,7 @@ async function openEditAccountModal(id) {
   const a = accounts.find((x) => x.id === id);
   if (!a) return;
   _accountEditId = id;
-  document.getElementById("account-modal-title").textContent = "Edit Account";
+  document.getElementById("account-modal-title").textContent = "Edit account";
   document.getElementById("acct-name").value = a.name || "";
   document.getElementById("acct-email").value = a.email || "";
   document.getElementById("acct-from-name").value = a.from_name || "";
@@ -566,18 +570,21 @@ async function saveAccount() {
   }
   if (_accountEditId) {
     await api(`/api/accounts/${_accountEditId}`, "PUT", payload);
-    toast("Account updated ✓");
+    toast("Account updated");
   } else {
     await api("/api/accounts", "POST", payload);
-    toast("Account added ✓");
+    toast("Account added");
   }
   closeModal("modal-account");
   loadAccounts();
 }
 
 async function deleteAccount(id) {
-  if (!confirm("Delete this account? It will be removed from all campaigns."))
-    return;
+  if (!await confirmDialog({
+    title: 'Delete this sending account?',
+    text: 'It is removed from every campaign that uses it.',
+    confirm: 'Delete account', danger: true,
+  })) return;
   await api(`/api/accounts/${id}`, "DELETE");
   toast("Account deleted");
   loadAccounts();
@@ -592,11 +599,11 @@ async function testAccountSMTP() {
   const p = _accountPayload();
   if (!p.smtp_host) {
     el.textContent = "Enter an SMTP host first";
-    el.style.color = "var(--red)";
+    el.style.color = "var(--danger)";
     return;
   }
   el.textContent = "Testing...";
-  el.style.color = "var(--muted)";
+  el.style.color = "var(--text-2)";
   const res = await api("/api/accounts/test-smtp", "POST", {
     id: _accountEditId,
     smtp_host: p.smtp_host,
@@ -605,7 +612,7 @@ async function testAccountSMTP() {
     smtp_pass: p.smtp_pass,
   });
   el.textContent = res.message || res.error || "No response";
-  el.style.color = res.ok ? "var(--green)" : "var(--red)";
+  el.style.color = res.ok ? "var(--success)" : "var(--danger)";
 }
 
 // Tests a saved account from the list. This used to write its result into the
@@ -616,15 +623,15 @@ async function testAccountSMTPById(id) {
   const el = document.getElementById(`acct-row-result-${id}`);
   if (el) {
     el.textContent = "testing…";
-    el.style.color = "var(--muted)";
+    el.style.color = "var(--text-2)";
   }
   const res = await api(`/api/accounts/${id}/test-smtp`, "POST");
   const ok = !!(res && res.ok);
   const msg = (res && (res.message || res.error)) || "No response";
   if (el) {
-    el.textContent = ok ? "✓ SMTP ok" : "✕ failed";
-    el.style.color = ok ? "var(--green)" : "var(--red)";
-    // Clear the marker after a while so a stale ✓ is never mistaken for the
+    el.innerHTML = ok ? `${icon("check", { size: 14 })} SMTP ok` : `${icon("x", { size: 14 })} failed`;
+    el.style.color = ok ? "var(--success)" : "var(--danger)";
+    // Clear the marker after a while so a stale "SMTP ok" is never mistaken for the
     // result of a later change.
     setTimeout(() => {
       if (el.isConnected) el.textContent = "";
@@ -650,11 +657,11 @@ async function testAccountIMAP() {
   const p = _accountPayload();
   if (!p.imap_host) {
     el.textContent = "Enter an IMAP host first";
-    el.style.color = "var(--red)";
+    el.style.color = "var(--danger)";
     return;
   }
   el.textContent = "Testing...";
-  el.style.color = "var(--muted)";
+  el.style.color = "var(--text-2)";
   const res = await api("/api/accounts/test-imap", "POST", {
     id: _accountEditId,
     imap_host: p.imap_host,
@@ -662,7 +669,7 @@ async function testAccountIMAP() {
     imap_pass: p.imap_pass,
   });
   el.textContent = res.message || res.error || "No response";
-  el.style.color = res.ok ? "var(--green)" : "var(--red)";
+  el.style.color = res.ok ? "var(--success)" : "var(--danger)";
 }
 
 // ── Lead scraper worker key ──────────────────────────────────────────────────
@@ -708,7 +715,11 @@ async function copyWorkerKey() {
 }
 
 async function rotateWorkerKey() {
-  if (!confirm('Rotate your worker key?\n\nYour worker will stop being able to connect until you give it the new key. Only your worker is affected.')) return;
+  if (!await confirmDialog({
+    title: 'Rotate your worker key?',
+    text: 'Your worker will stop being able to connect until you give it the new key. Only your worker is affected.',
+    confirm: 'Rotate key', danger: true,
+  })) return;
   const res = await api('/api/settings/worker-key', 'POST');
   const input = document.getElementById('cfg-worker-key');
   input.type = 'text';

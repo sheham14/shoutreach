@@ -1,9 +1,10 @@
+{% from "macros/icons.html" import icon %}
 <div class="section" id="section-logs">
   <div class="page-header">
     <div class="page-title">Settings</div>
     <div class="flex gap-2">
-      <button class="btn btn-ghost btn-sm" onclick="loadLogs()">↻ Refresh</button>
-      <button class="btn btn-ghost btn-sm" onclick="clearAllLogs()">🧹 Clear all logs</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadLogs()">{{ icon('refresh-cw', 14) }} Refresh</button>
+      <button class="btn btn-ghost btn-sm" onclick="clearAllLogs()">{{ icon('trash-2', 14) }} Clear all logs</button>
     </div>
   </div>
   <!-- Opened from Settings, so it carries Settings' tabs. -->

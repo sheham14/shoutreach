@@ -66,7 +66,7 @@ async function fetchDbPage() {
 
   document.getElementById('db-thead').innerHTML = '<tr>' + visibleCols.map(c => {
     const isSorted = data.sort_col === c;
-    const arrow    = isSorted ? (data.sort_dir === 'asc' ? '▲' : '▼') : '⇅';
+    const arrow    = icon(isSorted ? (data.sort_dir === 'asc' ? 'chevron-up' : 'chevron-down') : 'arrow-up-down', { size: 12 });
     const nextDir  = (isSorted && data.sort_dir === 'asc') ? 'desc' : 'asc';
     return `<th style="cursor:pointer;user-select:none;white-space:nowrap"
                 onclick="dbSort('${c}','${nextDir}')">

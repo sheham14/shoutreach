@@ -1,3 +1,4 @@
+{% from "macros/icons.html" import icon %}
 <!-- Contacts: every business you have, whichever channel it's on -- or none.
      Each channel page lists only its own leads; this is the one place a
      business on no channel can still be found (Unassigned), and where you
@@ -9,7 +10,7 @@
       <div class="page-sub">Every business you have — on any channel, or none yet</div>
     </div>
     <div class="flex gap-2">
-      <button class="btn btn-ghost" onclick="openImportModal()" title="A CSV or JSON file, or a paste — on Get leads">⬆ Import</button>
+      <button class="btn btn-ghost" onclick="openImportModal()" title="A CSV or JSON file, or a paste — on Get leads">{{ icon('upload') }} Import</button>
       <button class="btn btn-primary" onclick="openBusinessForm()">+ Add contact</button>
     </div>
   </div>
@@ -44,7 +45,7 @@
                 title="Send every business in this import to a channel and campaign">Add all in this import to…</button>
         <span class="lt-count" id="ct-count"></span>
       </div>
-      <div class="text-muted text-small" id="ct-view-hint" style="display:none;padding:10px 16px;border-bottom:1px solid var(--border)"></div>
+      <div class="text-muted text-small" id="ct-view-hint" style="display:none;padding:10px 16px;border-bottom:1px solid var(--line)"></div>
       <div id="ct-body"></div>
     </div>
 
@@ -52,7 +53,7 @@
   </div>
 
   <div class="card" id="ct-trash" style="display:none">
-    <div class="text-muted text-small" style="padding:12px 16px;border-bottom:1px solid var(--border);line-height:1.6">
+    <div class="text-muted text-small" style="padding:12px 16px;border-bottom:1px solid var(--line);line-height:1.6">
       Deleted leads are kept here for 30 days with everything they had — channels, messages, call history —
       then removed for good. Restoring puts them back exactly as they were.
     </div>

@@ -1,3 +1,4 @@
+{% from "macros/icons.html" import icon %}
 <!-- Get leads: the one way in. Scrape Google Maps, or bring a CSV / JSON /
      paste -- into Contacts or straight onto a channel -- and every import
      listed underneath, named and dated. Each channel's "+ Add leads" keeps
@@ -21,22 +22,22 @@
   <div class="tab-pane active" data-pane-group="getleads" data-pane="scrape">
   <div id="sc-worker-banner" class="warning-box" style="margin-bottom:24px">
     <div style="display:flex;align-items:center;gap:10px">
-      <span id="sc-worker-dot" style="width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none"></span>
+      <span id="sc-worker-dot" style="width:9px;height:9px;border-radius:50%;background:var(--text-2);flex:none"></span>
       <div>
         <div id="sc-worker-title" style="font-weight:600">Checking for a worker…</div>
-        <div id="sc-worker-detail" style="font-size:12px;color:var(--muted);margin-top:3px">
+        <div id="sc-worker-detail" style="font-size:12px;color:var(--text-2);margin-top:3px">
           Scrapes run on your own machine, not on this server — Chrome has to open
           somewhere you can see it to solve CAPTCHAs.
         </div>
       </div>
     </div>
-    <div id="sc-worker-help" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;color:var(--muted)">
+    <div id="sc-worker-help" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--text-2)">
       On your machine, in the project folder:
-      <div class="mono" style="margin-top:6px;padding:8px 10px;background:var(--bg3);border-radius:6px;font-size:11px;line-height:1.7">
-        <span style="color:var(--muted)"># PowerShell</span><br>
+      <div class="mono" style="margin-top:6px;padding:8px 10px;background:var(--raised);border-radius:6px;font-size:11px;line-height:1.7">
+        <span style="color:var(--text-2)"># PowerShell</span><br>
         $env:SHOUTREACH_URL = "<span id="sc-worker-url">…</span>"<br>
         $env:SHOUTREACH_API_KEY = "&lt;from Settings → My settings&gt;"<br>
-        <span style="color:var(--muted)">:: cmd.exe — no quotes</span><br>
+        <span style="color:var(--text-2)">:: cmd.exe — no quotes</span><br>
         set SHOUTREACH_URL=<span id="sc-worker-url-cmd">…</span><br>
         set SHOUTREACH_API_KEY=&lt;from Settings → My settings&gt;<br>
         <br>
@@ -47,7 +48,7 @@
 
   <div class="responsive-grid-2" style="gap:24px;margin-bottom:24px">
     <div class="card" style="padding:24px">
-      <div class="card-title" style="margin-bottom:20px">Search Settings</div>
+      <div class="card-title" style="margin-bottom:20px">Search settings</div>
       <div class="form-group">
         <label>Send leads to</label>
         <select id="sc-destination" onchange="scraperDestinationChanged()">
@@ -71,15 +72,15 @@
         <div class="form-hint">Type to search — any country works.</div>
       </div>
       <div class="form-group">
-        <label>Niche / Business Type</label>
+        <label>Niche / business type</label>
         <input id="sc-niche" placeholder="dental clinics" />
       </div>
       <div class="form-group">
-        <label>City + Country</label>
+        <label>City + country</label>
         <input id="sc-city" placeholder="Brampton Canada" />
       </div>
       <div class="form-group">
-        <label>Max Results</label>
+        <label>Max results</label>
         <input id="sc-max" type="number" value="50" min="5" max="200" />
         <div class="form-hint">Google Maps typically returns 60–80 per search.</div>
       </div>
@@ -88,18 +89,18 @@
         <label for="sc-autoimport" id="sc-autoimport-label" style="margin:0;font-size:13px;color:var(--text)">Import leads into Contacts as they're found</label>
       </div>
       <div class="flex gap-2" style="margin-top:8px">
-        <button class="btn btn-primary" id="sc-start-btn" onclick="startScraper()">▶ Start</button>
-        <button class="btn btn-danger"  id="sc-stop-btn"  onclick="stopScraper()"  style="display:none">⏹ Stop</button>
+        <button class="btn btn-primary" id="sc-start-btn" onclick="startScraper()">{{ icon('play') }} Start</button>
+        <button class="btn btn-danger"  id="sc-stop-btn"  onclick="stopScraper()"  style="display:none">{{ icon('square') }} Stop</button>
       </div>
     </div>
 
     <div class="card" style="padding:24px">
       <div class="card-title" style="margin-bottom:12px">Progress</div>
-      <div id="sc-progress-bar-wrap" style="background:var(--bg3);border-radius:6px;height:8px;margin-bottom:12px;overflow:hidden">
-        <div id="sc-progress-bar" style="height:100%;background:var(--green);width:0%;transition:width .4s"></div>
+      <div id="sc-progress-bar-wrap" style="background:var(--raised);border-radius:6px;height:8px;margin-bottom:12px;overflow:hidden">
+        <div id="sc-progress-bar" style="height:100%;background:var(--success);width:0%;transition:width .4s"></div>
       </div>
-      <div id="sc-progress-text" class="mono text-muted" style="font-size:12px;margin-bottom:4px">Idle</div>
-      <div id="sc-heartbeat" class="mono" style="font-size:11px;margin-bottom:12px;display:none"></div>
+      <div id="sc-progress-text" class="tnum text-muted" style="font-size:12px;margin-bottom:4px">Idle</div>
+      <div id="sc-heartbeat" class="tnum" style="font-size:11px;margin-bottom:12px;display:none"></div>
 
       <div class="responsive-grid-3" style="gap:10px;margin-bottom:16px">
         <div class="stat-card" style="padding:12px">
@@ -117,27 +118,27 @@
       </div>
 
       <div id="sc-download-box" style="display:none;margin-bottom:12px">
-        <button class="btn btn-primary btn-sm" id="sc-download-btn">⬇ Download CSV</button>
+        <button class="btn btn-primary btn-sm" id="sc-download-btn">{{ icon('download', 14) }} Download CSV</button>
         <span class="text-muted text-small" style="margin-left:8px">Whatever it has found so far — download again later for the rest.</span>
       </div>
 
-      <div id="sc-captcha-box" style="display:none;background:rgba(245,166,35,.1);border:1px solid var(--amber);border-radius:8px;padding:14px;margin-bottom:12px">
-        <div style="color:var(--amber);font-weight:600;margin-bottom:8px">⚠ CAPTCHA detected</div>
-        <div style="color:var(--muted);font-size:12px;margin-bottom:10px">
+      <div id="sc-captcha-box" style="display:none;background:var(--warning-soft);border:1px solid var(--warning);border-radius:8px;padding:14px;margin-bottom:12px">
+        <div style="color:var(--warning);font-weight:600;margin-bottom:8px">{{ icon('triangle-alert') }} CAPTCHA detected</div>
+        <div style="color:var(--text-2);font-size:12px;margin-bottom:10px">
           Switch to the Chrome window <strong>on the machine running the worker</strong>
           and solve it there, then click Resume.
         </div>
-        <button class="btn btn-amber btn-sm" onclick="resumeScraper()">✓ Resume</button>
+        <button class="btn btn-amber btn-sm" onclick="resumeScraper()">{{ icon('check', 14) }} Resume</button>
       </div>
     </div>
   </div>
 
   <div class="card">
     <div class="card-header">
-      <div class="card-title">Live Log</div>
-      <button class="btn btn-ghost btn-sm" onclick="loadScraper()">↻ Refresh</button>
+      <div class="card-title">Live log</div>
+      <button class="btn btn-ghost btn-sm" onclick="loadScraper()">{{ icon('refresh-cw', 14) }} Refresh</button>
     </div>
-    <div id="sc-log-feed" style="max-height:320px;overflow-y:auto;font-family:var(--mono);font-size:12px">
+    <div id="sc-log-feed" class="tnum" style="max-height:320px;overflow-y:auto;font-size:12px">
       <div class="empty-state"><p>Start a scrape to see live output here.</p></div>
     </div>
   </div>
@@ -186,7 +187,7 @@ CSV with a header row:   company,phone,website,email
 Or one business per line:   Pearl Dental, 050 123 4567, pearldental.ae'></textarea>
         <div class="form-hint" style="line-height:1.6">For WhatsApp, <span class="mono">message</span> and
           <span class="mono">followup_1</span>, <span class="mono">followup_2</span>, … give each lead its own copy —
-          <a style="color:var(--blue);cursor:pointer" onclick="copyWaJsonSpec()">copy the format</a> for a chat to write it.
+          <a style="color:var(--accent);cursor:pointer" onclick="copyWaJsonSpec()">copy the format</a> for a chat to write it.
           Lines without a header are read as: name, phone, website, email. A line that's only an email address
           is just that.</div>
       </div>
@@ -206,7 +207,7 @@ Or one business per line:   Pearl Dental, 050 123 4567, pearldental.ae'></textar
         <div class="card-title">Your scrapes &amp; imports</div>
         <div class="text-muted text-small" style="margin-top:2px">Download a CSV-only scrape, or send everything a scrape or import brought to a channel in one go.</div>
       </div>
-      <button class="btn btn-ghost btn-sm" onclick="loadScrapeLists()">↻ Refresh</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadScrapeLists()">{{ icon('refresh-cw', 14) }} Refresh</button>
     </div>
     <div class="table-wrap">
       <table class="lead-table m-table">

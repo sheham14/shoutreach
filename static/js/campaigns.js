@@ -62,23 +62,23 @@ async function loadCampaigns() {
   setTabCount('email', 'campaigns', campaigns.length);
   const el = document.getElementById('campaigns-list');
   if (!campaigns.length) {
-    el.innerHTML = '<div class="empty-state"><div class="icon">✉</div><p>No email campaigns yet. Create one, then enroll leads from the Leads tab.</p></div>';
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">${icon('mail', { size: 28 })}</div><p>No email campaigns yet. Create one, then enroll leads from the Leads tab.</p></div>`;
     return;
   }
   el.innerHTML = campaigns.map(c => `
     <div class="card" style="margin-bottom:14px;padding:20px">
       <div class="flex items-center gap-3">
         <div>
-          <div style="font-weight:600;font-size:15px;color:#fff">${esc(c.name)}</div>
-          <div class="text-muted text-small mono">${c.contact_count} leads · ${c.step_count} steps · ${c.sent_count} sent · ${c.reply_rate}% replied · ${c.daily_limit}/day limit</div>
+          <div style="font-weight:600;font-size:15px;color:var(--text)">${esc(c.name)}</div>
+          <div class="text-muted text-small tnum">${c.contact_count} leads · ${c.step_count} steps · ${c.sent_count} sent · ${c.reply_rate}% replied · ${c.daily_limit}/day limit</div>
         </div>
         <div class="ml-auto flex gap-2 items-center">
           ${statusBadge(c.status)}
-          <button class="btn btn-ghost btn-sm" onclick="openCampaign(${c.id})">Manage →</button>
+          <button class="btn btn-ghost btn-sm" onclick="openCampaign(${c.id})">Manage ${icon('arrow-right', { size: 14 })}</button>
           ${c.status === 'active'
-            ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${c.id})">⏸ Pause</button>`
-            : `<button class="btn btn-primary btn-sm" onclick="activateCampaign(${c.id})">▶ Activate</button>`}
-          <button class="btn btn-danger btn-sm" onclick="deleteCampaign(${c.id}, '${escj(c.name)}')">✕</button>
+            ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${c.id})">${icon('pause', { size: 14 })} Pause</button>`
+            : `<button class="btn btn-ghost btn-sm" onclick="activateCampaign(${c.id})">${icon('play', { size: 14 })} Activate</button>`}
+          <button class="btn btn-icon btn-sm" title="Delete campaign" aria-label="Delete campaign" onclick="deleteCampaign(${c.id}, '${escj(c.name)}')">${icon('x')}</button>
         </div>
       </div>
     </div>
@@ -86,7 +86,11 @@ async function loadCampaigns() {
 }
 
 async function deleteCampaign(id, name) {
-  if (!confirm(`Delete campaign "${name}"?\n\nThis will permanently remove the campaign, all its steps, enrollments, and send history.`)) return;
+  if (!await confirmDialog({
+    title: `Delete campaign "${name}"?`,
+    text: 'This permanently removes the campaign, all its steps, enrollments and send history.',
+    confirm: 'Delete campaign', danger: true,
+  })) return;
   await api(`/api/campaigns/${id}`, 'DELETE');
   toast('Campaign deleted');
   loadCampaigns();
@@ -110,7 +114,7 @@ async function createCampaign() {
     timezone:        document.getElementById('nc-timezone').value || null,
   });
   closeModal('modal-new-campaign');
-  toast('Campaign created ✓');
+  toast('Campaign created');
   loadCampaigns();
   openCampaign(res.id);
 }
@@ -130,14 +134,14 @@ async function activateCampaign(id, reopen = false) {
   if (!ok) return;
   const res = await api(`/api/campaigns/${id}/activate`, 'POST');
   if (!res.ok) { toast(res.error, 'err'); return; }
-  toast('Campaign activated ▶');
+  toast('Campaign activated');
   loadCampaigns();
   if (reopen) openCampaign(id);
 }
 
 async function pauseCampaign(id) {
   await api(`/api/campaigns/${id}/pause`, 'POST');
-  toast('Campaign paused ⏸');
+  toast('Campaign paused');
   loadCampaigns();
 }
 
@@ -163,11 +167,11 @@ async function openCampaign(id) {
   `).join('');
 
   document.getElementById('campaign-actions').innerHTML = `
-    <button class="btn btn-ghost btn-sm" onclick="openEditCampaignModal()">⚙ Settings</button>
-    <span class="mono text-muted" style="font-size:12px;padding:8px">${statusBadge(c.status)}</span>
+    <button class="btn btn-ghost btn-sm" onclick="openEditCampaignModal()">${icon('settings', { size: 14 })} Settings</button>
+    <span class="tnum text-muted" style="font-size:12px;padding:8px">${statusBadge(c.status)}</span>
     ${c.status === 'active'
-      ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${id});openCampaign(${id})">⏸ Pause</button>`
-      : `<button class="btn btn-primary btn-sm" onclick="activateCampaign(${id}, true)">▶ Activate</button>`}
+      ? `<button class="btn btn-amber btn-sm" onclick="pauseCampaign(${id});openCampaign(${id})">${icon('pause', { size: 14 })} Pause</button>`
+      : `<button class="btn btn-primary btn-sm" onclick="activateCampaign(${id}, true)">${icon('play', { size: 14 })} Activate</button>`}
   `;
 
   // Variant stats breakdown (only shown when A/B variants exist)
@@ -178,14 +182,14 @@ async function openCampaign(id) {
   const vs = hasAB ? allVs : [];
   if (vs.length > 0) {
     vsEl.innerHTML = `
-      <div style="margin-top:14px;padding:14px;background:var(--bg2);border-radius:8px;border:1px solid var(--border)">
-        <div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">A/B Variant Breakdown</div>
+      <div style="margin-top:14px;padding:14px;background:var(--surface);border-radius:8px;border:1px solid var(--line)">
+        <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:10px">A/B variant breakdown</div>
         <table style="font-size:13px">
           <thead><tr>
             <th>Variant</th><th>Enrolled</th><th>Sent</th>
-            <th style="color:var(--green)">Replies</th>
-            <th style="color:var(--red)">Bounced</th>
-            <th>Reply Rate</th>
+            <th style="color:var(--success)">Replies</th>
+            <th style="color:var(--danger)">Bounced</th>
+            <th>Reply rate</th>
           </tr></thead>
           <tbody>${vs.map(v => {
             const rate = v.sent > 0 ? ((v.replied / v.sent) * 100).toFixed(1) : '0.0';
@@ -195,8 +199,8 @@ async function openCampaign(id) {
                 : `<span class="badge badge-blue">Variant ${esc(v.variant_label)}</span>`}</td>
               <td>${v.enrolled}</td>
               <td>${v.sent}</td>
-              <td style="color:var(--green)">${v.replied}</td>
-              <td style="${v.bounced > 0 ? 'color:var(--red)' : ''}">${v.bounced}</td>
+              <td style="color:var(--success)">${v.replied}</td>
+              <td style="${v.bounced > 0 ? 'color:var(--danger)' : ''}">${v.bounced}</td>
               <td>${rate}%</td>
             </tr>`;
           }).join('')}</tbody>
@@ -224,10 +228,10 @@ function _renderSendStatus(st) {
   // fault -- the point is to say so rather than leave it to be guessed.
   const ok = !!st.sending;
   el.style.display      = 'block';
-  el.style.background   = ok ? 'rgba(34,197,94,.08)' : 'rgba(245,166,35,.08)';
-  el.style.borderColor  = ok ? 'rgba(34,197,94,.3)'  : 'rgba(245,166,35,.3)';
-  el.style.color        = ok ? 'var(--green)' : 'var(--amber)';
-  el.innerHTML = `${ok ? '▶' : '⏸'} ${esc(st.reason)}`;
+  el.style.background   = ok ? 'var(--success-soft)' : 'var(--warning-soft)';
+  el.style.borderColor  = ok ? 'var(--success-edge)' : 'var(--warning-edge)';
+  el.style.color        = ok ? 'var(--success)' : 'var(--warning)';
+  el.innerHTML = `${icon(ok ? 'play' : 'pause', { size: 14 })} ${esc(st.reason)}`;
 }
 
 // ── Sending days ─────────────────────────────────────────────────────────────
@@ -253,9 +257,9 @@ function renderSendDays(csv) {
       onclick="toggleSendDay(${i})"
       style="padding:5px 10px;border-radius:6px;font-size:12px;cursor:pointer;
              font-family:var(--font);
-             border:1px solid ${on ? 'var(--green)' : 'var(--border2)'};
-             background:${on ? 'rgba(34,197,94,.12)' : 'transparent'};
-             color:${on ? 'var(--green)' : 'var(--muted)'}">${label}</button>`;
+             border:1px solid ${on ? 'var(--accent)' : 'var(--line)'};
+             background:${on ? 'var(--accent-soft)' : 'transparent'};
+             color:${on ? 'var(--accent)' : 'var(--text-2)'}">${label}</button>`;
   }).join('');
 }
 
@@ -282,12 +286,12 @@ function addCampaignVar(key = '', value = '') {
   row.style.cssText = 'display:flex;gap:6px;align-items:center';
   row.innerHTML = `
     <input class="ec-var-key" placeholder="variable_name" value="${esc(key)}"
-           style="flex:1;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+           style="flex:1;background:var(--raised);border:1px solid var(--line-strong);border-radius:6px;
                   padding:6px 10px;color:var(--text);font-size:13px;font-family:var(--mono)" />
     <input class="ec-var-val" placeholder="value" value="${esc(value)}"
-           style="flex:2;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+           style="flex:2;background:var(--raised);border:1px solid var(--line-strong);border-radius:6px;
                   padding:6px 10px;color:var(--text);font-size:13px" />
-    <button class="btn btn-danger btn-sm" onclick="this.closest('.ec-var-row').remove()">✕</button>`;
+    <button class="btn btn-icon btn-sm" title="Remove" aria-label="Remove" onclick="this.closest('.ec-var-row').remove()">${icon('x')}</button>`;
   document.getElementById('ec-vars-list').appendChild(row);
 }
 
@@ -341,7 +345,7 @@ async function saveCampaignSettings() {
   }
   await api(`/api/campaigns/${currentCampaignId}`, 'PATCH', payload);
   closeModal('modal-edit-campaign');
-  toast('Settings saved ✓');
+  toast('Settings saved');
   openCampaign(currentCampaignId);
 }
 
@@ -374,7 +378,7 @@ async function openCampaignAccountsModal() {
         <input type="checkbox" value="${a.id}" ${assignedIds.has(a.id) ? 'checked' : ''} style="cursor:pointer" />
         <div>
           <span style="font-weight:500">${esc(a.name)}</span>
-          <span class="mono text-muted" style="font-size:11px;margin-left:6px">${esc(a.email)}</span>
+          <span class="tnum text-muted" style="font-size:11px;margin-left:6px">${esc(a.email)}</span>
           ${a.status && a.status !== 'active' ? `<span class="text-muted text-small" style="margin-left:6px">(${esc(a.status)})</span>` : ''}
         </div>
       </label>
@@ -387,7 +391,7 @@ async function saveCampaignAccounts() {
   const ids = [...document.querySelectorAll('#campaign-account-checkboxes input:checked')]
     .map(cb => +cb.value);
   await api(`/api/campaigns/${currentCampaignId}/accounts`, 'POST', { account_ids: ids });
-  toast('Accounts saved ✓');
+  toast('Accounts saved');
   closeModal('modal-campaign-accounts');
   loadCampaignAccountBadges();
 }
@@ -403,7 +407,7 @@ function renderSteps(steps) {
     <div class="step-card">
       <div class="step-num">${s.step_num}</div>
       <div style="font-weight:600;font-size:13px;margin-bottom:4px">${esc(s.subject)}</div>
-      <div class="text-muted text-small" style="font-family:var(--mono)">${esc(s.body_html.replace(/<[^>]+>/g,'').substring(0,80))}...</div>
+      <div class="text-muted text-small">${esc(s.body_html.replace(/<[^>]+>/g,'').substring(0,80))}...</div>
       <div class="flex gap-2" style="margin-top:12px">
         <button class="btn btn-ghost btn-sm" onclick="editStep(${s.step_num})">Edit</button>
         <button class="btn btn-danger btn-sm" onclick="deleteStep(${s.step_num})">Delete</button>
@@ -445,20 +449,28 @@ function _updateRemoveSelectedBtn() {
   if (!btn) return;
   const n = enrollSelectedIds.size;
   btn.disabled = n === 0;
-  btn.textContent = n > 0 ? `✕ Remove Selected (${n})` : '✕ Remove Selected';
+  btn.innerHTML = `${icon('x', { size: 14 })} Remove selected${n > 0 ? ` (${n})` : ''}`;
 }
 
 async function removeSelectedEnrolled() {
   const n = enrollSelectedIds.size;
   if (!n) return;
-  if (!confirm(`Remove ${n} contact${n > 1 ? 's' : ''} from this campaign?`)) return;
+  if (!await confirmDialog({
+    title: `Remove ${n} contact${n > 1 ? 's' : ''} from this campaign?`,
+    text: 'Anything already sent stays in their history.',
+    confirm: 'Remove', danger: true,
+  })) return;
   await Promise.all([...enrollSelectedIds].map(id => api(`/api/enrollments/${id}`, 'DELETE')));
   toast(`Removed ${n} contact${n > 1 ? 's' : ''}`);
   openCampaign(currentCampaignId);
 }
 
 async function unenrollContact(enrollId) {
-  if (!confirm('Remove this contact from the campaign?')) return;
+  if (!await confirmDialog({
+    title: 'Remove this contact from the campaign?',
+    text: 'Anything already sent stays in their history.',
+    confirm: 'Remove', danger: true,
+  })) return;
   await api(`/api/enrollments/${enrollId}`, 'DELETE');
   toast('Contact removed');
   openCampaign(currentCampaignId);
@@ -487,7 +499,7 @@ function _clearStepModal() {
 function addStepUI() {
   const steps = document.querySelectorAll('.step-card');
   const nextNum = steps.length + 1;
-  document.getElementById('step-modal-title').textContent = `Add Step ${nextNum}`;
+  document.getElementById('step-modal-title').textContent = `Add step ${nextNum}`;
   document.getElementById('step-num-input').value = nextNum;
   document.getElementById('step-delay').value = nextNum === 1 ? 0 : 3;
   _clearStepModal();
@@ -499,7 +511,7 @@ async function editStep(stepNum) {
   const steps = await api(`/api/campaigns/${currentCampaignId}/steps`);
   const s = steps.find(x => x.step_num === stepNum);
   if (!s) return;
-  document.getElementById('step-modal-title').textContent = `Edit Step ${stepNum}`;
+  document.getElementById('step-modal-title').textContent = `Edit step ${stepNum}`;
   document.getElementById('step-num-input').value = stepNum;
   document.getElementById('step-delay').value     = s.delay_days;
   document.getElementById('step-subject').value   = s.subject;
@@ -570,12 +582,14 @@ async function saveStep() {
       ? `  {{${g.key}}} — empty for ALL ${g.total} contacts`
       : `  {{${g.key}}} — empty for ${g.missing} of ${g.total} contacts`);
     const suggestion = `{{${gaps[0].key}|${_FALLBACK_SUGGESTIONS[gaps[0].key] || 'there'}}}`;
-    const ok = confirm(
-      `These variables have no fallback and are missing for some contacts:\n\n`
-      + lines.join('\n')
-      + `\n\nThose emails will send a blank where the value should be.\n`
-      + `Add a fallback like ${suggestion} to fix it.\n\nSave anyway?`
-    );
+    const ok = await confirmDialog({
+      title: 'Some contacts are missing these values',
+      html: `<p class="dialog-p">These variables have no fallback:</p>
+        <ul class="dialog-list">${lines.map(l => `<li class="mono">${esc(l.trim())}</li>`).join('')}</ul>
+        <p class="dialog-p">Those emails will send a blank where the value should be. Add a fallback
+        like <span class="mono">${esc(suggestion)}</span> to fix it.</p>`,
+      confirm: 'Save anyway',
+    });
     if (!ok) return;
   }
 
@@ -583,12 +597,16 @@ async function saveStep() {
     step_num: stepNum, subject, body_html: body, delay_days: delay, variants,
   });
   closeModal('modal-step');
-  toast('Step saved ✓');
+  toast('Step saved');
   openCampaign(currentCampaignId);
 }
 
 async function deleteStep(stepNum) {
-  if (!confirm(`Delete step ${stepNum}?`)) return;
+  if (!await confirmDialog({
+    title: `Delete step ${stepNum}?`,
+    text: 'Its subject, body and versions are removed from the sequence.',
+    confirm: 'Delete step', danger: true,
+  })) return;
   await api(`/api/campaigns/${currentCampaignId}/steps/${stepNum}`, 'DELETE');
   toast('Step deleted');
   openCampaign(currentCampaignId);
@@ -656,14 +674,14 @@ function _renderVariablePanel() {
   panel.innerHTML = _varCoverage.variables.map(v => {
     const none  = v.total > 0 && v.filled === 0;
     const gap   = v.total > 0 && v.filled > 0 && v.filled < v.total;
-    const color = none ? 'var(--red)' : (gap ? 'var(--amber)' : 'var(--green)');
+    const color = none ? 'var(--danger)' : (gap ? 'var(--warning)' : 'var(--success)');
     const count = v.total === 0 ? '—' : `${v.filled} of ${v.total}`;
     const note  = none ? 'none have this' : (gap ? 'needs a fallback' : 'all have this');
     return `
-      <div style="display:flex;align-items:center;gap:10px;padding:6px 14px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px;padding:6px 14px;border-bottom:1px solid var(--line)">
         <span class="mono" style="font-size:12px;min-width:150px">{{${esc(v.key)}}}</span>
         <span class="text-muted" style="font-size:11px;flex:1">${esc(v.label)}</span>
-        <span class="mono" style="font-size:11px;color:${color};min-width:74px;text-align:right">${count}</span>
+        <span class="tnum" style="font-size:11px;color:${color};min-width:74px;text-align:right">${count}</span>
         <span style="font-size:10px;color:${color};min-width:96px">${note}</span>
         <button type="button" class="btn btn-ghost btn-sm"
                 onclick="insertVariable('${esc(v.key)}', ${none || gap})">Insert</button>
@@ -749,7 +767,7 @@ function _updateVariableGapWarning() {
   if (!gaps.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
 
   el.style.display = 'block';
-  el.innerHTML = '⚠ ' + gaps.map(g =>
+  el.innerHTML = icon('triangle-alert', { size: 14 }) + ' ' + gaps.map(g =>
     g.filled === 0
       ? `<span class="mono">{{${esc(g.key)}}}</span> is empty for <strong>all ${g.total}</strong> of these contacts`
       : `<span class="mono">{{${esc(g.key)}}}</span> is empty for <strong>${g.missing} of ${g.total}</strong>`
@@ -886,28 +904,28 @@ function _addVariantBlock(label, subject, body, weight) {
   const div = document.createElement('div');
   div.className = 'variant-block';
   div.dataset.label = label;
-  div.style.cssText = 'border:1px solid var(--border2);border-radius:8px;padding:14px;position:relative';
+  div.style.cssText = 'border:1px solid var(--line);border-radius:8px;padding:14px;position:relative';
   div.innerHTML = `
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-      <span style="font-weight:600;font-size:13px;background:var(--bg3);border-radius:4px;padding:2px 8px">Variant ${esc(label)}</span>
+      <span style="font-weight:600;font-size:13px;background:var(--raised);border-radius:4px;padding:2px 8px">Variant ${esc(label)}</span>
       <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-        <label style="font-size:12px;color:var(--muted)">Weight</label>
+        <label style="font-size:12px;color:var(--text-2)">Weight</label>
         <input class="v-weight" type="number" value="${weight}" min="1" max="999"
                oninput="_updateVariantWeightTotal()"
-               style="width:64px;background:var(--bg3);border:1px solid var(--border2);
+               style="width:64px;background:var(--raised);border:1px solid var(--line-strong);
                       border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px" />
-        <span style="font-size:12px;color:var(--muted)">%</span>
-        <button class="btn btn-danger btn-sm" onclick="removeVariantBlock(this)">✕</button>
+        <span style="font-size:12px;color:var(--text-2)">%</span>
+        <button class="btn btn-icon btn-sm" title="Remove this version" aria-label="Remove this version" onclick="removeVariantBlock(this)">${icon('x')}</button>
       </div>
     </div>
     <div class="form-group" style="margin-bottom:8px">
       <input class="v-subject" placeholder="Subject for Variant ${esc(label)}" value="${esc(subject)}"
-             style="width:100%;background:var(--bg3);border:1px solid var(--border2);
+             style="width:100%;background:var(--raised);border:1px solid var(--line-strong);
                     border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;
                     font-family:var(--font);box-sizing:border-box" />
     </div>
     <textarea class="v-body" placeholder="Body for Variant ${esc(label)}"
-              style="width:100%;min-height:120px;background:var(--bg3);border:1px solid var(--border2);
+              style="width:100%;min-height:120px;background:var(--raised);border:1px solid var(--line-strong);
                      border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;
                      font-family:var(--font);box-sizing:border-box;resize:vertical">${esc(body)}</textarea>
   `;
@@ -953,7 +971,7 @@ function _updateVariantWeightTotal() {
   if (!blocks.length) { el.textContent = ''; return; }
   const total = [...blocks].reduce((s, b) => s + (parseInt(b.querySelector('.v-weight').value) || 0), 0);
   el.textContent = `Total: ${total}`;
-  el.style.color = Math.abs(total - 100) <= 1 ? 'var(--green)' : 'var(--amber)';
+  el.style.color = Math.abs(total - 100) <= 1 ? 'var(--success)' : 'var(--warning)';
 }
 
 // ── Which arm Preview and AI Review act on ───────────────────────────────────
@@ -1022,7 +1040,7 @@ async function openAIReview() {
     panel.style.display = 'block';
     loading.style.display = 'none';
     result.innerHTML =
-      `<span style="color:var(--amber)">Nothing to review${
+      `<span style="color:var(--warning)">Nothing to review${
         target.label ? ` in Variant ${esc(target.label)}` : ''} — write a subject and body first.</span>`;
     return;
   }
@@ -1042,17 +1060,17 @@ async function openAIReview() {
     data = await api('/api/ai/review', 'POST', { subject, body });
   } catch (e) {
     loading.style.display = 'none';
-    result.innerHTML = `<span style="color:var(--red)">Error: ${esc(String(e))}</span>`;
+    result.innerHTML = `<span style="color:var(--danger)">Error: ${esc(String(e))}</span>`;
     return;
   }
   loading.style.display = 'none';
 
   if (data.error) {
     const hints = {
-      'Invalid API key':   'Double-check your API key in Settings → AI Features.',
-      'not configured':    'Add your API key in Settings → AI Features.',
-      'not enabled':       'Enable AI features in Settings → AI Features.',
-      'Model not found':   'The selected model ID may be wrong or not yet available — check Settings → AI Features.',
+      'Invalid API key':   'Double-check your API key in Settings → AI features.',
+      'not configured':    'Add your API key in Settings → AI features.',
+      'not enabled':       'Enable AI features in Settings → AI features.',
+      'Model not found':   'The selected model ID may be wrong or not yet available — check Settings → AI features.',
       'credits exhausted': 'Top up your account balance with the provider.',
       'Rate limit':        'You\'ve hit the rate limit — wait a moment and try again.',
       'timed out':         'The provider is slow right now — try again in a moment.',
@@ -1063,25 +1081,25 @@ async function openAIReview() {
     for (const [key, msg] of Object.entries(hints)) {
       if (data.error.includes(key)) { hint = msg; break; }
     }
-    result.innerHTML = `<span style="color:var(--red)">${esc(data.error)}</span>` +
+    result.innerHTML = `<span style="color:var(--danger)">${esc(data.error)}</span>` +
       (hint ? `<br><span class="text-muted" style="font-size:12px">${hint}</span>` : '');
     return;
   }
 
-  const scoreColor = data.score >= 7 ? 'var(--green)' : data.score >= 4 ? 'var(--amber)' : 'var(--red)';
-  const riskColor  = data.deliverability_risk === 'low' ? 'var(--green)' : data.deliverability_risk === 'medium' ? 'var(--amber)' : 'var(--red)';
+  const scoreColor = data.score >= 7 ? 'var(--success)' : data.score >= 4 ? 'var(--warning)' : 'var(--danger)';
+  const riskColor  = data.deliverability_risk === 'low' ? 'var(--success)' : data.deliverability_risk === 'medium' ? 'var(--warning)' : 'var(--danger)';
   const listItems  = (arr) => (arr || []).map(s => `<li style="margin:3px 0">${esc(s)}</li>`).join('');
 
   const rw = data.rewrite;
   if (rw && (rw.subject || rw.body)) _aiRewrite = rw;
 
   const rewriteHtml = _aiRewrite ? `
-    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-      <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Suggested Rewrite</div>
-      ${_aiRewrite.subject ? `<div style="font-size:12px;margin-bottom:4px"><span style="color:var(--muted)">Subject:</span> ${esc(_aiRewrite.subject)}</div>` : ''}
-      ${_aiRewrite.body ? `<div style="font-size:12px;color:var(--muted);white-space:pre-wrap;max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-top:4px">${esc(_aiRewrite.body)}</div>` : ''}
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+      <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:8px">Suggested rewrite</div>
+      ${_aiRewrite.subject ? `<div style="font-size:12px;margin-bottom:4px"><span style="color:var(--text-2)">Subject:</span> ${esc(_aiRewrite.subject)}</div>` : ''}
+      ${_aiRewrite.body ? `<div style="font-size:12px;color:var(--text-2);white-space:pre-wrap;max-height:240px;overflow-y:auto;border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin-top:4px">${esc(_aiRewrite.body)}</div>` : ''}
       <div class="flex gap-2" style="margin-top:10px">
-        <button class="btn btn-primary btn-sm" onclick="applyAIRewrite()">Apply Rewrite</button>
+        <button class="btn btn-primary btn-sm" onclick="applyAIRewrite()">Apply rewrite</button>
         <button class="btn btn-ghost btn-sm" onclick="dismissAIRewrite()">Dismiss</button>
       </div>
     </div>` : '';
@@ -1089,12 +1107,12 @@ async function openAIReview() {
   result.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
       <span style="font-size:22px;font-weight:700;color:${scoreColor}">${data.score}/10</span>
-      <span style="font-size:13px;color:var(--muted)">${esc(data.summary || '')}</span>
+      <span style="font-size:13px;color:var(--text-2)">${esc(data.summary || '')}</span>
       <span style="margin-left:auto;font-size:11px;color:${riskColor}">Deliverability: ${esc(data.deliverability_risk || '?')}</span>
     </div>
-    ${(data.strengths||[]).length ? `<div style="margin-bottom:8px"><strong style="font-size:12px;color:var(--green)">Strengths</strong><ul style="margin:4px 0 0 16px;padding:0;font-size:12px">${listItems(data.strengths)}</ul></div>` : ''}
-    ${(data.issues||[]).length ? `<div style="margin-bottom:8px"><strong style="font-size:12px;color:var(--amber)">Issues</strong><ul style="margin:4px 0 0 16px;padding:0;font-size:12px">${listItems(data.issues)}</ul></div>` : ''}
-    ${(data.suggestions||[]).length ? `<div style="margin-bottom:8px"><strong style="font-size:12px;color:var(--blue,#60a5fa)">Suggestions</strong><ul style="margin:4px 0 0 16px;padding:0;font-size:12px">${listItems(data.suggestions)}</ul></div>` : ''}
+    ${(data.strengths||[]).length ? `<div style="margin-bottom:8px"><strong style="font-size:12px;color:var(--success)">Strengths</strong><ul style="margin:4px 0 0 16px;padding:0;font-size:12px">${listItems(data.strengths)}</ul></div>` : ''}
+    ${(data.issues||[]).length ? `<div style="margin-bottom:8px"><strong style="font-size:12px;color:var(--warning)">Issues</strong><ul style="margin:4px 0 0 16px;padding:0;font-size:12px">${listItems(data.issues)}</ul></div>` : ''}
+    ${(data.suggestions||[]).length ? `<div style="margin-bottom:8px"><strong style="font-size:12px;color:var(--text)">Suggestions</strong><ul style="margin:4px 0 0 16px;padding:0;font-size:12px">${listItems(data.suggestions)}</ul></div>` : ''}
     ${rewriteHtml}
   `;
 }
@@ -1142,9 +1160,9 @@ function renderContactReport(rows) {
   }
 
   const STATUS_ROW_STYLE = {
-    replied:  'background:rgba(34,197,94,.08)',
-    bounced:  'background:rgba(239,68,68,.08)',
-    completed:'background:rgba(148,163,184,.06)',
+    replied:  'background:var(--success-soft)',
+    bounced:  'background:var(--danger-soft)',
+    completed:'background:var(--neutral-soft)',
   };
 
   tbody.innerHTML = rows.map(r => {
@@ -1159,7 +1177,7 @@ function renderContactReport(rows) {
     const rowStyle = STATUS_ROW_STYLE[r.status] || '';
     const statusSel = `
       <select onchange="setEnrollmentStatus(${r.enroll_id}, this.value, this)"
-              style="font-size:11px;padding:2px 4px;background:var(--bg3);border:1px solid var(--border2);
+              style="font-size:11px;padding:2px 4px;background:var(--raised);border:1px solid var(--line-strong);
                      border-radius:4px;color:var(--text);cursor:pointer">
         <option value="queued"    ${r.status==='queued'    ? 'selected':''}>Queued</option>
         <option value="paused"    ${r.status==='paused'    ? 'selected':''}>Paused</option>
@@ -1169,15 +1187,15 @@ function renderContactReport(rows) {
     return `<tr style="${rowStyle}">
       <td><input type="checkbox" data-enroll="${r.enroll_id}" ${checked}
                  onchange="toggleEnrollSelect(${r.enroll_id}, this.checked)" style="cursor:pointer"/></td>
-      <td class="mono" style="font-size:12px">${esc(r.email || '—')}</td>
+      <td class="tnum" style="font-size:12px">${esc(r.email || '—')}</td>
       <td>${esc(name)}</td>
       <td>${esc(r.company || '—')}</td>
       <td>${variant}</td>
-      <td class="mono" style="text-align:center">${r.steps_sent}</td>
-      <td class="mono" style="text-align:center">${r.current_step}</td>
+      <td class="tnum" style="text-align:center">${r.steps_sent}</td>
+      <td class="tnum" style="text-align:center">${r.current_step}</td>
       <td>${statusSel}</td>
-      <td class="mono text-muted" style="font-size:11px">${esc(nextSend)}</td>
-      <td><button class="btn btn-danger btn-sm" onclick="unenrollContact(${r.enroll_id})" title="Remove">✕</button></td>
+      <td class="tnum text-muted" style="font-size:11px">${esc(nextSend)}</td>
+      <td><button class="btn btn-icon btn-sm" onclick="unenrollContact(${r.enroll_id})" title="Remove" aria-label="Remove from this campaign">${icon('x')}</button></td>
     </tr>`;
   }).join('');
 
@@ -1190,7 +1208,7 @@ async function setEnrollmentStatus(enrollId, status, selectEl) {
     toast(`Status set to ${status}`);
     // Re-colour the row to match new status
     const row = selectEl.closest('tr');
-    const colors = { replied:'rgba(34,197,94,.08)', bounced:'rgba(239,68,68,.08)', completed:'rgba(148,163,184,.06)' };
+    const colors = { replied:'var(--success-soft)', bounced:'var(--danger-soft)', completed:'var(--neutral-soft)' };
     row.style.background = colors[status] || '';
   } else {
     toast(res.error || 'Failed to update status', 'err');

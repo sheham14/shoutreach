@@ -1,9 +1,10 @@
+{% from "macros/icons.html" import icon %}
 <!-- Add or edit one business. Adding matches against what you already have,
      the same way an import does, so typing in a clinic you already hold opens
      that one rather than making a second. -->
 <div class="modal-overlay" id="modal-business">
   <div class="modal" style="max-width:560px">
-    <button class="modal-close" onclick="closeModal('modal-business')">✕</button>
+    <button class="modal-close" onclick="closeModal('modal-business')" aria-label="Close">{{ icon('x', 20) }}</button>
     <h2 id="bf-title">Add contact</h2>
     <div class="form-group"><label>Business name *</label><input id="bf-name" placeholder="Pearl Dental Clinic" /></div>
     <div class="form-grid">

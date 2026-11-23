@@ -1,7 +1,8 @@
+{% from "macros/icons.html" import icon %}
 <div class="modal-overlay" id="modal-preview">
   <div class="modal" style="max-width:700px">
-    <button class="modal-close" onclick="closeModal('modal-preview')">✕</button>
-    <h2>Email Preview</h2>
+    <button class="modal-close" onclick="closeModal('modal-preview')" aria-label="Close">{{ icon('x', 20) }}</button>
+    <h2>Email preview</h2>
 
     <div class="responsive-grid-3" style="gap:10px;margin-bottom:16px">
       <div class="form-group" style="margin:0">
@@ -18,8 +19,8 @@
       </div>
     </div>
 
-    <div style="background:var(--bg3);border:1px solid var(--border2);border-radius:10px;overflow:hidden">
-      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)">
+    <div style="background:var(--raised);border:1px solid var(--line);border-radius:10px;overflow:hidden">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--line);font-size:12px;color:var(--text-2)">
         <span style="display:inline-block;width:60px">Subject:</span>
         <span id="preview-subject" style="color:var(--text);font-weight:500"></span>
       </div>

@@ -1,9 +1,10 @@
+{% from "macros/icons.html" import icon %}
 <!-- Putting leads you already have on Calling. Anything new -- a file, a
      paste, a scrape -- comes in through Get leads, which this links to with
      the campaign already picked. -->
 <div class="modal-overlay" id="modal-add-call-leads">
   <div class="modal" style="max-width:720px">
-    <button class="modal-close" onclick="closeModal('modal-add-call-leads')">✕</button>
+    <button class="modal-close" onclick="closeModal('modal-add-call-leads')" aria-label="Close">{{ icon('x', 20) }}</button>
     <h2>Add leads to Calling</h2>
     <div class="form-group" style="margin-bottom:6px">
       <label>Call campaign</label>
@@ -13,18 +14,18 @@
     <div class="flex gap-2" style="margin:12px 0 16px;flex-wrap:wrap">
       <button class="btn btn-primary btn-sm" id="acl-tab-existing" onclick="setAddLeadsTab('existing')">From contacts</button>
       <button class="btn btn-ghost btn-sm" onclick="callAddFromGetLeads()"
-              title="A CSV or JSON file, a paste, or a Google Maps scrape — on the Get leads page">Import a file, paste or scrape →</button>
+              title="A CSV or JSON file, a paste, or a Google Maps scrape — on the Get leads page">Import a file, paste or scrape {{ icon('arrow-right', 14) }}</button>
     </div>
 
     <!-- 1. Pick from the database -->
     <div id="acl-pane-existing">
       <div class="flex gap-2 items-center" style="margin-bottom:10px;flex-wrap:wrap">
         <input id="acl-search" placeholder="Search name, company, phone…" oninput="aclSearch()"
-               style="flex:1;min-width:180px;background:var(--bg3);border:1px solid var(--border2);
+               style="flex:1;min-width:180px;background:var(--raised);border:1px solid var(--line-strong);
                       border-radius:6px;padding:7px 12px;color:var(--text);font-size:13px;
                       font-family:var(--font)" />
         <select id="acl-status" onchange="aclSearch()"
-                style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+                style="background:var(--raised);border:1px solid var(--line-strong);border-radius:6px;
                        padding:7px 10px;color:var(--text);font-size:13px;font-family:var(--font);cursor:pointer">
           <option value="">Any status</option>
           <option value="no_website">No website</option>
@@ -32,7 +33,7 @@
           <option value="form_only">Form only</option>
           <option value="has_email">Has an email</option>
         </select>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);cursor:pointer;white-space:nowrap">
           <input type="checkbox" id="acl-uncalled" checked onchange="aclSearch()" style="cursor:pointer" />
           Not on Calling yet
         </label>
@@ -40,9 +41,9 @@
       <div class="flex gap-2 items-center" style="margin-bottom:8px">
         <button class="btn btn-ghost btn-sm" onclick="aclSelectAllShown()">Select all shown</button>
         <button class="btn btn-ghost btn-sm" onclick="aclClearSelection()">Clear</button>
-        <span class="text-muted text-small mono" id="acl-count"></span>
+        <span class="text-muted text-small tnum" id="acl-count"></span>
       </div>
-      <div class="table-wrap" style="max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
+      <div class="table-wrap" style="max-height:320px;overflow-y:auto;border:1px solid var(--line);border-radius:8px">
         <table>
           <thead><tr><th style="width:36px"></th><th>Business</th><th>Phone</th><th>Status</th></tr></thead>
           <tbody id="acl-table"></tbody>

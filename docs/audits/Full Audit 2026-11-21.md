@@ -19,7 +19,7 @@ build it in.
 | | |
 |---|---|
 | Fix-now items (§2) | 18 of 19 done: 16 by Plan 1 (2026-11-21); 12 and 13 (F-23, F-24) by Plan 2 package 5. All deployed 2026-11-22. Open: 7 (B-24, backups — the operator's job, no code) |
-| Front-end findings (§3) | 10 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5). All deployed 2026-11-22 |
+| Front-end findings (§3) | 20 of 43 done: F-9, F-20, F-21, F-22, F-25, F-30, F-33 (Plan 1); F-19, F-23, F-24 (Plan 2 package 5), all deployed 2026-11-22. Plan 3 (branch `plan-3-redesign-phase-1`, not deployed): F-3, F-4, F-7, F-29, F-38 (package 1); F-6, F-35 (package 2); F-1, F-2 (package 3); F-37 (package 4). Partly done: F-5, F-8, F-11, F-27, F-31, F-39, F-40 |
 | Design direction (§4) | agreed in mockup form on 2026-11-21 ("the mockups look good"); mark saved as `static/img/hexiv-mark.svg` |
 | Back-end findings (§5–§6) | 10 of 31 done: B-1, B-2 (first half: owners on log lines still open), B-3, B-6, B-9, B-10, B-14, B-15, B-22, B-23 |
 | Zoho booking retired (§1, Plan 2 package 8, deployed 2026-11-22) | The Zoho parts of B-7, B-8, B-13 and B-17 are closed and marked in place. Each finding stays open for its other parts, so none is counted as done above |
@@ -192,6 +192,15 @@ What's on screen, from [main.css:1–21](../../static/css/main.css#L1-L21) and
 | Ornament | a pulsing glowing dot ([main.css:106–111](../../static/css/main.css#L106-L111)) | Decoration with no meaning |
 | Icons | emoji and symbols: 📣 ◉ ⊕ ✉ ☎ 💬 ⊗ ⚙ ⟳ ⎋ | Drawn differently on every device; none match |
 
+> ✅ **RESOLVED** — Plan 3, packages 1 and 3. Palette: hexiv.co's dark
+> theme with one teal accent (package 1). Type: Inter, self-hosted; the
+> coding font only on code; labels in sentence case (package 1). The pulsing
+> dot is gone (package 1). Icons: one Lucide outline set in
+> `static/js/icons.js`, drawn by `icon()` in scripts and the
+> `macros/icons.html` macro in templates; every emoji and symbol used as an
+> icon is replaced (package 3). Checked: `tests/test_icons.py` (every name
+> used exists, the sidebar has no symbol left) and the walk-throughs.
+
 **F-2 · Nothing on screen comes from Hexiv. (High)** The logo — a teal
 hexagon (`#00A3AD`), a heavy white wordmark, pure black — appears nowhere.
 The browser-tab icon is a megaphone emoji. The sidebar says "Powered by
@@ -204,6 +213,12 @@ identity, and ShoutReach shares none of it: both use a teal taken from the
 logo, Inter for body text, and each defines its own dark theme (checked in
 their source, 2026-11-21). §4 starts from those.
 
+> ✅ **RESOLVED** — Plan 3, package 3. `hexiv-mark.svg` sits beside "ShoutReach" in the
+> sidebar and on the sign-in page, and is the browser-tab icon on both;
+> "Powered by Hexiv" and the megaphone are gone. The old landing and
+> portfolio pages in the repo root are not part of the app and are
+> untouched. Checked: `tests/test_icons.py` section 3 and the sign-in shots.
+
 **F-3 · Three channel colours fight the meaning of colour. (Medium)** Email
 is green, Calling is blue, WhatsApp is purple
 ([main.css:747–749](../../static/css/main.css#L747-L749)). So green means
@@ -211,10 +226,29 @@ is green, Calling is blue, WhatsApp is purple
 and WhatsApp — a green brand — is purple. A colour that means four things
 means nothing.
 
+> ✅ **RESOLVED** — Plan 3, package 1 (`204b017`). The three channel classes
+> are plain text (`--text`); blue and purple are gone from the app
+> (`.badge-blue`, `.pill.purple` and the like now draw neutral until package
+> 2 merges the tag styles). Green is split: `--accent` (teal) for the primary
+> button, selection, active tab and chip, focus; `--success` for sent,
+> replied, booked and progress. Checked: no `--green`, `--blue` or `--purple`
+> left in css, scripts or templates (grep); walk-throughs at 1440×900 and
+> 390×844 on the harness.
+
 **F-4 · The sign-in page has its own look. (Low)** It carries its own
 109-line stylesheet and a blue button, while the app's main button is green
 ([login.html](../../templates/login.html)). The first screen anyone sees
 doesn't match the second.
+
+> ✅ **RESOLVED** — Plan 3, package 1 (`204b017`). `login.html` links
+> `main.css` and has no stylesheet of its own; its button and fields are the
+> app's. To make that possible, `/static/css/`, `/static/img/` and
+> `/static/fonts/` load without a session (`_is_public_static` in `app.py`);
+> `/static/js/` stays private. Checked: `tests/test_security.py` section 8
+> (the three folders answer 200 signed out; `app.js` and nine climbing paths
+> such as `/static/css/../js/app.js` do not; every `/api/` route answers as
+> before), and the sign-in shots at both widths. The mark replaces the ◈ and
+> "Powered by Hexiv" in package 3.
 
 ### 3.2 The system underneath
 
@@ -233,6 +267,18 @@ sizes visible at once; WhatsApp → To do has eight. Sizes half a pixel apart
 (12, 12.5, 13, 13.5) can't be told apart by eye but still stop things lining
 up.
 
+> ◐ **PARTLY DONE** — Plan 3, package 1 (`204b017`). Tokens for all four
+> exist on `:root` in `main.css`: type `--fs-xs` to `--fs-xl` (12, 13, 14,
+> 16, 20, 28; base 15 on a phone), space `--sp-1` to `--sp-6` (4 to 32),
+> radius `--r-control` / `--r-card` / `--r-round`, and named layers
+> (`--z-sticky`, `--z-sheet`, `--z-fullscreen`, `--z-menu`, `--z-window`,
+> `--z-toast`). Every z-index and every font size in `main.css` now uses
+> them (the 36 px empty-state emoji goes with package 3). Package 2
+> (`6033e43`) put every padding, margin, gap and corner in `main.css` on
+> the space and radius tokens. Package 3 removed the 36 px emoji, so every
+> font size in `main.css` is on the type scale. Sizes written inline in the
+> scripts and templates go screen by screen in later phases.
+
 **F-6 · Four designs for one job. (Medium)** A small coloured label is a
 `badge`, a `pill`, a `chip` or a tab `count`, each with its own size, border
 and colours ([main.css:207–220](../../static/css/main.css#L207-L220),
@@ -241,6 +287,13 @@ filters, so the same shape is sometimes a status and sometimes a button.
 There are likewise three label styles for form fields: capitals in the coding
 font ("MESSAGE"), ordinary case in the coding font ("Notes", "Outcome"), and
 plain text.
+
+> ✅ **RESOLVED** — Plan 3, package 2 (`6033e43`). `.badge` and `.pill` are one rule: a dot and a
+> word in success, warning, danger or neutral. A tab's count is a plain
+> number (amber when something waits), not a little pill. Chips that switch
+> lists are a segmented control and the other chips are quiet buttons, so no
+> filter looks like a status. One label style since package 1. Checked in
+> the walk-through shots at both widths.
 
 **F-7 · The good news: colours already go through named variables.** Almost
 every solid colour is `var(--green)`, `var(--muted)` and so on — about 450
@@ -255,6 +308,15 @@ references. So a change of palette reaches most of the app from one place.
   like): 46 in the stylesheet, 21 more in the scripts and templates. Those
   won't follow a variable and have to be replaced with tint variables.
 
+> ✅ **RESOLVED** — Plan 3, package 1 (`204b017`). Both catches done before
+> the palette went in. `--green` is gone, each use given `--accent` or
+> `--success` (the list is in the Plan 3 build log). Every hand-written tint
+> is a token (`--accent-tint`, `--success-soft`, `--warning-soft`,
+> `--danger-soft`, their `-edge` forms, `--neutral-soft`, `--scrim`,
+> `--shadow`). Checked by grep: `main.css` has no `rgba(` outside a token
+> definition and none of `#00e87a`, `#4da6ff`, `#a78bfa`, `#080c10`; no old
+> colour name is defined or used anywhere.
+
 **F-8 · Leftovers.** Styles nothing uses: the scheduler status pill and its
 pulsing animation, and the `.seg` three-way switch
 ([main.css:92–111](../../static/css/main.css#L92-L111),
@@ -262,6 +324,11 @@ pulsing animation, and the `.seg` three-way switch
 `infoDot`, is defined and styled but never called, while 52 explanations live
 in hover-only tooltips that a phone can't show
 ([utils.js:52](../../static/js/utils.js#L52)).
+
+> ◐ **PARTLY DONE** — the scheduler pill and its pulsing dot were deleted
+> (Plan 3 package 1); `.seg` is now the segmented control (package 2,
+> `6033e43`). `infoDot` is still unused and the hover-only tooltips remain:
+> moving them is layout, for a later phase.
 
 ### 3.3 Clutter, screen by screen
 
@@ -304,6 +371,11 @@ first lead starts 343 px down. Four fit.
 biggest, brightest thing on the page — and adding leads is the one thing you
 are *not* there to do. Under it, every row has its own bright green
 "WhatsApp ↗" button. The eye has nowhere to land.
+
+> ◐ **PARTLY DONE** — Plan 3, package 2 (`6033e43`). The "WhatsApp" button on every row is
+> secondary, so the screen has one teal button per region ("+ Add leads" in
+> the header, Open/Sent in the lead). Where "+ Add leads" lives is layout
+> (audit §4.7), for a later phase.
 
 **F-12 · The action sits in the middle of the screen, not under the thumb.
 (High)** In the open lead, "Open in WhatsApp" is about halfway down, with the
@@ -428,6 +500,11 @@ five rows on a phone. Each row in the queue also has its own "Open" button,
 though the whole row is already clickable.
 See [phone-calling-lead.png](evidence-2026-11-21/phone-calling-lead.png).
 
+> ◐ **PARTLY DONE** — Plan 3, package 2 (`6033e43`). Outcome buttons moved from inline styles to
+> `.outcome-btn`: main text on the secondary fill (not grey), 44 px tall on
+> a phone, the picked one in its tone. Still to do (layout): the two-column
+> grid, "More", and the queue's per-row "Open".
+
 **F-21 · Raw timestamps. (Medium · fix-now 10)** Callbacks show as
 `2026-11-20T10:30`, call history as `2026-11-21 21:27`
 ([calling.js:207](../../static/js/calling.js#L207),
@@ -451,6 +528,11 @@ See [desktop-dashboard.png](evidence-2026-11-21/desktop-dashboard.png) and
 **F-29 · Zeros look like eights. (Medium)** Big numbers are set in JetBrains
 Mono, whose zero has a slash through it. At a glance "0" reads as "8" or
 "θ" — on the one screen whose job is to be read at a glance.
+
+> ✅ **RESOLVED** — Plan 3, package 1 (`204b017`). Large numbers, stat values
+> and counts are Inter with tabular figures (`.tnum`); the coding font is
+> kept for code only (placeholders, keys, terminal commands, the raw
+> database viewer). Checked in the Dashboard shots at both widths.
 
 #### Email
 
@@ -478,6 +560,11 @@ the name breaks one word per line ("Dubai / dentists / - / website /
 refresh") because the status, Manage, Activate and delete don't wrap beside
 it, and Activate sits right next to delete.
 
+> ◐ **PARTLY DONE** — Plan 3, package 2 (`6033e43`). The red-outlined ✕ on every row is a quiet
+> icon button that turns red only on hover; "Remove selected" fades while
+> nothing is ticked; "Activate" on each campaign card is secondary. Title
+> Case done in package 4; campaigns as a table and the header are layout.
+
 **F-43 · Leads tables need sideways scrolling on a laptop. (Medium)** At
 1280 px wide, Email → Leads is 407 px wider than its card and Calling → Leads
 381 px wider. At 1440 px the phone column on Email → Leads is still cut off,
@@ -502,6 +589,10 @@ table, not a setting.
 **F-35 · Tick boxes are the browser's own. (Low)** Bright white squares on a
 dark page, ticking purple. Only radio buttons were given the app's colour
 ([main.css:718](../../static/css/main.css#L718)).
+
+> ✅ **RESOLVED** — Plan 3, package 2 (`6033e43`). Tick boxes and radios use `accent-color:
+> var(--accent)` on the dark scheme. Checked in the Contacts and Leads
+> shots.
 
 ### 3.4 Visible defects not already listed
 
@@ -567,6 +658,18 @@ still use the browser's own grey pop-up
 the app's own dialog — so "are you sure?" looks different depending on where
 you are.
 
+> ✅ **RESOLVED** — Plan 3, packages 3 and 4. Symbols in button labels are
+> icons from the one set (⬆ ⬇ ⏹ ▶ ⏸ ✓ ✕ ⚙ ⊞ ↻ ✎ ⋯ ⟳ ⎋ ← → ↗ and the rest);
+> icon-only buttons have an `aria-label` (package 3). The fifteen
+> `confirm()` calls and the one `alert()` are the app's own dialog
+> (`confirmDialog`, a wrapper over `chooseDialog`), destructive ones with a
+> solid red confirm; button labels and window titles are in sentence case
+> ("Add account", "Save rules", "Create campaign") (package 4). The Activity
+> log's stored symbols stay: they are data written by `db.add_log`.
+> Checked: no `confirm(` or `alert(` left in the scripts or templates
+> (grep), and all eleven reachable confirmations opened on the harness as
+> the app's dialog with no browser pop-up.
+
 ### 3.6 Reach, touch and legibility (measured)
 
 **F-38 · Grey text is too faint. (Medium)** The secondary grey `#5a7a90` —
@@ -575,6 +678,14 @@ cards and 3.8 : 1 on fields. The accepted floor for small text is 4.5 : 1,
 and this grey is mostly used at 11–12.5 px. Field borders measure 1.2–1.5 : 1,
 so boxes are barely visible against the page; the floor for a control's
 outline is 3 : 1.
+
+> ✅ **RESOLVED** — Plan 3, package 1 (`204b017`). Secondary text is
+> `--text-2` `#a3b8be`: 8.94 : 1 on the page, 8.32 on cards, 7.55 on fields.
+> The faintest grey, `--text-3` `#6d8890` (4.91 and 4.57), is used only on
+> the page and cards, where it passes; it would fail on fields (4.14) and
+> isn't used there. Field and tick-box edges are `--line-strong` `#5b7880`:
+> 3.30 : 1 against fields, 3.64 against cards. Checked by computing the WCAG
+> ratios from the token values.
 
 **F-39 · Most tap targets are under size. (High)** The comfortable minimum
 for a finger is 44 px. Measured on a 390 px screen:
@@ -590,6 +701,13 @@ for a finger is 44 px. Measured on a 390 px screen:
 | Menu button | 40 × 40 |
 | Text links ("Reset to template", "Open the chat again") | 31 tall |
 | Tick boxes in lists | 20 × 20 |
+
+> ◐ **PARTLY DONE** — Plan 3, package 2 (`6033e43`). On a phone, buttons, chips, tabs, dropdowns,
+> the row menu, the menu button and the call outcomes are at least 44 px,
+> and so are text links in a lead. `measure.py phone`: nothing under 44 px
+> on WhatsApp To do, the open lead, "Did it send?" and the Calling lead
+> (the plan's three screens). Tick boxes in lists stay 20 × 20 and
+> placeholder buttons 35 px; for the later layout phases.
 
 **F-30 · Expected: every text box zooms the page on an iPhone. (Medium ·
 fix-now 16)** Safari zooms in when a field's text is smaller than 16 px.
@@ -610,6 +728,12 @@ windows. Dropdowns and the search box have their focus outline removed and
 nothing put in its place
 ([main.css:446–449](../../static/css/main.css#L446-L449)). Fourteen buttons
 are a symbol with no name.
+
+> ◐ **PARTLY DONE** — Plan 3, package 2 (`6033e43`). A 2 px teal focus ring on everything the
+> keyboard reaches; every `outline: none` removed (checked by pressing Tab
+> through WhatsApp To do: every stop shows it). Package 3 adds names to the
+> icon-only buttons. Labels tied to fields, Escape, focus on open and list
+> rows that take focus are behaviour, not looks: later.
 
 ### 3.7 States
 

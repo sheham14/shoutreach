@@ -2,11 +2,11 @@
 // queue pass plus a reply/bounce scan. It does not bypass any gate -- the
 // send window, the daily caps and the bounce breaker all still apply, so
 // outside sending hours this checks for replies and sends nothing.
-const RUN_NOW_LABEL = '⟳ Check for email replies & send';
+const RUN_NOW_LABEL = () => `${icon('refresh-cw', { size: 14 })} <span>Check for email replies &amp; send</span>`;
 
 async function runSchedulerNow() {
   const btn = document.getElementById('run-now-btn');
-  btn.textContent = '⟳ Checking…';
+  btn.innerHTML = `${icon('refresh-cw', { size: 14 })} <span>Checking…</span>`;
   btn.disabled = true;
   try {
     // api() takes (path, method, body) -- passing { method: 'POST' } made the
@@ -26,7 +26,7 @@ async function runSchedulerNow() {
   } catch (e) {
     toast('Could not start the check', 'err');
   } finally {
-    btn.textContent = RUN_NOW_LABEL;
+    btn.innerHTML = RUN_NOW_LABEL();
     btn.disabled = false;
   }
 }
@@ -126,7 +126,7 @@ async function refreshDashboard() {
       <td class="num">${cp.leads}</td>
       <td><div class="bar" title="${cp.progress}%"><i style="width:${cp.progress}%"></i></div></td>
       <td class="nowrap">${esc(cp.result)}${cp.reply_rate ? ` <span class="text-muted">(${cp.reply_rate}%)</span>` : ''}</td>
-      <td><button class="btn btn-ghost btn-sm">Open →</button></td>
+      <td><button class="btn btn-ghost btn-sm">Open ${icon('arrow-right', { size: 14 })}</button></td>
       <td class="m-card">${mCard(`<span class="biz-name">${esc(cp.name)}</span>`,
         `<span class="${meta.cls}">${meta.label}</span> ${pill(cp.status, statusTone)} · ${cp.leads} leads · ${esc(cp.result)}`)}</td>
     </tr>`;
@@ -151,10 +151,10 @@ function _renderSender(sender) {
     return;
   }
   el.className = 'text-small';
-  el.style.color = 'var(--amber)';
-  el.textContent = !sender.alive
-    ? '⚠ The email sender isn\'t running. Reload this page to restart it; if this stays, check the server.'
-    : `⚠ The email sender last ran ${ago}. Nothing is being sent.`;
+  el.style.color = 'var(--warning)';
+  el.innerHTML = !sender.alive
+    ? icon('triangle-alert', { size: 14 }) + ' The email sender isn\'t running. Reload this page to restart it; if this stays, check the server.'
+    : `${icon('triangle-alert', { size: 14 })} The email sender last ran ${esc(ago)}. Nothing is being sent.`;
 }
 
 // "From the website": recent enquiries and where each stands. Hidden until

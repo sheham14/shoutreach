@@ -95,7 +95,7 @@ async function _waSentLogHtml() {
              onclick="waSentWindow('${key}')">${label}</button>`;
 
   return `
-    <div class="chips" style="margin-bottom:12px">
+    <div class="chips seg" style="margin-bottom:12px">
       ${chip('today', 'Today')}${chip('week', 'Last 7 days')}${chip('all', 'Everything')}
     </div>
     ${!rows.length ? '<div class="empty-state"><p>Nothing sent in this period.</p></div>' : `
@@ -105,7 +105,7 @@ async function _waSentLogHtml() {
       </tr></thead><tbody>
         ${rows.map(r => `<tr>
           <td><span class="biz-name">${esc(r.company || 'Unnamed business')}</span>
-              <span class="sub mono">${esc(prettyWaNumber(r.wa_number) || '')}</span></td>
+              <span class="sub tnum">${esc(prettyWaNumber(r.wa_number) || '')}</span></td>
           <td>${r.kind === 'followup' ? 'Follow-up' : 'Opening message'}
               ${r.campaign_name ? `<span class="sub">${esc(r.campaign_name)}</span>` : ''}</td>
           <td class="nowrap">${esc(fmtWhen(r.sent_at, 'utc'))}</td>
@@ -200,7 +200,7 @@ function renderWaFilterNote() {
   if (!bits.length) { note.hidden = true; note.innerHTML = ''; return; }
   note.hidden = false;
   note.innerHTML = `Filtered — ${bits.join(', ')}. `
-    + `<a style="color:var(--blue);cursor:pointer" onclick="clearWaLeadFilters()">Show all leads</a>`;
+    + `<a style="color:var(--accent);cursor:pointer" onclick="clearWaLeadFilters()">Show all leads</a>`;
 }
 
 function clearWaLeadFilters() {
@@ -377,20 +377,20 @@ function _renderWaQueue() {
     const cells = _waBucket === 'ready'
       ? [...(showVersion ? [l.template_variant ? pill(`Version ${l.template_variant}`) : '<span class="text-muted">—</span>'] : []),
          // The number itself never breaks; a "landline" pill may drop under it.
-         `<span class="mono" style="font-size:12px;white-space:nowrap">${esc(prettyWaNumber(l.wa_number) || 'No number')}</span>${
+         `<span class="tnum" style="font-size:12px;white-space:nowrap">${esc(prettyWaNumber(l.wa_number) || 'No number')}</span>${
            l.number_type === 'landline' ? ` ${pill('landline', '', 'Landlines are less likely to have WhatsApp')}` : ''}`]
-      : [`<span class="mono" style="font-size:12px">${esc(shortDate(l.sent_date))}</span>`,
-         `<span class="mono">${l.followup_count || 0}</span>`];
+      : [`<span class="tnum" style="font-size:12px">${esc(shortDate(l.sent_date))}</span>`,
+         `<span class="tnum">${l.followup_count || 0}</span>`];
     const mobile = mCard(
       `<span class="biz-name">${esc(l.company || 'Unnamed business')}</span>${l.opened_at ? ` ${pill('opened', 'amber')}` : ''}`,
       _waBucket === 'ready'
-        ? `${l.campaign_name ? esc(l.campaign_name) : pill('No campaign', 'amber')} · <span class="mono">${_waNumberCell(l)}</span>`
+        ? `${l.campaign_name ? esc(l.campaign_name) : pill('No campaign', 'amber')} · <span class="tnum">${_waNumberCell(l)}</span>`
         : `${l.campaign_name ? esc(l.campaign_name) : pill('No campaign', 'amber')} · sent ${esc(shortDate(l.sent_date))} · ${l.followup_count || 0} follow-up${l.followup_count === 1 ? '' : 's'}`);
     return `<tr class="clickable ${l.id === _waCurrent ? 'current' : ''}" onclick="openWaLead(${l.id}, true)">
       <td>${name}</td>${showCamp ? `<td>${camp}</td>` : ''}${cells.map(c => `<td>${c}</td>`).join('')}
       <td class="m-card">${mobile}</td>
-      <td class="nowrap m-keep" style="text-align:right">${l.wa_number ? `<button class="btn btn-primary btn-sm row-wa"
-        onclick="event.stopPropagation();openWaFromRow(${l.id})" title="Open this chat in WhatsApp">WhatsApp ↗</button>` : ''}</td></tr>`;
+      <td class="nowrap m-keep" style="text-align:right">${l.wa_number ? `<button class="btn btn-ghost btn-sm row-wa"
+        onclick="event.stopPropagation();openWaFromRow(${l.id})" title="Open this chat in WhatsApp">WhatsApp ${icon('arrow-up-right', { size: 14 })}</button>` : ''}</td></tr>`;
   }).join('');
 }
 
@@ -403,7 +403,7 @@ function _waEditedNote(l) {
   const label = WA_SOURCE_LABELS[l.message_source]
     || (l.paraphrased ? WA_SOURCE_LABELS.ai : WA_SOURCE_LABELS.manual);
   return `${label} — template changes won't touch it ·
-    <a style="color:var(--blue);cursor:pointer" onclick="resetWaMessage(${l.id})">Reset to template</a>`;
+    <a style="color:var(--accent);cursor:pointer" onclick="resetWaMessage(${l.id})">Reset to template</a>`;
 }
 
 // A lead carries its own copy when its opener was written for it, or when an
@@ -466,11 +466,11 @@ async function openWaLead(id, show = false) {
   const ready = _waBucket === 'ready';
   const message = ready ? (l.message || '') : (l.followup_draft || '');
   const links = [];
-  if (l.website) links.push(`<a href="${esc(l.website.startsWith('http') ? l.website : 'https://' + l.website)}" target="_blank" rel="noopener" style="color:var(--blue)">Website ↗</a>`);
-  links.push(`<span class="mono">${_waNumberCell(l)}</span>`);
+  if (l.website) links.push(`<a href="${esc(l.website.startsWith('http') ? l.website : 'https://' + l.website)}" target="_blank" rel="noopener" style="color:var(--accent)">Website ${icon('arrow-up-right', { size: 14 })}</a>`);
+  links.push(`<span class="tnum">${_waNumberCell(l)}</span>`);
   if (l.rating != null) links.push(`${esc(l.rating)}★ (${esc(l.review_count ?? 0)})`);
   const context = [
-    l.campaign_name ? `Campaign: ${esc(l.campaign_name)}` : '<span style="color:var(--amber)">No campaign — move it into one (⋯) to get its message</span>',
+    l.campaign_name ? `Campaign: ${esc(l.campaign_name)}` : `<span style="color:var(--warning)">No campaign — move it into one (the ${icon('ellipsis', { size: 14 })} menu) to get its message</span>`,
     l.template_variant && `version ${esc(l.template_variant)}`,
     !ready && `last sent ${esc(fmtWhen(l.sent_date, 'utc'))}`,
     !ready && `${l.followup_count || 0} follow-up${l.followup_count === 1 ? '' : 's'} so far`,
@@ -484,7 +484,7 @@ async function openWaLead(id, show = false) {
     <div class="flex items-center gap-2" style="justify-content:space-between">
       <h3>${esc(l.company || 'Unnamed business')}</h3>
       <span class="flex items-center gap-2">
-        <span class="text-muted text-small mono">${_waQueue.indexOf(l) + 1} of ${_waQueue.length}</span>
+        <span class="text-muted text-small tnum">${_waQueue.indexOf(l) + 1} of ${_waQueue.length}</span>
         ${_waMoreMenu(l)}
       </span>
     </div>
@@ -501,7 +501,7 @@ async function openWaLead(id, show = false) {
     <div id="wa-actions">${_waActionsHtml(l)}</div>
     <div class="text-muted text-small" style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">
       ${waOpensInToggleHtml()}
-      ${!ready ? `<a style="color:var(--blue);cursor:pointer" onclick="correctWaSentDate(${l.id})">Didn't actually send the last one?</a>` : ''}
+      ${!ready ? `<a style="color:var(--accent);cursor:pointer" onclick="correctWaSentDate(${l.id})">Didn't actually send the last one?</a>` : ''}
     </div>
 
     <div style="margin-top:14px">${detail && !detail.error ? sharedSectionsHtml(detail, { open: 'none' }) : ''}</div>`;
@@ -514,7 +514,7 @@ function _waActionsHtml(l) {
   return `<div class="flex gap-2" style="flex-wrap:wrap;margin-top:12px;align-items:center">
       <button class="btn btn-primary" onclick="openWaLink(${l.id})">Open in WhatsApp</button>
       <button class="btn btn-ghost" onclick="skipWaLead()">Skip</button>
-      ${kind === 'opener' ? (window._aiEnabled ? `<button class="btn btn-ghost btn-sm" onclick="rewordWaMessage(${l.id})">✨ Reword with AI</button>` : '')
+      ${kind === 'opener' ? (window._aiEnabled ? `<button class="btn btn-ghost btn-sm" onclick="rewordWaMessage(${l.id})">${icon('sparkles', { size: 14 })} Reword with AI</button>` : '')
               : `<button class="btn btn-ghost btn-sm" onclick="waMarkReplied(${l.id})">They replied</button>
                  <button class="btn btn-ghost btn-sm" onclick="waSetPaused([${l.id}], true)">Pause</button>`}
     </div>
@@ -528,7 +528,7 @@ function _renderWaActions(l) {
 
 function _waMoreMenu(l) {
   return `<div class="row-menu">
-    <button class="btn btn-ghost btn-sm" onclick="toggleRowMenu(this)" title="More">⋯</button>
+    <button class="btn btn-ghost btn-sm" onclick="toggleRowMenu(this)" title="More" aria-label="More">${icon('ellipsis')}</button>
     <div class="row-menu-list">
       <button onclick="markNotOnWhatsApp([${l.id}])">Not on WhatsApp</button>
       <button onclick="moveWaLeadsToCampaign([${l.id}])">Move to another campaign…</button>
@@ -916,7 +916,7 @@ createLeadTable({
   }),
   columns: [
     { key: 'company', label: 'Business', sort: true,
-      render: r => `<span class="biz-name">${esc(r.company || 'Unnamed business')}</span><span class="sub mono">${esc(prettyWaNumber(r.wa_number) || 'no number')}</span>` },
+      render: r => `<span class="biz-name">${esc(r.company || 'Unnamed business')}</span><span class="sub tnum">${esc(prettyWaNumber(r.wa_number) || 'no number')}</span>` },
     { key: 'campaign_name', label: 'Campaign', sort: true,
       render: r => r.campaign_name ? esc(r.campaign_name) : pill('No campaign', 'amber') },
     { key: 'stage', label: 'Stage', sort: true,
@@ -924,7 +924,7 @@ createLeadTable({
         ? ` ${pill('opened', 'amber', 'Opened in WhatsApp — say whether it sent')}` : '') },
     { key: 'pipeline_stage', label: 'Deal', sort: true,
       render: r => r.pipeline_stage
-        ? pipelinePill(r) + (pipelineOverdue(r) ? ' <span style="color:var(--red)" title="Past its date">!</span>' : '')
+        ? pipelinePill(r) + (pipelineOverdue(r) ? ' <span style="color:var(--danger)" title="Past its date">!</span>' : '')
         : '<span class="text-muted">—</span>' },
     { key: 'template_variant', label: 'Version', sort: true, cls: 'num', render: waVersionCell },
     { key: 'sent_date', label: 'Last sent', sort: true, cls: 'num', render: r => esc(shortDate(r.sent_date)) },
@@ -1002,7 +1002,7 @@ async function renderWaCampaigns() {
         <button class="btn btn-ghost btn-sm" onclick="openWhatsAppCampaign(${c.id})">Leads</button>
         <button class="btn btn-ghost btn-sm" onclick="openWaCampaignSettings(${c.id})">Settings</button>
         <div class="row-menu">
-          <button class="btn btn-ghost btn-sm" onclick="toggleRowMenu(this)">⋯</button>
+          <button class="btn btn-ghost btn-sm" onclick="toggleRowMenu(this)" title="More" aria-label="More">${icon('ellipsis')}</button>
           <div class="row-menu-list">
             <button onclick="openWaImportModal(${c.id})">Add leads…</button>
             <button onclick="openWaCampaignSettings(${c.id})">Settings…</button>
@@ -1017,7 +1017,7 @@ async function renderWaCampaigns() {
         <span class="sub">${esc([countryName(c.country), c.notes].filter(Boolean).join(' · '))}</span></td>
       <td class="num">${c.leads}</td>
       <td class="num">${c.ready}</td>
-      <td class="num">${c.due ? `<span style="color:var(--amber)">${c.due}</span>` : 0}</td>
+      <td class="num">${c.due ? `<span style="color:var(--warning)">${c.due}</span>` : 0}</td>
       <td class="num">${c.messaged}</td>
       <td class="num">${c.replied} <span class="text-muted">(${c.reply_rate}%)</span></td>
       <td class="num">${c.followup_days} days</td>
@@ -1255,7 +1255,7 @@ function _drawWaTemplateEditor() {
         <div class="card-title">${esc(title)}</div>${tools}
       </div>
       ${hint ? `<div class="text-muted text-small" style="margin:2px 0 8px">${esc(hint)}</div>` : '<div style="height:6px"></div>'}
-      ${retired ? `<div class="text-small" style="color:var(--amber);margin-bottom:8px">{{signal_detail}} came from the old
+      ${retired ? `<div class="text-small" style="color:var(--warning);margin-bottom:8px">{{signal_detail}} came from the old
         booking check, which is gone — it's empty for every new lead. Take it out.</div>` : ''}
       ${arms.map((arm, i) => `
         <div style="margin-bottom:12px">
@@ -1272,7 +1272,7 @@ function _drawWaTemplateEditor() {
     </div>`;
   };
   const kinds = kindBlock('opener', 'Opening message', WA_OPENER_HINT)
-    + `<div style="margin-top:26px;padding-top:18px;border-top:1px solid var(--border)">
+    + `<div style="margin-top:26px;padding-top:18px;border-top:1px solid var(--line)">
         <div class="card-title">Follow-ups</div>
         <div class="text-muted text-small" style="margin-top:2px;line-height:1.6">Sent in this order, one every
           ${esc(c.followup_days)} day${c.followup_days === 1 ? '' : 's'}, until they reply or you pause — they never stop on
@@ -1282,8 +1282,8 @@ function _drawWaTemplateEditor() {
       </div>`
     + steps.map((_, s) => kindBlock(`fu${s}`, `Follow-up ${s + 1}`, '',
         `<span class="ml-auto"></span>
-         ${s > 0 ? `<button class="btn btn-ghost btn-sm" title="Move up" onclick="moveWaFollowupStep(${s}, -1)">↑</button>` : ''}
-         ${s < steps.length - 1 ? `<button class="btn btn-ghost btn-sm" title="Move down" onclick="moveWaFollowupStep(${s}, 1)">↓</button>` : ''}
+         ${s > 0 ? `<button class="btn btn-ghost btn-sm" title="Move up" aria-label="Move up" onclick="moveWaFollowupStep(${s}, -1)">${icon('chevron-up', { size: 14 })}</button>` : ''}
+         ${s < steps.length - 1 ? `<button class="btn btn-ghost btn-sm" title="Move down" aria-label="Move down" onclick="moveWaFollowupStep(${s}, 1)">${icon('chevron-down', { size: 14 })}</button>` : ''}
          ${steps.length > 1 ? `<button class="btn btn-ghost btn-sm" onclick="removeWaFollowupStep(${s})">Remove follow-up</button>` : ''}`)).join('')
     + (steps.length < WA_MAX_FOLLOWUP_STEPS
         ? `<button class="btn btn-ghost" style="margin-top:6px" onclick="addWaFollowupStep()">+ Add follow-up ${steps.length + 1}</button>` : '');
@@ -1380,7 +1380,7 @@ function addWaVariable(key = '', value = '', focus = true) {
     <input class="wt-var-key soft-input mono" placeholder="my_name" value="${esc(key)}" style="flex:1;font-size:12.5px"
            oninput="_refreshAllWaPreviews()" />
     <input class="wt-var-val soft-input" placeholder="Sam" value="${esc(value)}" style="flex:2" oninput="_refreshAllWaPreviews()" />
-    <button class="btn btn-ghost btn-sm" onclick="this.closest('.wt-var').remove();_refreshAllWaPreviews()" title="Remove">✕</button>`;
+    <button class="btn btn-icon btn-sm" onclick="this.closest('.wt-var').remove();_refreshAllWaPreviews()" title="Remove" aria-label="Remove">${icon('x')}</button>`;
   document.getElementById('wt-vars').appendChild(row);
   if (focus) row.querySelector('.wt-var-key').focus();
 }
@@ -1471,7 +1471,7 @@ async function saveWaTemplates() {
     opener_from: openerFrom,
   });
   if (!res || res.error) { toast((res && res.error) || 'Could not save', 'err'); return; }
-  toast('Saved ✓ — waiting leads use it now');
+  toast('Saved — waiting leads use it now');
   await loadWaCampaigns();
   renderWaTemplateEditor(_waEdit.id);
 }
@@ -1611,7 +1611,7 @@ function _waAddRender() {
       <td><input type="checkbox" ${_waAddSelected.has(c.id) ? 'checked' : ''}
                  onclick="event.stopPropagation();waAddToggle(${c.id})" style="cursor:pointer" /></td>
       <td>${esc(c.company || '—')}${contactSignalPill(c)}</td>
-      <td class="mono" style="font-size:12px">${c.phone ? esc(c.phone) : '<span class="text-muted">no phone</span>'}</td>
+      <td class="tnum" style="font-size:12px">${c.phone ? esc(c.phone) : '<span class="text-muted">no phone</span>'}</td>
     </tr>`).join('');
 }
 

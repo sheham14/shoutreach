@@ -50,7 +50,7 @@ const _sheetOnClose = {};
 function isNarrow() { return window.matchMedia('(max-width: 768px)').matches; }
 
 function sheetBarHtml(closeJs, label = 'Back to list') {
-  return `<div class="sheet-bar"><button class="btn btn-ghost btn-sm" onclick="${closeJs}">← ${esc(label)}</button></div>`;
+  return `<div class="sheet-bar"><button class="btn btn-ghost btn-sm" onclick="${closeJs}">${icon('arrow-left', { size: 14 })} ${esc(label)}</button></div>`;
 }
 
 function openSheet(id, onClose = null) {
@@ -269,7 +269,7 @@ async function renameImport(sourceId, current, auto, after) {
   if (name === null) return;
   const res = await api(`/api/lead-batches/${sourceId}`, 'PUT', { name: name.trim() });
   if (!res || res.error) { toast((res && res.error) || 'Could not rename it', 'err'); return; }
-  toast('Renamed ✓');
+  toast('Renamed');
   if (after) after();
 }
 
@@ -406,8 +406,11 @@ function insertAtCursor(el, text) {
 let _chooseResolve = null;
 let _chooseCollect = null;
 
-function chooseDialog({ title, body, confirm = 'OK', danger = false, collect = () => true, width = 480 }) {
+// cancel: false for a notice, where there is nothing to decline (the close
+// button stays). Set on every call, since the one dialog is reused.
+function chooseDialog({ title, body, confirm = 'OK', danger = false, cancel = true, collect = () => true, width = 480 }) {
   document.getElementById('choose-title').textContent = title;
+  document.getElementById('choose-cancel').hidden = !cancel;
   document.getElementById('choose-body').innerHTML = body;
   const btn = document.getElementById('choose-confirm');
   btn.textContent = confirm;
@@ -416,6 +419,17 @@ function chooseDialog({ title, body, confirm = 'OK', danger = false, collect = (
   _chooseCollect = collect;
   openModal('modal-choose');
   return new Promise(resolve => { _chooseResolve = resolve; });
+}
+
+// A yes/no question in the same dialog, for what used to be confirm() (audit
+// F-37, Plan 3 package 4). `text` is plain and escaped here; a blank line
+// starts a new paragraph. `html` is used as-is instead -- escape what goes in
+// it. danger: true draws the confirm button solid red, for deleting things.
+// Resolves true for yes, null for no / Cancel / the close button.
+function confirmDialog({ title, text = '', html = '', confirm = 'OK', danger = false }) {
+  const body = html || String(text).split(/\n\s*\n/).map(p =>
+    `<p class="dialog-p">${esc(p.trim()).replace(/\n/g, '<br>')}</p>`).join('');
+  return chooseDialog({ title, body, confirm, danger });
 }
 
 function chooseConfirm() {
@@ -635,7 +649,7 @@ function createLeadTable(cfg) {
         <span style="flex-basis:8px"></span>
         ${n && cfg.bulk ? cfg.bulk() : ''}
         ${n && cfg.exportKind ? `<button class="btn btn-ghost btn-sm" onclick="LT['${cfg.id}'].download()"
-            title="Download the selected leads as a CSV">⬇ Download CSV</button>` : ''}
+            title="Download the selected leads as a CSV">${icon('download', { size: 14 })} Download CSV</button>` : ''}
       </div>`;
 
     const head = `<tr>
@@ -644,7 +658,7 @@ function createLeadTable(cfg) {
         ${cfg.columns.map(c => {
           if (!c.sort) return `<th>${esc(c.label)}</th>`;
           const on = t.sortCol === c.key;
-          return `<th class="sortable" onclick="LT['${cfg.id}'].sort('${c.key}')">${esc(c.label)}<span class="arrow">${on ? (t.sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>`;
+          return `<th class="sortable" onclick="LT['${cfg.id}'].sort('${c.key}')">${esc(c.label)}<span class="arrow">${icon(on ? (t.sortDir === 'asc' ? 'chevron-up' : 'chevron-down') : 'arrow-up-down', { size: 12 })}</span></th>`;
         }).join('')}
         ${cfg.menu ? '<th style="width:40px"></th>' : ''}
       </tr>`;
@@ -661,7 +675,7 @@ function createLeadTable(cfg) {
           ${cfg.columns.map(c => `<td class="${c.cls || ''}">${c.render ? c.render(r) : esc(r[c.key] ?? '')}</td>`).join('')}
           ${cfg.mobile ? `<td class="m-card">${cfg.mobile(r)}</td>` : ''}
           ${cfg.menu ? `<td class="m-keep" onclick="event.stopPropagation()">${menu.length ? `<div class="row-menu">
-              <button class="btn btn-ghost btn-sm" onclick="toggleRowMenu(this)" title="More">⋯</button>
+              <button class="btn btn-ghost btn-sm" onclick="toggleRowMenu(this)" title="More" aria-label="More">${icon('ellipsis')}</button>
               <div class="row-menu-list">${menu.map(m =>
                 `<button class="${m.danger ? 'danger' : ''}" onclick="this.closest('.row-menu').classList.remove('open');${esc(m.run)}">${esc(m.label)}</button>`).join('')}</div>
             </div>` : ''}</td>` : ''}
@@ -673,9 +687,9 @@ function createLeadTable(cfg) {
           onchange="LT['${cfg.id}'].togglePage(this.checked)" /> Select all on this page</label>` : ''}
       <div class="table-wrap"><table class="lead-table${cfg.mobile ? ' m-table' : ''}"><thead>${head}</thead><tbody>${rows}</tbody></table></div>
       ${t.pages > 1 ? `<div class="lt-pager">
-          <button class="btn btn-ghost btn-sm" ${t.page <= 1 ? 'disabled' : ''} onclick="LT['${cfg.id}'].step(-1)">← Prev</button>
-          <span class="text-muted text-small mono">Page ${t.page} of ${t.pages}</span>
-          <button class="btn btn-ghost btn-sm" ${t.page >= t.pages ? 'disabled' : ''} onclick="LT['${cfg.id}'].step(1)">Next →</button>
+          <button class="btn btn-ghost btn-sm" ${t.page <= 1 ? 'disabled' : ''} onclick="LT['${cfg.id}'].step(-1)">${icon('arrow-left', { size: 14 })} Prev</button>
+          <span class="text-muted text-small tnum">Page ${t.page} of ${t.pages}</span>
+          <button class="btn btn-ghost btn-sm" ${t.page >= t.pages ? 'disabled' : ''} onclick="LT['${cfg.id}'].step(1)">Next ${icon('arrow-right', { size: 14 })}</button>
         </div>` : ''}`;
   };
 
@@ -706,7 +720,7 @@ function _renderToolbarExtras(t, count) {
   box.innerHTML = `${all}
     <select class="filter-select lt-perpage" onchange="LT['${id}'].setPerPage(this.value)" title="Rows per page">${sizes}</select>
     <button class="btn btn-ghost btn-sm lt-fs-btn" onclick="toggleTableFullscreen('${id}')"
-            title="${fs ? 'Back to the page (Esc)' : 'Show just this table, full screen'}">${fs ? '✕ Exit full screen' : '⛶ Full screen'}</button>`;
+            title="${fs ? 'Back to the page (Esc)' : 'Show just this table, full screen'}">${fs ? `${icon('x', { size: 14 })} Exit full screen` : `${icon('maximize', { size: 14 })} Full screen`}</button>`;
 }
 
 // Summaries of "added 3, skipped 2 because…" responses, shared by every

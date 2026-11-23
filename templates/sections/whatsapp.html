@@ -1,3 +1,4 @@
+{% from "macros/icons.html" import icon %}
 <div class="section" id="section-whatsapp">
   <div class="page-header">
     <!-- Which campaign you're in is the heading, not a dropdown in the
@@ -6,7 +7,7 @@
          biggest source of confusion in the first week of real use. -->
     <div>
       <div class="page-crumb text-muted text-small" id="wa-crumb" hidden>
-        <a style="color:var(--blue);cursor:pointer" onclick="waShowAllCampaigns()">← All campaigns</a>
+        <a style="color:var(--accent);cursor:pointer" onclick="waShowAllCampaigns()">{{ icon('arrow-left', 14) }} All campaigns</a>
       </div>
       <div class="page-title" id="wa-title">WhatsApp</div>
       <div class="page-sub" id="wa-sub">Nothing sends by itself — you always tap Send yourself, inside WhatsApp</div>
@@ -36,11 +37,11 @@
        written, so there is nothing to prepare first. -->
   <div class="tab-pane active" data-pane-group="whatsapp" data-pane="todo">
     <div class="flex gap-2 items-center" style="margin-bottom:14px;flex-wrap:wrap">
-      <div class="chips">
+      <div class="chips seg">
         <button class="chip active" id="wa-chip-ready" onclick="setWaBucket('ready')">Ready to send <span class="count" id="wa-count-ready">0</span></button>
         <button class="chip" id="wa-chip-due" onclick="setWaBucket('due')">Follow-up due <span class="count" id="wa-count-due">0</span></button>
       </div>
-      <a id="wa-no-wa-link" class="text-small" hidden style="margin-left:auto;color:var(--red);cursor:pointer"
+      <a id="wa-no-wa-link" class="text-small" hidden style="margin-left:auto;color:var(--danger);cursor:pointer"
          onclick="openWaNotOnWhatsApp()" title="Leads you marked as not on WhatsApp, waiting to be moved off"></a>
       <span class="sent-today" style="cursor:pointer" onclick="openWaSentLog()"
             title="Everything you've marked as sent — click to see the list">

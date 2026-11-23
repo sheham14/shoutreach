@@ -40,7 +40,7 @@ const _CT_COLUMNS_BASE = [
   { key: 'channels', label: 'Channels', render: channelPills },
   { key: 'phone', label: 'Phone', sort: true, cls: 'num', render: r => esc(r.phone || '') },
   { key: 'email', label: 'Email', sort: true, cls: 'nowrap',
-    render: r => r.email ? `<span class="mono" style="font-size:12px">${esc(r.email)}</span>${
+    render: r => r.email ? `<span class="tnum" style="font-size:12px">${esc(r.email)}</span>${
       r.email_count > 1 ? ` <span class="text-muted">+${r.email_count - 1}</span>` : ''}` : '' },
   { key: 'category', label: 'Category', sort: true, render: r => esc(r.category || '') },
   { key: 'created_at', label: 'Added', sort: true, cls: 'num', render: r => esc(localDateTime(r.created_at)) },
@@ -181,14 +181,14 @@ async function loadTrash() {
           <div class="biz-name">${g.count} lead${g.count === 1 ? '' : 's'} · deleted ${esc(localDateTime(g.deleted_at))}</div>
           <div class="text-muted text-small" style="margin-top:2px">${names}</div>
         </div>
-        <span class="text-muted text-small mono" title="Then they're gone for good">${g.days_left} day${g.days_left === 1 ? '' : 's'} left</span>
-        <button class="btn btn-primary btn-sm" onclick="restoreTrash('${escj(g.group)}', ${g.count})">Restore</button>
+        <span class="text-muted text-small tnum" title="Then they're gone for good">${g.days_left} day${g.days_left === 1 ? '' : 's'} left</span>
+        <button class="btn btn-ghost btn-sm" onclick="restoreTrash('${escj(g.group)}', ${g.count})">Restore</button>
         <button class="btn btn-ghost btn-sm" onclick="toggleTrashItems(this)">Show</button>
         <button class="btn btn-danger btn-sm" onclick="forgetTrash('${escj(g.group)}', ${g.count})">Delete forever</button>
       </div>
       <div class="trash-items" style="display:none">${g.items.map(i => `<div class="trash-item">
           <span>${esc(i.name || 'Unnamed business')}</span>
-          <span class="mono text-muted">${esc(i.phone || '')}</span>
+          <span class="tnum text-muted">${esc(i.phone || '')}</span>
           <span class="text-muted text-small">${esc((i.channels || '').split(',').filter(Boolean).join(', ') || 'no channel')}</span>
           <a onclick="restoreTrashItems([${i.id}])">Restore</a>
         </div>`).join('')}</div>
@@ -292,7 +292,7 @@ async function saveBusinessForm() {
   }
   if (!res || res.error) { toast((res && res.error) || 'Could not save it', 'err'); return; }
   closeModal('modal-business');
-  toast(_ctEditId ? 'Saved ✓' : (res.created ? 'Contact added ✓' : 'You already had this one — opened it'));
+  toast(_ctEditId ? 'Saved' : (res.created ? 'Contact added' : 'You already had this one — opened it'));
   if (!_ctEditId && document.getElementById('section-contacts').classList.contains('active')) {
     LT.ct.load();
     openContactDetail(res.id);
