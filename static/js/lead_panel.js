@@ -346,6 +346,12 @@ const WA_SOURCE_LABELS = {
 
 // After opening a chat: nothing is recorded until the operator says what
 // happened. The same box on the To do tab and in a lead's side panel.
+// The message box ('msg') or action row ('actions') of the WhatsApp section in
+// one lead panel. See _waPanelSection.
+function waPanelEl(panelId, part) {
+  return document.getElementById(`${panelId}-wa-${part}`);
+}
+
 function waConfirmHtml(id, kind, openedAt, number, panelId = null) {
   const pid = panelId ? `'${panelId}'` : 'null';
   return `<div class="confirm-send">
@@ -719,7 +725,7 @@ async function openLeadPanel(businessId, opts) {
   if (!sameLead) panel.scrollTop = 0;
 
   let channelHtml = '';
-  if (opts.channel === 'whatsapp' && d.whatsapp) channelHtml = await _waPanelSection(d);
+  if (opts.channel === 'whatsapp' && d.whatsapp) channelHtml = await _waPanelSection(d, opts.panelId);
   if (opts.channel === 'calling') channelHtml = _callPanelSection(d);
   if (opts.channel === 'email') channelHtml = _emailPanelSection(d);
 
@@ -794,10 +800,13 @@ function _leadChanged(panelId) {
   refreshLeadPanel(panelId);
 }
 
-async function _waPanelSection(d) {
+// WhatsApp has two lead panels (Leads and Replies), and a closed panel is
+// hidden, not emptied -- so its message box and buttons carry the panel's id
+// (waPanelEl), or a lookup by a shared id finds the hidden copy first and
+// opens one lead's chat with another lead's message.
+async function _waPanelSection(d, panelId) {
   const w = await api(`/api/wa/leads/${d.whatsapp.id}`);
   const stage = d.whatsapp.stage;
-  const panelId = 'wl-panel';
   const lastSent = w.sent_date ? `<div class="text-muted text-small" style="margin-top:8px">Last sent ${esc(whenLocal(w.sent_date))}
       · ${w.followup_count || 0} follow-up${w.followup_count === 1 ? '' : 's'} so far</div>` : '';
   let body = '';
@@ -819,7 +828,7 @@ async function _waPanelSection(d) {
       <span class="field-label">${kind === 'opener'
         ? `Message${w.template_variant ? ` · version ${esc(w.template_variant)}` : ''}`
         : `Follow-up ${fuIndex + 1} due · ${esc(where.text)}`}</span>
-      <textarea id="wl-msg" class="soft-input" style="min-height:110px"
+      <textarea id="${panelId}-wa-msg" class="soft-input" style="min-height:110px"
                 ${kind === 'opener'
                   ? `onchange="saveWaMessage(${w.id}, this.value, '${panelId}')"`
                   : (ownFollowup ? `onchange="saveWaFollowup(${w.id}, ${fuIndex}, this.value)"` : '')}
@@ -830,18 +839,20 @@ async function _waPanelSection(d) {
       ${kind === 'followup' ? `<div class="text-muted text-small">${where.own
         ? 'Clear the box to go back to the campaign\'s follow-up.'
         : 'Edit it and this lead keeps your version for this follow-up.'}</div>` : ''}
-      <div id="wl-actions">${actions}</div>`;
+      <div id="${panelId}-wa-actions">${actions}</div>`;
   } else if (stage === 'waiting' || stage === 'paused') {
+    // "They replied" only once something has gone: a lead paused before its
+    // first message (a website booking does that) has nothing to reply to.
     body = `${lastSent}
       <span class="field-label">Next follow-up</span>
       <div class="box">${esc(w.followup_message || '')}</div>
       <div class="flex gap-2" style="flex-wrap:wrap;margin-top:10px">
-        <button class="btn btn-ghost btn-sm" onclick="waMarkReplied(${w.id}, true)">They replied</button>
+        ${w.sent_date ? `<button class="btn btn-ghost btn-sm" onclick="waMarkReplied(${w.id}, true)">They replied</button>` : ''}
         <button class="btn btn-ghost btn-sm" onclick="waSetPaused([${w.id}], ${stage !== 'paused'})">${stage === 'paused' ? 'Resume follow-ups' : 'Pause follow-ups'}</button>
       </div>`;
   } else if (stage === 'replied') {
     body = `<div class="text-small" style="margin-top:8px">${pill('Replied', 'green')} No more follow-ups.
-      <a style="color:var(--accent);cursor:pointer" onclick="waMarkReplied(${w.id}, false)">Undo</a></div>`;
+      <a style="color:var(--accent);cursor:pointer" onclick="waMarkReplied(${w.id}, false, '${esc(d.pipeline_stage || '')}')">Undo</a></div>`;
   } else if (stage === 'no_whatsapp') {
     body = `<div class="text-small" style="margin-top:8px;line-height:1.55">Marked not on WhatsApp ${esc(whenLocal(w.no_whatsapp_at))}.
         It's out of every queue until you move it off.</div>

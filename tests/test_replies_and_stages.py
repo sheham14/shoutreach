@@ -113,9 +113,12 @@ def test_reply_ticks(db, alice, bob, ca, cb):
     check("and back on Waiting", "Amber Dental" in names(db.get_wa_leads_page(stage="awaiting", owner_id=alice)))
 
     st, _ = call(ca, "post", f"/api/wa/leads/{D['id']}/replied", json={"replied": False})
-    check("un-ticking an unsent lead leaves it ready to send",
-          st == 200 and db.get_wa_lead(D["id"])["wa_status"] == "drafted",
-          db.get_wa_lead(D["id"])["wa_status"])
+    check("un-ticking a lead that isn't replied is refused and leaves it ready to send",
+          st == 400 and db.get_wa_lead(D["id"])["wa_status"] == "drafted",
+          f"{st} {db.get_wa_lead(D['id'])['wa_status']}")
+    st, body = call(ca, "post", f"/api/wa/leads/{D['id']}/replied", json={"replied": True})
+    check("and an unsent lead can't be marked replied one at a time either",
+          st == 400 and db.get_wa_lead(D["id"])["replied"] == 0, str(body))
 
     print("\n   The single tick keeps the first time")
     call(ca, "post", f"/api/wa/leads/{C['id']}/replied", json={"replied": True})
@@ -193,9 +196,11 @@ def test_stage_hiding(db, alice, bob, ca, cb):
     r = db.set_business_pipeline(won["business_id"], "won", channel="whatsapp", owner_id=bob)
     check("a hidden stage can still be set (the website and calls do)", r.get("ok"), str(r))
     check("and is counted as in use",
-          db.get_pipeline_stages(include_archived=True, owner_id=bob)["won"]["in_use"] == 1)
+          db.get_pipeline_stages(include_archived=True, owner_id=bob, with_use=True)["won"]["in_use"] == 1)
     check("in use counts only your own businesses",
-          db.get_pipeline_stages(include_archived=True, owner_id=alice)["won"]["in_use"] == 0)
+          db.get_pipeline_stages(include_archived=True, owner_id=alice, with_use=True)["won"]["in_use"] == 0)
+    check("and is only worked out when asked for",
+          "in_use" not in db.get_pipeline_stages(include_archived=True, owner_id=bob)["won"])
 
     st, _ = call(cb, "post", "/api/pipeline-stages/won/hidden", json={"hidden": False})
     check("showing it again brings it back", st == 200 and "won" in db.get_pipeline_stages(owner_id=bob))
@@ -248,14 +253,113 @@ def test_outcome_hiding(db, alice, bob, ca, cb):
     check("but its label still resolves for call history", q["outcome_labels"].get("voicemail") == "Left voicemail")
     st, q = call(ca, "get", "/api/calls/queue")
     check("the other operator's dialler still has it", "voicemail" in [o["key"] for o in q["outcomes"]])
-    st, rows = call(cb, "get", "/api/call-outcomes")
+    st, rows = call(cb, "get", "/api/call-outcomes?usage=1")
     vm = next(o for o in rows if o["key"] == "voicemail")
     check("the editor lists it as hidden, with a use count", vm["archived"] == 1 and vm["in_use"] == 0, str(vm))
+    st, rows = call(cb, "get", "/api/call-outcomes")
+    vm = next(o for o in rows if o["key"] == "voicemail")
+    check("pickers and filters still get it, marked hidden, without counting",
+          vm["archived"] == 1 and "in_use" not in vm, str(vm))
     bob_oc = db.create_call_outcome("Gatekeeper", owner_id=bob)
     st, _ = call(ca, "post", f"/api/call-outcomes/{bob_oc}/hidden", json={"hidden": True})
     check("nobody hides another operator's own outcome", st == 404)
     st, _ = call(cb, "post", "/api/call-outcomes/voicemail/hidden", json={"hidden": False})
     check("and it comes back", "voicemail" in db.get_call_outcomes(owner_id=bob))
+
+
+def test_review_fixes(db, alice, bob, ca, cb):
+    print("\n7. FROM THE REVIEW: NO SENT DATE, UN-TICKING, STAGED LEADS, 'NONE'")
+    camp = db.create_wa_campaign("Edge cases", owner_id=alice, country="AE")
+    rows = [{"company": n, "phone": f"050 500 00{i:02d}"} for i, n in
+            enumerate(["Case A", "Case B", "Case F", "Staged", "Plain", "Paused unsent"], 1)]
+    db.upsert_wa_leads(rows, default_country="AE", wa_campaign_id=camp, owner_id=alice)
+    L = {r["company"]: lead(db, alice, r["company"]) for r in rows}
+
+    def lists():
+        aw = db.get_wa_leads_page(stage="awaiting", wa_campaign_id=camp, owner_id=alice)
+        an = db.get_wa_leads_page(stage="answered", wa_campaign_id=camp, owner_id=alice)
+        return set(names(aw)), set(names(an))
+
+    def agree(label):
+        waiting, answered = lists()
+        stats = db.get_wa_reply_stats(owner_id=alice, wa_campaign_id=camp)
+        badge = db.get_wa_summary(owner_id=alice, wa_campaign_id=camp)["awaiting_reply"]
+        ok = (len(waiting) == stats["waiting"] == badge and len(answered) == stats["replied"])
+        check(f"{label}: lists, badge and rate agree", ok,
+              f"waiting={sorted(waiting)} answered={sorted(answered)} stats={stats} badge={badge}")
+        return waiting, answered
+
+    # A: a follow-up went, then "Didn't actually send?" cleared the date.
+    db.mark_wa_sent(L["Case A"]["id"], "hi", kind="opener")
+    db.mark_wa_sent(L["Case A"]["id"], "again", kind="followup")
+    db.correct_wa_sent_date(L["Case A"]["id"], None)
+    waiting, _ = agree("case A")
+    check("A (sent, then its date cleared) isn't on Waiting", "Case A" not in waiting)
+    st, body = call(ca, "post", "/api/wa/leads/bulk", json={"action": "replied", "wa_lead_ids": [L["Case A"]["id"]]})
+    check("and isn't tickable either, consistently", body["updated"] == 0, str(body))
+
+    # B: never sent, paused (as a website booking does), then "They replied".
+    db.set_wa_paused(L["Case B"]["id"], True)
+    st, body = call(ca, "post", f"/api/wa/leads/{L['Case B']['id']}/replied", json={"replied": True})
+    check("B: a never-sent lead can't be marked replied", st == 400 and db.get_wa_lead(L["Case B"]["id"])["replied"] == 0,
+          str(body))
+    # ...and one that got there before the guard existed:
+    with db.get_db() as conn:
+        conn.execute("UPDATE wa_leads SET replied=1, wa_status='replied' WHERE id=?", (L["Case B"]["id"],))
+    _, answered = agree("case B")
+    check("B (replied, never sent) isn't on Replied", "Case B" not in answered)
+    call(ca, "post", f"/api/wa/leads/{L['Case B']['id']}/replied", json={"replied": False})
+    b = db.get_wa_lead(L["Case B"]["id"])
+    check("un-ticking B puts it back to ready to send, not 'sent'", b["wa_status"] == "drafted", b["wa_status"])
+
+    # F: replied, then its sent date cleared.
+    db.mark_wa_sent(L["Case F"]["id"], "hi", kind="opener")
+    db.mark_wa_replied(L["Case F"]["id"], True)
+    db.correct_wa_sent_date(L["Case F"]["id"], None)
+    _, answered = agree("case F")
+    check("F (replied, date cleared) isn't on Replied", "Case F" not in answered)
+    st, body = call(ca, "post", "/api/wa/leads/bulk", json={"action": "unreplied", "wa_lead_ids": [L["Case F"]["id"]]})
+    f = db.get_wa_lead(L["Case F"]["id"])
+    check("un-ticking F: nothing went after all, so back to ready to send",
+          body["updated"] == 1 and f["wa_status"] == "drafted" and f["replied"] == 0, f"{body} {f['wa_status']}")
+
+    # Every row on Waiting can be ticked.
+    db.mark_wa_sent(L["Plain"]["id"], "hi", kind="opener")
+    db.mark_wa_sent(L["Staged"]["id"], "hi", kind="opener")
+    waiting, _ = agree("after two sends")
+    ids = db.get_wa_leads_page(stage="awaiting", wa_campaign_id=camp, owner_id=alice, ids_only=True)
+    st, body = call(ca, "post", "/api/wa/leads/bulk", json={"action": "replied", "wa_lead_ids": ids})
+    check("every lead on Waiting can be ticked", body["updated"] == len(ids) == len(waiting), f"{body} {len(ids)}")
+    agree("after ticking them all")
+
+    print("\n   Un-ticking a lead on a deal stage")
+    db.set_business_pipeline(L["Staged"]["business_id"], "booked_elsewhere", channel="website", owner_id=alice)
+    ids = db.get_wa_leads_page(stage="answered", wa_campaign_id=camp, owner_id=alice, ids_only=True)
+    st, body = call(ca, "post", "/api/wa/leads/bulk", json={"action": "unreplied", "wa_lead_ids": ids})
+    check("bulk un-tick skips the staged lead and says so",
+          body["updated"] == 1 and body["skipped_staged"] == 1, str(body))
+    check("which stays replied, out of the cadence", db.get_wa_lead(L["Staged"]["id"])["replied"] == 1)
+    due = [r["id"] for r in db.get_wa_followups_due(days=0, owner_id=alice)]
+    check("and never comes up as due", L["Staged"]["id"] not in due)
+    check("the unstaged one went back to waiting", db.get_wa_lead(L["Plain"]["id"])["wa_status"] == "sent")
+    st, _ = call(ca, "post", f"/api/wa/leads/{L['Staged']['id']}/replied", json={"replied": False})
+    check("one at a time it can still be undone (the page asks first)",
+          st == 200 and db.get_wa_lead(L["Staged"]["id"])["replied"] == 0)
+
+    print("\n   The 'No campaign' filter and bad campaign ids")
+    st, s = call(ca, "get", "/api/wa/summary?wa_campaign_id=none")
+    check("the summary takes 'none' instead of failing", st == 200 and "awaiting_reply" in s, str(st))
+    for url in ("/api/wa/ready?wa_campaign_id=none", "/api/wa/followups-due?wa_campaign_id=none",
+                "/api/wa/sent?wa_campaign_id=none", "/api/wa/reply-stats?wa_campaign_id=none"):
+        st, _ = call(ca, "get", url)
+        check(f"{url.split('?')[0]} takes 'none'", st == 200, str(st))
+    st, _ = call(ca, "get", "/api/wa/reply-stats?wa_campaign_id=abc")
+    check("a campaign id that isn't one is a 400, not a 500", st == 400, str(st))
+
+    print("\n   The Deal column sorts")
+    page = db.get_wa_leads_page(wa_campaign_id=camp, owner_id=alice, sort_col="pipeline_stage", sort_dir="desc")
+    check("sorting by deal stage puts the staged lead first", page["rows"][0]["company"] == "Staged",
+          page["rows"][0]["company"])
 
 
 def test_user_delete_cleans_up(db, ca):
@@ -276,6 +380,7 @@ def main():
         test_reply_rate(db, alice, bob, ca, cb, camp, A, B, C, D, X)
         test_stage_hiding(db, alice, bob, ca, cb)
         test_outcome_hiding(db, alice, bob, ca, cb)
+        test_review_fixes(db, alice, bob, ca, cb)
         test_user_delete_cleans_up(db, ca)
     finally:
         shutil.rmtree(work, ignore_errors=True)

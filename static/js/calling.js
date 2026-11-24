@@ -239,7 +239,9 @@ async function loadCallLeads() {
   if (outcomeSel && outcomeSel.options.length <= 1) {
     const outcomes = await api('/api/call-outcomes') || [];
     outcomeSel.innerHTML = '<option value="">Any outcome</option><option value="none">Never called</option>' +
-      outcomes.filter(o => !o.archived).map(o => `<option value="${esc(o.key)}">${esc(o.label)}</option>`).join('');
+      // Hidden outcomes too: hiding keeps one out of the dialler, not out of
+      // the history you might want to filter by.
+      outcomes.map(o => `<option value="${esc(o.key)}">${esc(o.label)}${o.archived ? ' (hidden)' : ''}</option>`).join('');
   }
   await fillSourceSelect('cl-source');
   await loadCallCampaigns();

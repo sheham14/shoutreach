@@ -128,15 +128,17 @@ function _daysAgoUtc(n) {
 
 // The deal half of the Leads filter. "Replied" is already in the markup as
 // the handoff point, so only the stages past it are added — and they come
-// from the server because you can invent your own.
+// from the server because you can invent your own. Hidden ones are listed
+// too: hiding only keeps a stage out of the pickers, and leads can still be
+// on it (a Cal.com booking sets 'booked' whatever you've hidden).
 async function fillWaDealFilter() {
   const group = document.getElementById('wl-stage-deal');
   if (!group) return;
-  const stages = (await loadPipelineStages()).filter(s => !s.archived && s.key !== 'replied');
+  const stages = (await loadPipelineStages()).filter(s => s.key !== 'replied');
   const keep = group.querySelector('option[value="replied"]');
   group.innerHTML = keep ? keep.outerHTML : '<option value="replied">Replied</option>';
   group.insertAdjacentHTML('beforeend',
-    stages.map(s => `<option value="deal:${esc(s.key)}">${esc(s.label)}</option>`).join(''));
+    stages.map(s => `<option value="deal:${esc(s.key)}">${esc(s.label)}${s.archived ? ' (hidden)' : ''}</option>`).join(''));
 }
 
 async function loadWhatsApp() {
@@ -595,19 +597,37 @@ function openWaFromRow(id) {
   });
 }
 
-// The same, from a lead's side panel on the Leads tab.
+// The message box a send reads from: the To do card's, or the one in a lead
+// panel (Leads or Replies) -- never a hidden panel's.
+function _waMsgBox(panelId) {
+  return panelId ? waPanelEl(panelId, 'msg') : document.getElementById('wa-msg');
+}
+
+// After something changes from a lead panel: that panel, the list it sits
+// beside, and the counts.
+function _afterWaPanelChange(panelId) {
+  refreshLeadPanel(panelId);
+  if (panelId === 'wr-panel') loadWaReplies({ resetPage: false });
+  else if (LT.wl) LT.wl.load();
+  refreshWaCounts();
+}
+
+// The same, from a lead's side panel on the Leads or Replies tab.
 function openFromPanel(id, kind, number, panelId) {
-  const box = document.getElementById('wl-msg');
+  const box = _waMsgBox(panelId);
   if (!number) { toast('No WhatsApp number on file for this lead', 'err'); return; }
   openWhatsAppChat(number, box ? box.value : '');
-  const actions = document.getElementById('wl-actions');
+  const actions = waPanelEl(panelId, 'actions');
   if (actions) actions.innerHTML = waConfirmHtml(id, kind, utcNow(), number, panelId);
-  api(`/api/wa/leads/${id}/opened`, 'POST').then(() => { if (LT.wl) LT.wl.load(); });
+  api(`/api/wa/leads/${id}/opened`, 'POST').then(() => {
+    if (panelId === 'wr-panel') loadWaReplies({ resetPage: false });
+    else if (LT.wl) LT.wl.load();
+  });
 }
 
 // "Open the chat again", from the did-it-send box.
 function reopenWaChat(id, number, panelId = null) {
-  const box = document.getElementById(panelId ? 'wl-msg' : 'wa-msg');
+  const box = _waMsgBox(panelId);
   openWhatsAppChat(number, box ? box.value : '');
   api(`/api/wa/leads/${id}/opened`, 'POST');
 }
@@ -615,14 +635,12 @@ function reopenWaChat(id, number, panelId = null) {
 // "Sent": the one thing that records a message as sent.
 async function confirmWaSent(id, kind, panelId = null) {
   await _waSaving;
-  const box = document.getElementById(panelId ? 'wl-msg' : 'wa-msg');
+  const box = _waMsgBox(panelId);
   const res = await api(`/api/wa/leads/${id}/sent`, 'POST', { kind, message: box ? box.value : '' });
   if (!res || res.error) { toast((res && res.error) || 'Could not record it', 'err'); return; }
   if (panelId) {
     toast('Recorded as sent');
-    LT.wl.load();
-    refreshLeadPanel(panelId);
-    refreshWaCounts();
+    _afterWaPanelChange(panelId);
     return;
   }
   _advanceWa(id);
@@ -631,7 +649,7 @@ async function confirmWaSent(id, kind, panelId = null) {
 async function waDidntSend(id, panelId = null) {
   const res = await api(`/api/wa/leads/${id}/opened`, 'DELETE');
   if (!res || res.error) { toast((res && res.error) || 'Could not update', 'err'); return; }
-  if (panelId) { refreshLeadPanel(panelId); LT.wl.load(); return; }
+  if (panelId) { _afterWaPanelChange(panelId); return; }
   const l = _waQueue.find(x => x.id === id);
   if (l) { l.opened_at = null; _renderWaQueue(); _renderWaActions(l); }
 }
@@ -702,7 +720,7 @@ async function resetWaMessage(id, panelId = null) {
 
 async function rewordWaMessage(id, panelId = null) {
   await _waSaving;
-  const box = document.getElementById(panelId ? 'wl-msg' : 'wa-msg');
+  const box = _waMsgBox(panelId);
   toast('Rewording…');
   const res = await api(`/api/wa/leads/${id}/reword`, 'POST', { message: box ? box.value : '' });
   if (!res || res.error) { toast((res && res.error) || 'Could not reword it', 'err'); return; }
@@ -735,7 +753,20 @@ async function correctWaSentDate(id) {
   _reloadWaView();
 }
 
-async function waMarkReplied(id, replied = true) {
+// Taking a reply off a lead that's on a deal stage puts a conversation back
+// in the follow-up cadence, so it asks first.
+async function _confirmUnreply(stageKey) {
+  if (!stageKey) return true;
+  const s = pipelineStage(stageKey);
+  return !!await confirmDialog({
+    title: 'Start the follow-ups again?',
+    text: `This lead is on “${s ? s.label : stageKey}”. Taking the reply off puts it back in the follow-up cadence, so it can come up as due again. Its stage stays as it is.`,
+    confirm: 'Take the reply off',
+  });
+}
+
+async function waMarkReplied(id, replied = true, stageKey = '') {
+  if (!replied && !await _confirmUnreply(stageKey)) return;
   const res = await api(`/api/wa/leads/${id}/replied`, 'POST', { replied });
   if (!res || res.error) { toast((res && res.error) || 'Could not update', 'err'); return; }
   toast(replied ? 'Marked replied — no more follow-ups' : 'Back to waiting for a reply');
@@ -961,10 +992,10 @@ createLeadTable({
       marked && { label: "It's on WhatsApp after all", run: `unmarkNotOnWhatsApp([${r.id}])` },
       on && { label: 'Move to another campaign…', run: `moveWaLeadsToCampaign([${r.id}])` },
       on && !marked && r.sent_date && !r.replied && { label: r.paused ? 'Resume follow-ups' : 'Pause follow-ups', run: `waSetPaused([${r.id}], ${!r.paused})` },
-      on && ['waiting', 'due', 'paused'].includes(r.stage) && { label: 'They replied', run: `waMarkReplied(${r.id}, true)` },
+      on && ['waiting', 'due', 'paused'].includes(r.stage) && r.sent_date && { label: 'They replied', run: `waMarkReplied(${r.id}, true)` },
       on && { label: r.pipeline_stage ? 'Change the stage…' : 'Set a stage…',
               run: `setPipelineStage(${r.business_id}, 'whatsapp', () => LT.wl.load())` },
-      r.stage === 'replied' && { label: "Undo 'replied'", run: `waMarkReplied(${r.id}, false)` },
+      r.stage === 'replied' && { label: "Undo 'replied'", run: `waMarkReplied(${r.id}, false, '${esc(r.pipeline_stage || '')}')` },
       on && r.sent_date && { label: "Didn't actually send?", run: `correctWaSentDate(${r.id})` },
       on && !marked && { label: 'Not on WhatsApp', run: `markNotOnWhatsApp([${r.id}])` },
       on && { label: 'Take off WhatsApp', run: `removeWaLeads([${r.id}])`, danger: true },
@@ -1081,13 +1112,13 @@ async function waToggleReply(id) {
   const r = LT.wr.rowById(id);
   if (!r || r._busy) return;
   const to = !r.replied;
+  if (!to && !await _confirmUnreply(r.pipeline_stage)) return;
   r._busy = true;
-  const res = await api('/api/wa/leads/bulk', 'POST', { action: to ? 'replied' : 'unreplied', wa_lead_ids: [id] });
+  const res = await api(`/api/wa/leads/${id}/replied`, 'POST', { replied: to });
   r._busy = false;
-  if (!res || res.error) { toast((res && res.error) || 'Could not update', 'err'); return; }
-  if (!res.updated) {
+  if (!res || res.error) {
     // Changed somewhere else since the list loaded (taken off WhatsApp, say).
-    toast('That lead has changed. Reloading the list', 'err');
+    toast((res && res.error) || 'Could not update', 'err');
     loadWaReplies({ resetPage: false });
     return;
   }
@@ -1105,9 +1136,12 @@ async function waBulkReplied(on) {
   const res = await api('/api/wa/leads/bulk', 'POST', { action: on ? 'replied' : 'unreplied', wa_lead_ids: ids });
   if (!res || res.error) { toast((res && res.error) || 'Could not update', 'err'); return; }
   const n = res.updated;
+  const skipped = res.skipped_staged
+    ? `. Skipped ${res.skipped_staged} on a deal stage: undo those one at a time` : '';
   toast(on ? `Marked ${n} as replied. Their follow-ups have stopped`
-           : `Put ${n} back to waiting. Their follow-ups start again`);
+           : `Put ${n} back to waiting. Their follow-ups start again${skipped}`);
   loadWaReplies({ resetPage: false });
+  refreshLeadPanel('wr-panel');
   refreshWaCounts();
 }
 
@@ -1118,7 +1152,7 @@ createLeadTable({
   empty: 'Nobody here. Leads show up once you’ve messaged them.',
   params: () => ({
     q: document.getElementById('wr-search')?.value.trim(),
-    stage: _waReplyView,
+    stage: _waReplyView === 'replied' ? 'answered' : 'awaiting',
     wa_campaign_id: _waFilter(),
   }),
   columns: [

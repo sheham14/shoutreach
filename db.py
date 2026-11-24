@@ -4663,7 +4663,7 @@ def _seed_call_outcomes(conn):
         """, (key, label, int(term), int(stops), int(needs_date), tone, order))
 
 
-def get_call_outcomes(include_archived=False, owner_id=None):
+def get_call_outcomes(include_archived=False, owner_id=None, with_use=False):
     """
     Every outcome this operator can pick: the shared built-ins plus their own.
 
@@ -4671,7 +4671,7 @@ def get_call_outcomes(include_archived=False, owner_id=None):
     someone has invented a name for is a fair description of what they are
     working on.
     """
-    return _choices("call_outcome_types", "outcome", include_archived, owner_id)
+    return _choices("call_outcome_types", "outcome", include_archived, owner_id, with_use)
 
 
 def get_call_outcome(key: str):
@@ -4708,7 +4708,7 @@ SYSTEM_PIPELINE_STAGES = frozenset({"enquired", "booked_elsewhere", "enquired_el
 _CHOICE_KINDS = {"stage": "pipeline_stages", "outcome": "call_outcome_types"}
 
 
-def _choices(table: str, kind: str, include_archived: bool, owner_id) -> dict:
+def _choices(table: str, kind: str, include_archived: bool, owner_id, with_use: bool = False) -> dict:
     """
     One operator's view of a vocabulary table: the shared built-ins plus
     their own, ordered for a picker.
@@ -4717,12 +4717,17 @@ def _choices(table: str, kind: str, include_archived: bool, owner_id) -> dict:
     their pickers: their own row's archived flag, or, for a built-in, whether
     they hid it (hidden_choices). Nothing in a picker has to know the
     difference; the Stages & outcomes page tells them apart by is_builtin.
-    `in_use` is how many of the viewer's own businesses (stages) or calls
-    (outcomes) carry the key -- what deleting it would touch.
+    With `with_use`, `in_use` is how many of the viewer's own businesses
+    (stages) or calls (outcomes) carry the key -- what deleting it would
+    touch. Only the Stages & outcomes editor asks: on the outcome side it
+    scans call_log once per outcome, and every dialler load and logged call
+    reads this list.
     """
     with get_db() as conn:
         owner = _resolve_owner_id(conn, owner_id)
-        if kind == "stage":
+        if not with_use:
+            in_use = "NULL"
+        elif kind == "stage":
             in_use = ("(SELECT COUNT(*) FROM businesses b "
                       " WHERE b.pipeline_stage = t.key AND b.owner_id = ?)")
         else:
@@ -4741,11 +4746,13 @@ def _choices(table: str, kind: str, include_archived: bool, owner_id) -> dict:
                WHERE t.is_builtin = 1 OR t.owner_id = ?)
              {'' if include_archived else 'WHERE shown_archived = 0'}
              ORDER BY sort_order, label
-        """, (owner, kind, owner, owner)).fetchall()
+        """, (owner, kind, *([owner] if with_use else []), owner)).fetchall()
     out = {}
     for r in rows:
         d = dict(r)
         d["archived"] = int(bool(d.pop("shown_archived")))
+        if not with_use:
+            d.pop("in_use")
         out[d["key"]] = d
     return out
 
@@ -4881,14 +4888,14 @@ def _migrate_later_pipeline_stage(conn, key: str):
     conn.execute("INSERT INTO settings(key, value) VALUES(?, '1')", (marker,))
 
 
-def get_pipeline_stages(include_archived=False, owner_id=None) -> dict:
+def get_pipeline_stages(include_archived=False, owner_id=None, with_use=False) -> dict:
     """
     Every stage this operator can pick: the shared built-ins plus their own.
 
     Another operator's invented stages are not offered and not listed -- what
     someone names their steps says how they sell, which is theirs.
     """
-    rows = _choices("pipeline_stages", "stage", include_archived, owner_id)
+    rows = _choices("pipeline_stages", "stage", include_archived, owner_id, with_use)
     for r in rows.values():
         r["system"] = 1 if r["key"] in SYSTEM_PIPELINE_STAGES else 0
     return rows
@@ -7005,6 +7012,27 @@ _WA_ACTIVE = "w.moved_to = '' AND w.removed_at IS NULL"
 # ...and one there's still work on: not marked as not on WhatsApp. A marked
 # lead stays on the channel, waiting to be moved off, but in no queue.
 _WA_WORKABLE = f"{_WA_ACTIVE} AND w.no_whatsapp_at IS NULL"
+# The reply checklist (WhatsApp -> Replies), in one place so its two lists,
+# the tab badge, the reply rate and the tick itself can't disagree. A lead
+# has been messaged when it has a sent_date: "Didn't actually send?" clears
+# it, and that's the operator saying it never went.
+_WA_MESSAGED = f"({_WA_WORKABLE} AND w.sent_date IS NOT NULL)"
+# Waiting for a reply: messaged, not replied. Paused or not -- pausing the
+# follow-ups doesn't stop them answering the last one. Every lead that
+# matches can be ticked; nothing else can.
+_WA_AWAITING_REPLY = f"({_WA_MESSAGED} AND w.replied = 0)"
+# ...and the Replied list: messaged, and answered.
+_WA_ANSWERED = f"({_WA_MESSAGED} AND w.replied = 1)"
+
+
+def _wa_campaign_filter(wa_campaign_id):
+    """A campaign filter as SQL on `w`: nothing, 'none' (leads whose campaign
+    was deleted), or one campaign id. Raises ValueError for anything else."""
+    if not wa_campaign_id:
+        return None, []
+    if wa_campaign_id == "none":
+        return "w.wa_campaign_id IS NULL", []
+    return "w.wa_campaign_id = ?", [int(wa_campaign_id)]
 
 
 def _wa_due_clause(days=None):
@@ -7730,9 +7758,10 @@ def get_wa_ready(limit: int = 500, owner_id=None, wa_campaign_id=None) -> list:
     with get_db() as conn:
         where = ["w.wa_status = 'drafted'", "w.paused = 0", _WA_WORKABLE, "b.owner_id = ?"]
         params = [_resolve_owner_id(conn, owner_id)]
-        if wa_campaign_id:
-            where.append("w.wa_campaign_id = ?")
-            params.append(int(wa_campaign_id))
+        camp_sql, camp_params = _wa_campaign_filter(wa_campaign_id)
+        if camp_sql:
+            where.append(camp_sql)
+            params.extend(camp_params)
         rows = [dict(r) for r in conn.execute(f"""
             SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN}
              WHERE {' AND '.join(where)}
@@ -7763,6 +7792,7 @@ _WA_LEAD_SORT = {
     "company": "company", "campaign_name": "campaign_name", "stage": "stage",
     "sent_date": "sent_date", "followup_count": "followup_count", "created_at": "created_at",
     "template_variant": "template_variant", "city": "city", "replied_at": "replied_at",
+    "pipeline_stage": "pipeline_stage",
 }
 
 
@@ -7824,11 +7854,13 @@ def get_wa_leads_page(page=1, per_page=50, q="", stage="", wa_campaign_id=None,
         # the channel stages split in two by whether the follow-up gap has
         # elapsed, which is a fact about the queue, not about the lead.
         outer_where.append("stage IN ('waiting','due')")
-    elif stage == "awaiting":
-        # The reply checklist: every lead you've messaged and not heard
-        # back from -- "messaged" plus anyone paused after a send, since
-        # pausing the follow-ups doesn't stop them answering the last one.
-        outer_where.append("(stage IN ('waiting','due') OR (stage = 'paused' AND sent_date IS NOT NULL))")
+    elif stage in ("awaiting", "answered"):
+        # The reply checklist's two lists. Filtered on the lead itself, with
+        # the same predicates as the badge, the rate and the tick -- not on
+        # the stage, which would let in a lead with no sent date that none
+        # of those count or can tick.
+        inner_where.append(_WA_AWAITING_REPLY if stage == "awaiting" else _WA_ANSWERED)
+        outer_where.append("1 = 1")
     elif stage in WA_STAGES:
         outer_where.append("stage = ?")
         outer_params.append(stage)
@@ -7870,9 +7902,10 @@ def get_wa_sent_log(owner_id=None, wa_campaign_id=None, since=None, limit=500) -
     with get_db() as conn:
         where = ["b.owner_id = ?"]
         params = [_resolve_owner_id(conn, owner_id)]
-        if wa_campaign_id:
-            where.append("w.wa_campaign_id = ?")
-            params.append(int(wa_campaign_id))
+        camp_sql, camp_params = _wa_campaign_filter(wa_campaign_id)
+        if camp_sql:
+            where.append(camp_sql)
+            params.extend(camp_params)
         if since:
             where.append("l.sent_at >= ?")
             params.append(str(since).replace("T", " ")[:19])
@@ -7903,9 +7936,11 @@ def get_wa_summary(owner_id=None, wa_campaign_id=None, since=None) -> dict:
     with get_db() as conn:
         owner = _resolve_owner_id(conn, owner_id)
         where, params = ["b.owner_id = ?"], [owner]
-        if wa_campaign_id:
-            where.append("w.wa_campaign_id = ?")
-            params.append(int(wa_campaign_id))
+        # 'none' is the "No campaign" filter; it used to reach int() and 500.
+        camp_sql, camp_params = _wa_campaign_filter(wa_campaign_id)
+        if camp_sql:
+            where.append(camp_sql)
+            params.extend(camp_params)
         row = conn.execute(f"""
             SELECT
               SUM(CASE WHEN {_WA_ACTIVE} THEN 1 ELSE 0 END)                                AS total,
@@ -7914,10 +7949,8 @@ def get_wa_summary(owner_id=None, wa_campaign_id=None, since=None) -> dict:
               SUM(CASE WHEN {_WA_WORKABLE} AND w.wa_status='sent' AND w.replied=0 AND w.paused=0
                         AND w.sent_date IS NOT NULL AND {due} THEN 1 ELSE 0 END)           AS due,
               SUM(CASE WHEN {_WA_ACTIVE} AND w.no_whatsapp_at IS NOT NULL THEN 1 ELSE 0 END) AS no_whatsapp,
-              -- The reply checklist's Waiting list (stage 'awaiting'): messaged,
-              -- not replied, still workable, paused or not.
-              SUM(CASE WHEN {_WA_WORKABLE} AND w.replied=0 AND w.sent_date IS NOT NULL
-                        AND (w.wa_status='sent' OR w.paused=1) THEN 1 ELSE 0 END)          AS awaiting_reply,
+              -- The reply checklist's Waiting list, for the Replies tab badge.
+              SUM(CASE WHEN {_WA_AWAITING_REPLY} THEN 1 ELSE 0 END)                       AS awaiting_reply,
               SUM(CASE WHEN w.wa_status IN ('sent','replied') THEN 1 ELSE 0 END)           AS messaged,
               SUM(w.replied)                                                               AS replied,
               SUM(CASE WHEN w.moved_to != '' OR w.removed_at IS NOT NULL THEN 1 ELSE 0 END) AS moved,
@@ -7930,9 +7963,9 @@ def get_wa_summary(owner_id=None, wa_campaign_id=None, since=None) -> dict:
 
         log_where = ["b.owner_id = ?"]
         log_params = [owner]
-        if wa_campaign_id:
-            log_where.append("w.wa_campaign_id = ?")
-            log_params.append(int(wa_campaign_id))
+        if camp_sql:
+            log_where.append(camp_sql)
+            log_params.extend(camp_params)
         if since:
             log_where.append("l.sent_at >= ?")
             log_params.append(str(since).replace("T", " ")[:19])
@@ -8069,51 +8102,73 @@ def correct_wa_sent_date(wa_lead_id: int, sent_date: str = None):
             """, (wa_lead_id,))
 
 
-def mark_wa_replied(wa_lead_id: int, replied: bool = True):
+def mark_wa_replied(wa_lead_id: int, replied: bool = True) -> bool:
     """Marking replied removes the lead from the cadence immediately, at any
     follow-up count -- see get_wa_followups_due, which excludes replied=1.
 
-    replied_at keeps the first time it was marked, so marking twice doesn't
-    move it. Un-marking only touches a lead that was replied: it used to set
-    any lead's status to 'sent', which would have pushed an unsent one out
-    of Ready to send."""
+    Only a lead that's been messaged can be marked (_WA_MESSAGED), the same
+    rule as the checklist's tick: nobody replies to a message that never
+    went. replied_at keeps the first time it was marked, so marking twice
+    doesn't move it. Un-marking only touches a replied lead, and puts one
+    that was never sent back in Ready to send (_WA_UNREPLY_STATUS).
+    Returns whether anything changed."""
     with get_db() as conn:
         if replied:
-            conn.execute("""
+            return conn.execute(f"""
                 UPDATE wa_leads SET replied=1, wa_status='replied',
                        replied_at=CASE WHEN replied=1 AND replied_at IS NOT NULL
                                        THEN replied_at ELSE datetime('now') END
-                 WHERE id=?
-            """, (wa_lead_id,))
-        else:
-            conn.execute("""
-                UPDATE wa_leads SET replied=0, wa_status='sent', replied_at=NULL
-                 WHERE id=? AND replied=1
-            """, (wa_lead_id,))
+                 WHERE id IN (SELECT w.id FROM wa_leads w WHERE w.id = ? AND {_WA_MESSAGED})
+            """, (wa_lead_id,)).rowcount > 0
+        return conn.execute(f"""
+            UPDATE wa_leads SET replied=0, wa_status={_WA_UNREPLY_STATUS}, replied_at=NULL
+             WHERE id=? AND replied=1
+        """, (wa_lead_id,)).rowcount > 0
 
 
-def set_wa_replied_bulk(wa_lead_ids, replied: bool, owner_id=None) -> int:
+# What an un-ticked lead goes back to. 'sent' (the follow-up cadence) once
+# anything has gone -- a sent date, or a follow-up whose date was cleared
+# since -- else 'drafted', Ready to send: the same rule correct_wa_sent_date
+# uses. Setting 'sent' on a lead that was never messaged took it out of
+# Ready to send for good.
+_WA_UNREPLY_STATUS = ("CASE WHEN sent_date IS NULL AND followup_count = 0 "
+                      "THEN 'drafted' ELSE 'sent' END")
+
+
+def set_wa_replied_bulk(wa_lead_ids, replied: bool, owner_id=None) -> dict:
     """
     The reply checklist's bulk tick: mark many leads replied, or take the
     mark off. Ids come from a request body, so only the caller's own are
-    touched. Only a lead that has actually been messaged can be marked --
-    nobody replies to a message that never went -- and nothing off WhatsApp.
+    touched. Ticking takes exactly the leads on the Waiting list
+    (_WA_AWAITING_REPLY).
+
+    Un-ticking skips a lead whose business is on a deal stage: that's a
+    conversation, and un-ticking would put it back in the follow-up cadence
+    -- with "Select all", every booked or won lead in one click. Those are
+    undone one at a time. Returns {"updated": n, "skipped_staged": n}.
     """
     with get_db() as conn:
         ids = _own_wa_lead_ids(conn, wa_lead_ids, owner_id)
         if not ids:
-            return 0
+            return {"updated": 0, "skipped_staged": 0}
         marks = ",".join("?" * len(ids))
         if replied:
-            return conn.execute(f"""
+            n = conn.execute(f"""
                 UPDATE wa_leads SET replied=1, wa_status='replied', replied_at=datetime('now')
-                 WHERE id IN ({marks}) AND replied=0 AND sent_date IS NOT NULL
-                   AND moved_to = '' AND removed_at IS NULL
+                 WHERE id IN (SELECT w.id FROM wa_leads w
+                               WHERE w.id IN ({marks}) AND {_WA_AWAITING_REPLY})
             """, ids).rowcount
-        return conn.execute(f"""
-            UPDATE wa_leads SET replied=0, wa_status='sent', replied_at=NULL
+            return {"updated": n, "skipped_staged": 0}
+        staged = conn.execute(f"""
+            SELECT COUNT(*) FROM wa_leads w JOIN businesses b ON b.id = w.business_id
+             WHERE w.id IN ({marks}) AND w.replied = 1 AND b.pipeline_stage != ''
+        """, ids).fetchone()[0]
+        n = conn.execute(f"""
+            UPDATE wa_leads SET replied=0, wa_status={_WA_UNREPLY_STATUS}, replied_at=NULL
              WHERE id IN ({marks}) AND replied=1
+               AND business_id IN (SELECT id FROM businesses WHERE pipeline_stage = '')
         """, ids).rowcount
+        return {"updated": n, "skipped_staged": staged}
 
 
 # Replies are bucketed by how many follow-ups had gone before them; the last
@@ -8126,9 +8181,9 @@ def get_wa_reply_stats(owner_id=None, wa_campaign_id=None, days=None) -> dict:
     Reply rate for the reply checklist: of the leads you've messaged, how
     many answered.
 
-    Counted from the same stages as the checklist's two lists, so the
+    Counted with the same predicates as the checklist's two lists, so the
     numbers always match what's on screen: `waiting` is the Waiting list
-    (stage 'awaiting' in get_wa_leads_page) and `replied` the Replied one.
+    (_WA_AWAITING_REPLY) and `replied` the Replied one (_WA_ANSWERED).
     That leaves out leads taken off WhatsApp or marked not on it -- a number
     that turned out not to be on WhatsApp never got the message. The
     Campaigns table's rate still counts every lead ever sent to, so the two
@@ -8145,32 +8200,27 @@ def get_wa_reply_stats(owner_id=None, wa_campaign_id=None, days=None) -> dict:
     exactly that number -- give or take a follow-up sent before the reply was
     ticked off.
     """
-    stage_sql, stage_params = _wa_stage_sql()
     with get_db() as conn:
-        where = ["b.owner_id = ?", "w.sent_date IS NOT NULL"]
+        where = ["b.owner_id = ?", _WA_MESSAGED]
         params = [_resolve_owner_id(conn, owner_id)]
-        if wa_campaign_id == "none":
-            where.append("w.wa_campaign_id IS NULL")
-        elif wa_campaign_id:
-            where.append("w.wa_campaign_id = ?")
-            params.append(int(wa_campaign_id))
+        camp_sql, camp_params = _wa_campaign_filter(wa_campaign_id)
+        if camp_sql:
+            where.append(camp_sql)
+            params.extend(camp_params)
         if days:
             where.append("COALESCE((SELECT MIN(l.sent_at) FROM wa_log l WHERE l.wa_lead_id = w.id), "
                          "w.sent_date) >= datetime('now', ?)")
             params.append(f"-{int(days)} days")
         rows = conn.execute(f"""
-            SELECT stage, followup_count FROM (
-              SELECT w.followup_count, {stage_sql} AS stage
-                FROM wa_leads w JOIN businesses b ON b.id = w.business_id
-                LEFT JOIN wa_campaigns c ON c.id = w.wa_campaign_id
-               WHERE {' AND '.join(where)})
-             WHERE stage IN ('waiting','due','paused','replied')
-        """, (*stage_params, *params)).fetchall()
-    replied = sum(1 for r in rows if r["stage"] == "replied")
+            SELECT w.replied, w.followup_count
+              FROM wa_leads w JOIN businesses b ON b.id = w.business_id
+             WHERE {' AND '.join(where)}
+        """, params).fetchall()
+    replied = sum(1 for r in rows if r["replied"])
     messaged = len(rows)
     after = [0] * WA_REPLY_AFTER_BUCKETS
     for r in rows:
-        if r["stage"] == "replied":
+        if r["replied"]:
             after[min(int(r["followup_count"] or 0), WA_REPLY_AFTER_BUCKETS - 1)] += 1
     return {
         "messaged": messaged,
@@ -8215,9 +8265,10 @@ def get_wa_followups_due(days: int = None, limit: int = 200, owner_id=None,
         where = ["w.wa_status = 'sent'", "w.replied = 0", "w.paused = 0", _WA_WORKABLE,
                  "w.sent_date IS NOT NULL", due, "b.owner_id = ?"]
         params = [*due_params, _resolve_owner_id(conn, owner_id)]
-        if wa_campaign_id:
-            where.append("w.wa_campaign_id = ?")
-            params.append(int(wa_campaign_id))
+        camp_sql, camp_params = _wa_campaign_filter(wa_campaign_id)
+        if camp_sql:
+            where.append(camp_sql)
+            params.extend(camp_params)
         rows = conn.execute(f"""
             SELECT {_WA_LEAD_COLUMNS} {_WA_LEAD_JOIN}
              WHERE {' AND '.join(where)}

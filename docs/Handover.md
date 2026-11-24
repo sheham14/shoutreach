@@ -939,7 +939,8 @@ at computer and phone size against the same fake Zoho.
 
 ## 5g. The reply checklist, and Stages & outcomes — built 2026-11-24, not deployed
 
-Two pieces, built together on `claude/bold-pascal-ntgjo8`.
+Two pieces, built together on `claude/bold-pascal-ntgjo8`, then reviewed;
+the review's fixes are folded into the bullets below.
 `tests/test_replies_and_stages.py` is the precise statement of both.
 
 **WhatsApp → Replies.** Asked for by the cofounder: "a better toggle so I
@@ -955,25 +956,48 @@ time, with no date kept.
   the row where it is, ticked, until the list reloads, so a mis-tap is one
   more tap. Bulk: select, *They replied* / *Not replied after all*, or *Set a
   stage…*. The tab badge counts Waiting. Scoped by the campaign picker like
-  every other tab.
-- **Waiting is stage `awaiting`** in `get_wa_leads_page`: `waiting` + `due`,
-  plus `paused` with a `sent_date` (pausing follow-ups doesn't stop someone
-  answering the last one). `get_wa_summary`'s `awaiting_reply` counts the
-  same leads in SQL for the badge.
+  every other tab, "No campaign" included.
+- **One rule decides everything on the tab** (`db.py`, next to
+  `_WA_WORKABLE`): `_WA_MESSAGED` is "still workable and has a `sent_date`",
+  `_WA_AWAITING_REPLY` adds `replied = 0`, `_WA_ANSWERED` adds
+  `replied = 1`. The two lists (`get_wa_leads_page` stages `awaiting` and
+  `answered`), the badge (`get_wa_summary`'s `awaiting_reply`), the rate and
+  the tick all use them, so every row on Waiting can be ticked and every
+  number matches a list. **Don't filter these lists on the channel stage**:
+  the first build did, and a lead with no `sent_date` then showed on Waiting
+  without being counted or tickable. The Leads tab's own `replied` filter
+  still goes by stage and shows every replied lead.
+- **No `sent_date` means never messaged**, because "Didn't actually send?"
+  clearing it is the operator saying so. One case this leaves odd, not
+  fixed: clearing the date *after a follow-up has gone* leaves the lead
+  `sent` with no date, on Leads as "waiting" but on neither Replies list.
+  The better fix is for that correction to put back the previous send's
+  date; it's a separate change.
 - **`wa_leads.replied_at`** (UTC, nullable). Written by
   `mark_wa_replied` (the first time only; a second tick doesn't move it),
   `set_wa_replied_bulk`, and `set_business_pipeline`'s mark-replied. Cleared
   on undo. NULL on replies marked before it existed: nobody knows when those
   were, so nothing guesses.
-- **`set_wa_replied_bulk`** (`/api/wa/leads/bulk` actions `replied` /
-  `unreplied`): own leads only (`_own_wa_lead_ids`), and only a lead that was
-  messaged (`sent_date IS NOT NULL`) and is still on WhatsApp.
+- **Marking a reply** — `mark_wa_replied` (one lead; the To do card, the lead
+  panel, the row menus and the Replies toggle) and `set_wa_replied_bulk`
+  (`/api/wa/leads/bulk` actions `replied` / `unreplied`, own leads only via
+  `_own_wa_lead_ids`) — only touches a messaged lead. The single route
+  answers 400 otherwise, and the panel and the Leads menu don't offer "They
+  replied" on a lead with no sent date (one paused before its first
+  message, as a website booking does).
+- **Un-marking** puts a lead back to `sent` if anything ever went, else to
+  `drafted`, Ready to send (`_WA_UNREPLY_STATUS`: no `sent_date` and no
+  follow-ups, the rule `correct_wa_sent_date` uses). **Bulk un-ticking skips
+  a lead whose business is on a deal stage** and returns `skipped_staged`,
+  which the toast reports: un-ticking puts a lead back in the follow-up
+  cadence, and "Select all" would otherwise do that to every booked or won
+  lead at once. One at a time it still works, after the page asks.
 - **The reply rate** (`GET /api/wa/reply-stats`, `get_wa_reply_stats`):
   messaged, replied, still waiting, the rate, and how many replies came after
   the first message / follow-up 1 / 2 / 3 or later (`followup_count` on a
-  replied lead, since a reply stops the cadence). Counted from the same
-  stages as the two lists, so the numbers always match the screen — which
-  leaves out leads taken off WhatsApp or marked not on it. **The Campaigns
+  replied lead, since a reply stops the cadence). Counted with the same rule
+  as the two lists, so the numbers always match the screen — which leaves
+  out leads taken off WhatsApp or marked not on it. **The Campaigns
   table's rate counts every lead ever sent to**, so the two can differ by
   those. The period (7 / 30 / 90 days, remembered per browser) is a **cohort
   by first message** (earliest `wa_log` row, else `sent_date`), not by
@@ -982,9 +1006,19 @@ time, with no date kept.
 - **Nothing tracks AI-reworded versus as-written here**, on purpose: AI
   rewording isn't in use (operator, 2026-11-24). The Messages tab's existing
   per-version stats are unchanged.
-- **Fixed along the way:** un-ticking (`mark_wa_replied(..., False)`) used
-  to set *any* lead's status to `sent`, which would have pushed an unsent one
-  out of Ready to send; it now only touches a replied lead.
+- **Two lead panels on one page.** Replies has its own lead panel
+  (`wr-panel`) beside Leads' (`wl-panel`), and a closed panel is hidden, not
+  emptied. The WhatsApp section's message box and action row therefore carry
+  the panel's id (`<panelId>-wa-msg`, `-wa-actions`, found with
+  `waPanelEl`), and Sent / Didn't send reload the list beside the panel they
+  were clicked in (`_afterWaPanelChange`). With one shared id, the first
+  build opened a Leads lead's chat with a Replies lead's follow-up text.
+- **Fixed along the way:** un-ticking used to set *any* lead's status to
+  `sent`, which would have pushed an unsent one out of Ready to send. The
+  "No campaign" filter (`wa_campaign_id=none`) was a 500 on the summary,
+  Ready to send, Follow-up due and the sent log (`_wa_campaign_filter` now
+  handles it); a non-numeric campaign id on `/api/wa/reply-stats` is a 400.
+  The Deal column sorts on WhatsApp's tables.
 
 **Settings → Stages & outcomes.** The operator's own observation: the stage
 picker was getting cluttered and there was nowhere to change it. The API
@@ -999,13 +1033,19 @@ for everyone (`stages.js`, one editor with a config per list).
   `POST /api/pipeline-stages/<key>/hidden` and
   `/api/call-outcomes/<key>/hidden`, any operator; someone else's custom one
   is a 404. Anything already on a hidden stage keeps it, it still reads by
-  name, and code can still set it (the website, a booked call). Call history
-  still names a hidden outcome (`outcome_labels` on `/api/calls/queue`).
+  name, and code can still set it (the website, a booked call). **Hiding is
+  for pickers only:** the WhatsApp Leads stage filter and Calling's outcome
+  filter still list hidden ones, marked "(hidden)", since leads can still be
+  on them. Call history still names a hidden outcome (`outcome_labels` on
+  `/api/calls/queue`, read in the same single outcome query as the buttons).
 - **`archived` in the list APIs now means "left out of this viewer's
   pickers"** (`_choices` in `db.py`): the row's own flag, or, for a
   built-in, whether this viewer hid it. Pickers need no change; the editor
-  tells the two apart by `is_builtin`. Each row also carries `in_use` — your
-  own businesses on the stage, or your own calls logged with the outcome.
+  tells the two apart by `is_builtin`. **Only with `?usage=1`** (the editor)
+  does each row also carry `in_use` — your own businesses on the stage, or
+  your own calls logged with the outcome. It scans `call_log` once per
+  outcome, so nothing else asks for it: the dialler, logging a call and the
+  timeline all read this list.
 - **Delete** is only for your own, and **a stage in use is archived instead**
   (`delete_pipeline_stage` now returns `deleted`/`archived`/`refused`, like
   `delete_call_outcome`). It used to clear the stage off every business on

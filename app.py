@@ -2358,6 +2358,9 @@ def api_call_queue():
     for lead in leads:
         lead["touch"] = db.get_touch_history(lead["id"])
 
+    # Read once: the dialler's buttons are the ones not hidden, the labels
+    # for past calls are all of them.
+    outcomes = db.get_call_outcomes(include_archived=True, owner_id=me())
     return jsonify({
         "bucket":   bucket,
         "leads":    leads,
@@ -2371,12 +2374,11 @@ def api_call_queue():
              "terminal": bool(o["is_terminal"]), "stops_email": bool(o["stops_email"]),
              "wants_next_call": bool(o["requires_date"]),
              "tone": o["tone"], "builtin": bool(o["is_builtin"])}
-            for o in db.get_call_outcomes(owner_id=me()).values()
+            for o in outcomes.values() if not o["archived"]
         ],
         # Every label, hidden and archived ones too, so a past call logged
         # under an outcome you've since hidden still reads by name.
-        "outcome_labels": {k: o["label"] for k, o in
-                           db.get_call_outcomes(include_archived=True, owner_id=me()).items()},
+        "outcome_labels": {k: o["label"] for k, o in outcomes.items()},
         "attempt_limit": db.CALL_ATTEMPT_LIMIT,
     })
 
@@ -2389,7 +2391,9 @@ def api_call_queue():
 @app.route("/api/pipeline-stages", methods=["GET"])
 @login_required
 def api_list_pipeline_stages():
-    return jsonify(list(db.get_pipeline_stages(include_archived=True, owner_id=me()).values()))
+    # ?usage=1 adds in_use counts -- only the Stages & outcomes editor needs them.
+    return jsonify(list(db.get_pipeline_stages(include_archived=True, owner_id=me(),
+                                               with_use=request.args.get("usage") == "1").values()))
 
 
 @app.route("/api/pipeline-stages", methods=["POST"])
@@ -2561,7 +2565,9 @@ def api_business_ics(bid):
 @app.route("/api/call-outcomes", methods=["GET"])
 @login_required
 def api_list_call_outcomes():
-    return jsonify(list(db.get_call_outcomes(include_archived=True, owner_id=me()).values()))
+    # ?usage=1 adds in_use counts -- only the Stages & outcomes editor needs them.
+    return jsonify(list(db.get_call_outcomes(include_archived=True, owner_id=me(),
+                                             with_use=request.args.get("usage") == "1").values()))
 
 
 @app.route("/api/call-outcomes", methods=["POST"])
@@ -3511,15 +3517,16 @@ def api_wa_reply_stats():
     """The reply checklist's numbers. `days` (optional) narrows them to leads
     first messaged in the last N days. The campaign filter needs no ownership
     check: every row is filtered to the caller's own leads anyway."""
+    campaign = request.args.get("wa_campaign_id") or None
+    if campaign and campaign != "none" and not campaign.isdigit():
+        return jsonify({"ok": False, "error": "Unknown campaign"}), 400
     days = request.args.get("days") or None
     if days is not None:
         try:
             days = max(1, min(int(days), 3650))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "days must be a number"}), 400
-    return jsonify(db.get_wa_reply_stats(owner_id=me(),
-                                         wa_campaign_id=request.args.get("wa_campaign_id") or None,
-                                         days=days))
+    return jsonify(db.get_wa_reply_stats(owner_id=me(), wa_campaign_id=campaign, days=days))
 
 
 def _campaign_cache():
@@ -3692,7 +3699,11 @@ def api_wa_correct_sent_date(wid):
 @owned("wa_lead", "wid")
 def api_wa_mark_replied(wid):
     replied = bool((request.json or {}).get("replied", True))
-    db.mark_wa_replied(wid, replied)
+    if not db.mark_wa_replied(wid, replied):
+        # Marking: only a lead that's been messaged (same rule as the reply
+        # checklist). Un-marking: only a replied one.
+        return jsonify({"ok": False, "error": "Only a lead you've messaged can be marked as replied"
+                        if replied else "That lead isn't marked as replied"}), 400
     return jsonify({"ok": True})
 
 
@@ -3762,7 +3773,9 @@ def api_wa_leads_bulk():
     elif action in ("no_whatsapp", "on_whatsapp"):
         n = db.set_wa_no_whatsapp(ids, action == "no_whatsapp", owner_id=me())
     elif action in ("replied", "unreplied"):
-        n = db.set_wa_replied_bulk(ids, action == "replied", owner_id=me())
+        # Un-ticking skips leads on a deal stage and says how many.
+        result = db.set_wa_replied_bulk(ids, action == "replied", owner_id=me())
+        return jsonify({"ok": True, **result})
     elif action == "move":
         destination = (d.get("destination") or "").strip()
         if destination not in db.WA_MOVE_DESTINATIONS:

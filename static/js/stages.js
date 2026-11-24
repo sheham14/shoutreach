@@ -94,7 +94,7 @@ function renderChoiceEditors() {
 }
 
 async function loadChoiceEditor(kind) {
-  const rows = await api(CHOICE_KINDS[kind].url);
+  const rows = await api(`${CHOICE_KINDS[kind].url}?usage=1`);
   _choiceRows[kind] = Array.isArray(rows) ? rows : [];
   _drawChoiceEditor(kind);
 }
