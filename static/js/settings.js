@@ -72,7 +72,7 @@ async function loadSettingsPage() {
   if (name) name.textContent = (_settingsMe && _settingsMe.username) || '';
   let tab = window._settingsTab || currentTab('settings', 'mine');
   window._settingsTab = null;
-  if (!admin) tab = 'mine';
+  if (!admin && tab === 'team') tab = 'mine';
   setTab('settings', tab);
   loadSettings();
   if (admin) { loadAccounts(); loadUsers(); loadWebsiteSettings(); }

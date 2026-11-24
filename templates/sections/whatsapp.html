@@ -23,6 +23,9 @@
 
   <div class="tabs" data-tab-group="whatsapp">
     <button class="tab active" data-tab="todo" onclick="setTab('whatsapp','todo')">To do <span class="count">0</span></button>
+    <!-- Replies: open WhatsApp, go down your chats, tick off who wrote back.
+         Its count is how many messaged leads are still waiting. -->
+    <button class="tab" data-tab="replies" onclick="setTab('whatsapp','replies')">Replies <span class="count">0</span></button>
     <button class="tab" data-tab="leads" onclick="setTab('whatsapp','leads')">Leads <span class="count">0</span></button>
     <button class="tab" data-tab="campaigns" onclick="setTab('whatsapp','campaigns')">Campaigns <span class="count">0</span></button>
     <!-- "Messages", like the copy tab on every channel: the opener and the
@@ -61,6 +64,30 @@
       <div class="card work-panel sheet" id="wa-panel">
         <div class="empty-state"><p>Pick a lead from the list.</p></div>
       </div>
+    </div>
+  </div>
+
+  <!-- ── Replies: the checklist ────────────────────────────────────────────
+       WhatsApp can't tell the app who answered, so the operator does: every
+       lead they've messaged, newest first like their chat list, one tick
+       each. Ticking stops the follow-ups; it's undone the same way. The
+       numbers above it are the reply rate those ticks add up to. -->
+  <div class="tab-pane" data-pane-group="whatsapp" data-pane="replies">
+    <div id="wr-stats" style="margin-bottom:14px"></div>
+    <div class="work-split" id="wr-split" style="grid-template-columns:1fr">
+    <div class="card">
+      <div class="lt-toolbar">
+        <div class="chips seg">
+          <button class="chip active" id="wr-chip-awaiting" onclick="setWaReplyView('awaiting')">Waiting for a reply <span class="count" id="wr-count-awaiting">0</span></button>
+          <button class="chip" id="wr-chip-replied" onclick="setWaReplyView('replied')">Replied <span class="count" id="wr-count-replied">0</span></button>
+        </div>
+        <input id="wr-search" class="search-input" placeholder="Search name or number…" oninput="LT.wr.search()" />
+        <span class="lt-count" id="wr-count"></span>
+      </div>
+      <div class="text-muted text-small" id="wr-hint" style="margin:0 0 10px"></div>
+      <div id="wr-body"></div>
+    </div>
+    <div class="card work-panel sheet" id="wr-panel" style="display:none"></div>
     </div>
   </div>
 

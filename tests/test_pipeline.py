@@ -77,8 +77,8 @@ def test_stages_exist(db):
     check("its key comes from its label", key == "sent_samples", key)
     db.update_pipeline_stage(key, label="Samples posted")
     check("relabelling keeps the key", db.get_pipeline_stage(key)["label"] == "Samples posted")
-    check("a built-in cannot be deleted", db.delete_pipeline_stage("booked") is False)
-    check("your own can be", db.delete_pipeline_stage(key) is True)
+    check("a built-in cannot be deleted", db.delete_pipeline_stage("booked") == "refused")
+    check("your own can be", db.delete_pipeline_stage(key) == "deleted")
 
 
 def test_one_stage_every_channel(db, camp):

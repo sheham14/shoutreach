@@ -718,6 +718,35 @@
   .seg .chip:hover, .seg button:hover { color: var(--text); background: transparent; }
   .seg .chip.active, .seg button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
+  /* The reply checklist's tick (WhatsApp → Replies). Off: an outlined
+     "Replied?" with a faint check. On: a green "Replied". Big enough to hit
+     on a phone, since it's tapped dozens of times in a row. */
+  .reply-toggle {
+    display: inline-flex; align-items: center; gap: var(--sp-1);
+    min-height: 32px; padding: var(--sp-1) var(--sp-3);
+    background: transparent; color: var(--text-2);
+    border: 1px solid var(--line-strong); border-radius: var(--r-round);
+    font: 500 var(--fs-sm) var(--font); cursor: pointer; white-space: nowrap;
+    transition: background-color .14s, color .14s, border-color .14s;
+  }
+  .reply-toggle .icon { opacity: .35; }
+  .reply-toggle:hover { color: var(--text); border-color: var(--text-2); }
+  .reply-toggle.on { background: var(--success-soft); border-color: var(--success-edge); color: var(--success); font-weight: 600; }
+  .reply-toggle.on .icon { opacity: 1; }
+  .reply-toggle + .sub { display: block; margin-top: 2px; }
+
+  /* Settings → Stages & outcomes (stages.js). */
+  .ch-table td { vertical-align: middle; }
+  .ch-table .ch-name { min-width: 180px; padding: var(--sp-1) var(--sp-2); font-size: var(--fs-sm); }
+  .ch-table .filter-select { padding: var(--sp-1) var(--sp-2); }
+  .ch-table .ch-move { padding: var(--sp-1); }
+  .ch-table .ch-move:disabled { opacity: .25; cursor: default; }
+  .ch-tags { margin-top: var(--sp-1); display: flex; gap: var(--sp-1); flex-wrap: wrap; }
+  .ch-hidden td { opacity: .55; }
+  .ch-new { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; margin-top: var(--sp-4); }
+  .ch-new .soft-input { flex: 1; min-width: 200px; width: auto; padding: var(--sp-1) var(--sp-3); }
+  .ch-check { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-sm); color: var(--text-2); }
+
   /* Pills: what state something is in -- the tag look, defined with .badge
      above. A dashed pill is a suggestion, not a state: an outline, no dot. */
   .pill.dashed { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); padding-left: var(--sp-2); }

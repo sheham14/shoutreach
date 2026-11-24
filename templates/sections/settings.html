@@ -11,6 +11,8 @@
 
   <div class="tabs" data-tab-group="settings">
     <button class="tab active" data-tab="mine" onclick="setTab('settings','mine')">My settings</button>
+    <!-- Everyone's: the stages and call outcomes in your own pickers. -->
+    <button class="tab" data-tab="stages" onclick="setTab('settings','stages')">Stages &amp; outcomes</button>
     <button class="tab admin-only" data-tab="team" onclick="setTab('settings','team')" style="display:none">Team setup</button>
     <button class="tab admin-only" onclick="showSection('logs')" style="display:none">Activity log</button>
     <button class="tab admin-only" onclick="showSection('database')" style="display:none">Database</button>
@@ -98,6 +100,15 @@
       <button class="btn btn-primary btn-sm" onclick="saveAuditLinks()">Save links</button>
     </div>
   </div>
+  </div>
+
+  <!-- Stages & outcomes: the two vocabularies an operator works in, in one
+       place (stages.js). Deal stages are shared by every channel; call
+       outcomes are Calling's. Built-ins are shared by both operators, so
+       hiding one only hides it for you, and only an admin renames one. -->
+  <div class="tab-pane" data-pane-group="settings" data-pane="stages">
+    <div id="choice-editor-stage" class="card" style="padding:24px"></div>
+    <div id="choice-editor-outcome" class="card" style="padding:24px;margin-top:24px"></div>
   </div>
 
   <div class="tab-pane" data-pane-group="settings" data-pane="team">

@@ -9,6 +9,7 @@
 let _callBucket   = 'today';
 let _callLeads    = [];
 let _callOutcomes = [];
+let _callOutcomeLabels = {};   // every outcome's label, hidden ones too, for history
 let _callLead     = null;      // the lead currently on screen
 let _callScript   = null;
 let _attemptLimit = 6;
@@ -19,7 +20,7 @@ onTab('calling', name => {
   if (name === 'todo') loadCallQueue();
   if (name === 'leads') loadCallLeads();
   if (name === 'campaigns') loadCallCampaigns();
-  if (name === 'script') { _renderScriptEditor(); _renderOutcomeEditor(); }
+  if (name === 'script') _renderScriptEditor();
 });
 
 async function loadCalling() {
@@ -447,6 +448,7 @@ async function loadCallQueue() {
 
   _callLeads    = data.leads;
   _callOutcomes = data.outcomes || [];
+  _callOutcomeLabels = data.outcome_labels || {};
   _attemptLimit = data.attempt_limit || 6;
 
   ['today', 'new', 'upcoming', 'worked'].forEach(b => {
@@ -699,7 +701,7 @@ function skipCallLead() {
 function _renderCallHistory(history) {
   const el = document.getElementById('cq-history');
   if (!history.length) { el.innerHTML = ''; return; }
-  const labels = Object.fromEntries(_callOutcomes.map(o => [o.key, o.label]));
+  const labels = { ..._callOutcomeLabels, ...Object.fromEntries(_callOutcomes.map(o => [o.key, o.label])) };
   el.innerHTML =
     `<div class="text-muted text-small" style="margin-bottom:6px">Previous calls</div>` +
     history.map(h => `
@@ -714,116 +716,8 @@ function _renderCallHistory(history) {
 //
 // The useful vocabulary is the operator's. "Callback booked" and "follow up
 // sometime" are different things, and forcing the second into the first puts a
-// commitment in the system that was never made on the call.
-
-const OUTCOME_TONES = [
-  ['neutral', 'Neutral'], ['info', 'In progress'], ['good', 'Good'], ['bad', 'Dead'],
-];
-
-async function _renderOutcomeEditor() {
-  const all = await api('/api/call-outcomes') || [];
-  const el = document.getElementById('cq-outcome-editor');
-  el.innerHTML = `
-    <div class="card" style="padding:20px">
-      <div class="card-title" style="margin-bottom:4px">Call outcomes</div>
-      <div class="form-hint" style="margin-bottom:14px">
-        Add your own alongside the built-in ones. <strong>Needs a date</strong> makes the
-        date field required — leave it off for something like "follow up later",
-        where you can still set a date but nothing was actually agreed.
-        <strong>Ends the lead</strong> takes it out of every call queue;
-        <strong>stops email</strong> also cancels any email sequence they're in.
-      </div>
-      <div class="table-wrap" style="margin-bottom:14px">
-        <table>
-          <thead><tr><th>Name</th><th>Tone</th><th>Needs date</th><th>Ends lead</th><th>Stops email</th><th></th></tr></thead>
-          <tbody>${all.map(o => _outcomeRow(o)).join('')}</tbody>
-        </table>
-      </div>
-      <div class="flex gap-2" style="flex-wrap:wrap;align-items:center">
-        <input id="oc-new-label" placeholder="New outcome, e.g. Follow up later"
-               style="flex:1;min-width:200px;background:var(--raised);border:1px solid var(--line-strong);
-                      border-radius:6px;padding:7px 12px;color:var(--text);font-size:13px;
-                      font-family:var(--font)" />
-        <select id="oc-new-tone" style="background:var(--raised);border:1px solid var(--line-strong);
-                border-radius:6px;padding:7px 10px;color:var(--text);font-size:13px;
-                font-family:var(--font);cursor:pointer">
-          ${OUTCOME_TONES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}
-        </select>
-        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-2)">
-          <input type="checkbox" id="oc-new-date" /> Needs date</label>
-        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-2)">
-          <input type="checkbox" id="oc-new-terminal" /> Ends lead</label>
-        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-2)">
-          <input type="checkbox" id="oc-new-stops" /> Stops email</label>
-        <button class="btn btn-primary btn-sm" onclick="createOutcome()">Add</button>
-      </div>
-    </div>`;
-}
-
-function _outcomeRow(o) {
-  const yes = v => v ? icon('check', { size: 14, label: 'Yes' }) : '—';
-  return `<tr${o.archived ? ' style="opacity:.5"' : ''}>
-    <td>
-      <input value="${esc(o.label)}" onchange="renameOutcome('${esc(o.key)}', this.value)"
-             style="background:var(--raised);border:1px solid var(--line-strong);border-radius:6px;
-                    padding:5px 8px;color:var(--text);font-size:12px;font-family:var(--font);width:100%" />
-      ${o.is_builtin ? '<span class="text-muted" style="font-size:10px">built-in</span>' : ''}
-      ${o.archived ? '<span class="badge badge-gray" style="font-size:10px">archived</span>' : ''}
-    </td>
-    <td><select onchange="setOutcomeTone('${esc(o.key)}', this.value)"
-          style="background:var(--raised);border:1px solid var(--line-strong);border-radius:6px;
-                 padding:4px 6px;color:var(--text);font-size:12px;font-family:var(--font)">
-      ${OUTCOME_TONES.map(([v, l]) =>
-        `<option value="${v}" ${o.tone === v ? 'selected' : ''}>${l}</option>`).join('')}
-    </select></td>
-    <td class="tnum" style="font-size:12px">${yes(o.requires_date)}</td>
-    <td class="tnum" style="font-size:12px">${yes(o.is_terminal)}</td>
-    <td class="tnum" style="font-size:12px">${yes(o.stops_email)}</td>
-    <td>${o.is_builtin
-        ? '<span class="text-muted" style="font-size:11px">—</span>'
-        : `<button class="btn btn-icon btn-sm" title="Delete this outcome" aria-label="Delete this outcome" onclick="deleteOutcome('${esc(o.key)}')">${icon('x')}</button>`}</td>
-  </tr>`;
-}
-
-async function createOutcome() {
-  const label = document.getElementById('oc-new-label').value.trim();
-  if (!label) { toast('Give it a name', 'err'); return; }
-  const res = await api('/api/call-outcomes', 'POST', {
-    label,
-    tone:          document.getElementById('oc-new-tone').value,
-    requires_date: document.getElementById('oc-new-date').checked,
-    is_terminal:   document.getElementById('oc-new-terminal').checked,
-    stops_email:   document.getElementById('oc-new-stops').checked,
-  });
-  if (!res || res.error) { toast((res && res.error) || 'Could not add it', 'err'); return; }
-  toast('Outcome added');
-  await _renderOutcomeEditor();
-  loadCallQueue();
-}
-
-async function renameOutcome(key, label) {
-  // Only the label changes; the key stays, so old calls keep resolving.
-  await api(`/api/call-outcomes/${key}`, 'PATCH', { label: label.trim() });
-  loadCallQueue();
-}
-
-async function setOutcomeTone(key, tone) {
-  await api(`/api/call-outcomes/${key}`, 'PATCH', { tone });
-  loadCallQueue();
-}
-
-async function deleteOutcome(key) {
-  if (!await confirmDialog({
-    title: 'Remove this outcome?',
-    text: 'If calls already used it, it is archived instead of deleted so their history stays readable.',
-    confirm: 'Remove', danger: true,
-  })) return;
-  const res = await api(`/api/call-outcomes/${key}`, 'DELETE');
-  if (!res || res.error) { toast((res && res.error) || 'Could not remove it', 'err'); return; }
-  toast(res.result === 'archived' ? 'Archived — past calls keep their label' : 'Removed');
-  await _renderOutcomeEditor();
-  loadCallQueue();
-}
+// commitment in the system that was never made on the call. They're edited in
+// Settings → Stages & outcomes now (stages.js), next to the deal stages.
 
 // ── The script ───────────────────────────────────────────────────────────────
 

@@ -237,6 +237,9 @@ def init_db():
                 paraphrased      INTEGER NOT NULL DEFAULT 0,
                 sent_date        TEXT    DEFAULT NULL,
                 replied          INTEGER NOT NULL DEFAULT 0,
+                -- When it was marked replied (UTC). NULL on replies marked
+                -- before the column existed, and whenever replied is 0.
+                replied_at       TEXT    DEFAULT NULL,
                 followup_count   INTEGER NOT NULL DEFAULT 0,
                 paused           INTEGER NOT NULL DEFAULT 0,
                 -- Where a lead went when its number turned out not to be on
@@ -480,6 +483,19 @@ def init_db():
             -- built-ins are shared (owner 0), a stage someone invents belongs
             -- to them, and `key` stays globally unique because businesses
             -- point at it and history has to stay readable whoever looks.
+            -- A built-in stage or call outcome one operator has hidden from
+            -- their own pickers. Built-ins are shared (owner 0), so hiding
+            -- one can't be the row's own `archived` flag -- that would hide
+            -- it from the other operator too. An operator's own stages and
+            -- outcomes are hidden with `archived` as before. kind: 'stage'
+            -- (pipeline_stages) or 'outcome' (call_outcome_types).
+            CREATE TABLE IF NOT EXISTS hidden_choices (
+                owner_id INTEGER NOT NULL,
+                kind     TEXT    NOT NULL,
+                key      TEXT    NOT NULL,
+                PRIMARY KEY (owner_id, kind, key)
+            );
+
             CREATE TABLE IF NOT EXISTS pipeline_stages (
                 key         TEXT PRIMARY KEY,
                 owner_id    INTEGER NOT NULL DEFAULT 0,
@@ -858,6 +874,10 @@ def init_db():
             "ALTER TABLE enrollments ADD COLUMN reply_subject TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE enrollments ADD COLUMN reply_from TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE enrollments ADD COLUMN reply_done_at TEXT DEFAULT NULL",
+            # When a WhatsApp lead was marked replied, by hand or by a stage.
+            # NULL for replies marked before this existed: nobody knows when
+            # those happened, and guessing would skew the reply checklist.
+            "ALTER TABLE wa_leads ADD COLUMN replied_at TEXT DEFAULT NULL",
         ]:
             try:
                 conn.execute(_col_sql)
@@ -4651,16 +4671,7 @@ def get_call_outcomes(include_archived=False, owner_id=None):
     someone has invented a name for is a fair description of what they are
     working on.
     """
-    clauses = ["(is_builtin = 1 OR owner_id = ?)"]
-    if not include_archived:
-        clauses.append("archived = 0")
-    with get_db() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM call_outcome_types WHERE {' AND '.join(clauses)} "
-            "ORDER BY sort_order, label",
-            (_resolve_owner_id(conn, owner_id),),
-        ).fetchall()
-    return {r["key"]: dict(r) for r in rows}
+    return _choices("call_outcome_types", "outcome", include_archived, owner_id)
 
 
 def get_call_outcome(key: str):
@@ -4685,6 +4696,96 @@ def terminal_outcome_keys(owner_id=None):
         return [r["key"] for r in conn.execute(
             "SELECT key FROM call_outcome_types WHERE is_terminal = 1"
         ).fetchall()]
+
+
+# Stages only the website flow sets (Plan 2): an enquiry, and the other
+# operator's copy of a website lead. They stay real stages -- a business can
+# sit on one, and the Leads filter offers them -- but the "Set a stage"
+# picker leaves them out unless the business is already on one, since
+# picking them by hand would claim something the website didn't say.
+SYSTEM_PIPELINE_STAGES = frozenset({"enquired", "booked_elsewhere", "enquired_elsewhere"})
+
+_CHOICE_KINDS = {"stage": "pipeline_stages", "outcome": "call_outcome_types"}
+
+
+def _choices(table: str, kind: str, include_archived: bool, owner_id) -> dict:
+    """
+    One operator's view of a vocabulary table: the shared built-ins plus
+    their own, ordered for a picker.
+
+    `archived` comes back as what it means to this viewer -- left out of
+    their pickers: their own row's archived flag, or, for a built-in, whether
+    they hid it (hidden_choices). Nothing in a picker has to know the
+    difference; the Stages & outcomes page tells them apart by is_builtin.
+    `in_use` is how many of the viewer's own businesses (stages) or calls
+    (outcomes) carry the key -- what deleting it would touch.
+    """
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        if kind == "stage":
+            in_use = ("(SELECT COUNT(*) FROM businesses b "
+                      " WHERE b.pipeline_stage = t.key AND b.owner_id = ?)")
+        else:
+            in_use = ("(SELECT COUNT(*) FROM call_log cl JOIN call_leads l ON l.id = cl.call_lead_id "
+                      " JOIN businesses b ON b.id = l.business_id "
+                      " WHERE cl.outcome = t.key AND b.owner_id = ?)")
+        rows = conn.execute(f"""
+            SELECT * FROM (
+              SELECT t.*,
+                     CASE WHEN t.is_builtin = 1
+                          THEN EXISTS (SELECT 1 FROM hidden_choices h
+                                        WHERE h.owner_id = ? AND h.kind = ? AND h.key = t.key)
+                          ELSE t.archived END AS shown_archived,
+                     {in_use} AS in_use
+                FROM {table} t
+               WHERE t.is_builtin = 1 OR t.owner_id = ?)
+             {'' if include_archived else 'WHERE shown_archived = 0'}
+             ORDER BY sort_order, label
+        """, (owner, kind, owner, owner)).fetchall()
+    out = {}
+    for r in rows:
+        d = dict(r)
+        d["archived"] = int(bool(d.pop("shown_archived")))
+        out[d["key"]] = d
+    return out
+
+
+def set_choice_hidden(kind: str, key: str, hidden: bool, owner_id=None) -> bool:
+    """
+    Take a stage or call outcome out of this operator's pickers, or put it
+    back. A built-in is hidden for this operator alone; their own is
+    archived. Anything already on it keeps it, and it still reads by name
+    everywhere -- hiding only stops it being offered. False when the key
+    doesn't exist or is somebody else's.
+    """
+    table = _CHOICE_KINDS.get(kind)
+    if not table:
+        return False
+    with get_db() as conn:
+        owner = _resolve_owner_id(conn, owner_id)
+        row = conn.execute(f"SELECT is_builtin, owner_id FROM {table} WHERE key=?", (key,)).fetchone()
+        if not row or (not row["is_builtin"] and row["owner_id"] != owner):
+            return False
+        if not row["is_builtin"]:
+            conn.execute(f"UPDATE {table} SET archived=? WHERE key=?", (int(bool(hidden)), key))
+        elif hidden:
+            conn.execute("INSERT OR IGNORE INTO hidden_choices(owner_id, kind, key) VALUES(?,?,?)",
+                         (owner, kind, key))
+        else:
+            conn.execute("DELETE FROM hidden_choices WHERE owner_id=? AND kind=? AND key=?",
+                         (owner, kind, key))
+    return True
+
+
+def _clean_sort_order(value):
+    """A sort position from a request: any finite number, else None. Moving
+    one row between two others gives it the halfway point, so it needn't be
+    whole."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and abs(f) < 1e9 else None
 
 
 def _slugify_outcome(label: str) -> str:
@@ -4714,6 +4815,9 @@ _BUILTIN_PIPELINE_STAGES = {
 }
 
 PIPELINE_CHANNELS = ("whatsapp", "call", "email", "website")
+
+# What colour a stage's pill is: in progress, waiting on you, good, dead.
+PIPELINE_TONES = ("neutral", "info", "amber", "good", "bad")
 
 # Built-ins added after the first set, each seeded by its own guarded
 # one-shot rather than by _seed_pipeline_stages, so a stage an operator has
@@ -4784,15 +4888,10 @@ def get_pipeline_stages(include_archived=False, owner_id=None) -> dict:
     Another operator's invented stages are not offered and not listed -- what
     someone names their steps says how they sell, which is theirs.
     """
-    clauses = ["(is_builtin = 1 OR owner_id = ?)"]
-    if not include_archived:
-        clauses.append("archived = 0")
-    with get_db() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM pipeline_stages WHERE {' AND '.join(clauses)} "
-            "ORDER BY sort_order, label", (_resolve_owner_id(conn, owner_id),),
-        ).fetchall()
-    return {r["key"]: dict(r) for r in rows}
+    rows = _choices("pipeline_stages", "stage", include_archived, owner_id)
+    for r in rows.values():
+        r["system"] = 1 if r["key"] in SYSTEM_PIPELINE_STAGES else 0
+    return rows
 
 
 def get_pipeline_stage(key: str):
@@ -4814,7 +4913,8 @@ def create_pipeline_stage(label, is_terminal=False, wants_date=False, wants_time
     without wants_date, so it's cleared if that isn't also set.
     """
     wants_date = bool(wants_date)
-    wants_time = wants_time and wants_date
+    wants_time = bool(wants_time) and wants_date
+    tone = tone if tone in PIPELINE_TONES else "neutral"
     with get_db() as conn:
         owner = _resolve_owner_id(conn, owner_id)
         base = _slugify_outcome(label)
@@ -4828,7 +4928,7 @@ def create_pipeline_stage(label, is_terminal=False, wants_date=False, wants_time
             INSERT INTO pipeline_stages
                 (key, owner_id, label, is_terminal, wants_date, wants_time, tone, sort_order, is_builtin)
             VALUES(?,?,?,?,?,?,?,?,0)
-        """, (key, owner, (label or "").strip()[:60] or key, int(is_terminal),
+        """, (key, owner, (label or "").strip()[:60] or key, int(bool(is_terminal)),
               int(wants_date), int(wants_time), tone, nxt))
     return key
 
@@ -4853,6 +4953,12 @@ def update_pipeline_stage(key: str, owner_id=None, **fields) -> bool:
             return False
         if "label" in updates:
             updates["label"] = (str(updates["label"]).strip()[:60]) or row["label"]
+        if "sort_order" in updates:
+            updates["sort_order"] = _clean_sort_order(updates["sort_order"])
+            if updates["sort_order"] is None:
+                del updates["sort_order"]
+        if "tone" in updates and updates["tone"] not in PIPELINE_TONES:
+            del updates["tone"]
         for flag in ("is_terminal", "wants_date", "wants_time", "archived"):
             if flag in updates:
                 updates[flag] = int(bool(updates[flag]))
@@ -4869,20 +4975,29 @@ def update_pipeline_stage(key: str, owner_id=None, **fields) -> bool:
     return True
 
 
-def delete_pipeline_stage(key: str, owner_id=None) -> bool:
+def delete_pipeline_stage(key: str, owner_id=None) -> str:
     """
-    Remove a stage you invented. Built-ins can't go. Businesses sitting on it
-    are cleared rather than left pointing at a stage that no longer exists.
+    Remove a stage you invented, or archive it if any of your businesses is
+    on it. Returns 'deleted', 'archived' or 'refused' (a built-in, or
+    somebody else's) -- the same shape as delete_call_outcome.
+
+    Deleting a stage in use used to clear it from every business on it,
+    which quietly erased where those deals were up to. Archived, they keep
+    it and it still reads by name; it just isn't offered any more. Once
+    nothing is on it, deleting it really deletes it.
     """
     with get_db() as conn:
         owner = _resolve_owner_id(conn, owner_id)
         row = conn.execute("SELECT * FROM pipeline_stages WHERE key=?", (key,)).fetchone()
         if not row or row["is_builtin"] or row["owner_id"] != owner:
-            return False
-        conn.execute("UPDATE businesses SET pipeline_stage='', pipeline_channel='', "
-                     "pipeline_at=NULL WHERE pipeline_stage=? AND owner_id=?", (key, owner))
+            return "refused"
+        used = conn.execute("SELECT 1 FROM businesses WHERE pipeline_stage=? AND owner_id=? LIMIT 1",
+                            (key, owner)).fetchone()
+        if used:
+            conn.execute("UPDATE pipeline_stages SET archived=1 WHERE key=?", (key,))
+            return "archived"
         conn.execute("DELETE FROM pipeline_stages WHERE key=?", (key,))
-    return True
+    return "deleted"
 
 
 def _end_email_enrolments(conn, business_id: int) -> int:
@@ -4949,7 +5064,7 @@ def set_business_pipeline(business_id: int, stage: str, channel: str = "",
             # Stop the cadence. Scoped to this business's own WhatsApp lead;
             # nothing else on any channel is touched.
             conn.execute("""
-                UPDATE wa_leads SET replied=1, wa_status='replied'
+                UPDATE wa_leads SET replied=1, wa_status='replied', replied_at=datetime('now')
                  WHERE business_id=? AND replied=0 AND sent_date IS NOT NULL
             """, (business_id,))
             # A booking, from any channel, also stops email and unsent
@@ -5240,6 +5355,10 @@ def update_call_outcome(key: str, owner_id=None, **fields):
     if not row["is_builtin"]:
         allowed |= {"is_terminal", "stops_email", "requires_date", "archived"}
     updates = {k: v for k, v in fields.items() if k in allowed}
+    if "sort_order" in updates:
+        updates["sort_order"] = _clean_sort_order(updates["sort_order"])
+        if updates["sort_order"] is None:
+            del updates["sort_order"]
     if not updates:
         return False
     sets = ", ".join(f"{k}=?" for k in updates)
@@ -7479,7 +7598,7 @@ _WA_LEAD_COLUMNS = """
     w.id, w.business_id, w.wa_number, w.country, w.number_type, w.wa_status,
     w.signal_type, w.signal_detail, w.draft_message, w.message_edited,
     w.draft_followups, w.own_followups, w.message_source,
-    w.template_variant, w.paraphrased, w.sent_date, w.replied, w.followup_count, w.paused,
+    w.template_variant, w.paraphrased, w.sent_date, w.replied, w.replied_at, w.followup_count, w.paused,
     w.moved_to, w.removed_at, w.opened_at, w.no_whatsapp_at, w.notes, w.created_at, w.wa_campaign_id,
     c.name AS campaign_name, c.followup_days AS campaign_followup_days,
     c.followup_steps AS campaign_followup_steps, c.long_followup_days AS campaign_long_followup_days,
@@ -7643,7 +7762,7 @@ WA_STAGES = ("ready", "due", "waiting", "replied", "paused", "no_whatsapp", "mov
 _WA_LEAD_SORT = {
     "company": "company", "campaign_name": "campaign_name", "stage": "stage",
     "sent_date": "sent_date", "followup_count": "followup_count", "created_at": "created_at",
-    "template_variant": "template_variant", "city": "city",
+    "template_variant": "template_variant", "city": "city", "replied_at": "replied_at",
 }
 
 
@@ -7705,6 +7824,11 @@ def get_wa_leads_page(page=1, per_page=50, q="", stage="", wa_campaign_id=None,
         # the channel stages split in two by whether the follow-up gap has
         # elapsed, which is a fact about the queue, not about the lead.
         outer_where.append("stage IN ('waiting','due')")
+    elif stage == "awaiting":
+        # The reply checklist: every lead you've messaged and not heard
+        # back from -- "messaged" plus anyone paused after a send, since
+        # pausing the follow-ups doesn't stop them answering the last one.
+        outer_where.append("(stage IN ('waiting','due') OR (stage = 'paused' AND sent_date IS NOT NULL))")
     elif stage in WA_STAGES:
         outer_where.append("stage = ?")
         outer_params.append(stage)
@@ -7790,6 +7914,10 @@ def get_wa_summary(owner_id=None, wa_campaign_id=None, since=None) -> dict:
               SUM(CASE WHEN {_WA_WORKABLE} AND w.wa_status='sent' AND w.replied=0 AND w.paused=0
                         AND w.sent_date IS NOT NULL AND {due} THEN 1 ELSE 0 END)           AS due,
               SUM(CASE WHEN {_WA_ACTIVE} AND w.no_whatsapp_at IS NOT NULL THEN 1 ELSE 0 END) AS no_whatsapp,
+              -- The reply checklist's Waiting list (stage 'awaiting'): messaged,
+              -- not replied, still workable, paused or not.
+              SUM(CASE WHEN {_WA_WORKABLE} AND w.replied=0 AND w.sent_date IS NOT NULL
+                        AND (w.wa_status='sent' OR w.paused=1) THEN 1 ELSE 0 END)          AS awaiting_reply,
               SUM(CASE WHEN w.wa_status IN ('sent','replied') THEN 1 ELSE 0 END)           AS messaged,
               SUM(w.replied)                                                               AS replied,
               SUM(CASE WHEN w.moved_to != '' OR w.removed_at IS NOT NULL THEN 1 ELSE 0 END) AS moved,
@@ -7943,11 +8071,115 @@ def correct_wa_sent_date(wa_lead_id: int, sent_date: str = None):
 
 def mark_wa_replied(wa_lead_id: int, replied: bool = True):
     """Marking replied removes the lead from the cadence immediately, at any
-    follow-up count -- see get_wa_followups_due, which excludes replied=1."""
+    follow-up count -- see get_wa_followups_due, which excludes replied=1.
+
+    replied_at keeps the first time it was marked, so marking twice doesn't
+    move it. Un-marking only touches a lead that was replied: it used to set
+    any lead's status to 'sent', which would have pushed an unsent one out
+    of Ready to send."""
     with get_db() as conn:
-        conn.execute("""
-            UPDATE wa_leads SET replied=?, wa_status=? WHERE id=?
-        """, (1 if replied else 0, "replied" if replied else "sent", wa_lead_id))
+        if replied:
+            conn.execute("""
+                UPDATE wa_leads SET replied=1, wa_status='replied',
+                       replied_at=CASE WHEN replied=1 AND replied_at IS NOT NULL
+                                       THEN replied_at ELSE datetime('now') END
+                 WHERE id=?
+            """, (wa_lead_id,))
+        else:
+            conn.execute("""
+                UPDATE wa_leads SET replied=0, wa_status='sent', replied_at=NULL
+                 WHERE id=? AND replied=1
+            """, (wa_lead_id,))
+
+
+def set_wa_replied_bulk(wa_lead_ids, replied: bool, owner_id=None) -> int:
+    """
+    The reply checklist's bulk tick: mark many leads replied, or take the
+    mark off. Ids come from a request body, so only the caller's own are
+    touched. Only a lead that has actually been messaged can be marked --
+    nobody replies to a message that never went -- and nothing off WhatsApp.
+    """
+    with get_db() as conn:
+        ids = _own_wa_lead_ids(conn, wa_lead_ids, owner_id)
+        if not ids:
+            return 0
+        marks = ",".join("?" * len(ids))
+        if replied:
+            return conn.execute(f"""
+                UPDATE wa_leads SET replied=1, wa_status='replied', replied_at=datetime('now')
+                 WHERE id IN ({marks}) AND replied=0 AND sent_date IS NOT NULL
+                   AND moved_to = '' AND removed_at IS NULL
+            """, ids).rowcount
+        return conn.execute(f"""
+            UPDATE wa_leads SET replied=0, wa_status='sent', replied_at=NULL
+             WHERE id IN ({marks}) AND replied=1
+        """, ids).rowcount
+
+
+# Replies are bucketed by how many follow-ups had gone before them; the last
+# bucket is "this many or more".
+WA_REPLY_AFTER_BUCKETS = 4
+
+
+def get_wa_reply_stats(owner_id=None, wa_campaign_id=None, days=None) -> dict:
+    """
+    Reply rate for the reply checklist: of the leads you've messaged, how
+    many answered.
+
+    Counted from the same stages as the checklist's two lists, so the
+    numbers always match what's on screen: `waiting` is the Waiting list
+    (stage 'awaiting' in get_wa_leads_page) and `replied` the Replied one.
+    That leaves out leads taken off WhatsApp or marked not on it -- a number
+    that turned out not to be on WhatsApp never got the message. The
+    Campaigns table's rate still counts every lead ever sent to, so the two
+    can differ by those.
+
+    `days` narrows it to leads first messaged in the last N days -- a cohort
+    by when you reached out, not by when they answered, so a period's rate
+    can't go over 100% and doesn't move just because you caught up on
+    ticking replies. "First messaged" is the earliest send in wa_log, else
+    sent_date for a lead from before the log.
+
+    `after` splits the replies by how many follow-ups had gone out first.
+    Marking replied stops the cadence, so followup_count on a replied lead is
+    exactly that number -- give or take a follow-up sent before the reply was
+    ticked off.
+    """
+    stage_sql, stage_params = _wa_stage_sql()
+    with get_db() as conn:
+        where = ["b.owner_id = ?", "w.sent_date IS NOT NULL"]
+        params = [_resolve_owner_id(conn, owner_id)]
+        if wa_campaign_id == "none":
+            where.append("w.wa_campaign_id IS NULL")
+        elif wa_campaign_id:
+            where.append("w.wa_campaign_id = ?")
+            params.append(int(wa_campaign_id))
+        if days:
+            where.append("COALESCE((SELECT MIN(l.sent_at) FROM wa_log l WHERE l.wa_lead_id = w.id), "
+                         "w.sent_date) >= datetime('now', ?)")
+            params.append(f"-{int(days)} days")
+        rows = conn.execute(f"""
+            SELECT stage, followup_count FROM (
+              SELECT w.followup_count, {stage_sql} AS stage
+                FROM wa_leads w JOIN businesses b ON b.id = w.business_id
+                LEFT JOIN wa_campaigns c ON c.id = w.wa_campaign_id
+               WHERE {' AND '.join(where)})
+             WHERE stage IN ('waiting','due','paused','replied')
+        """, (*stage_params, *params)).fetchall()
+    replied = sum(1 for r in rows if r["stage"] == "replied")
+    messaged = len(rows)
+    after = [0] * WA_REPLY_AFTER_BUCKETS
+    for r in rows:
+        if r["stage"] == "replied":
+            after[min(int(r["followup_count"] or 0), WA_REPLY_AFTER_BUCKETS - 1)] += 1
+    return {
+        "messaged": messaged,
+        "replied": replied,
+        "waiting": messaged - replied,
+        "reply_rate": round(replied / messaged * 100, 1) if messaged else 0.0,
+        "after": after,
+        "days": int(days) if days else None,
+    }
 
 
 def set_wa_paused(wa_lead_id: int, paused: bool = True):
@@ -9085,6 +9317,7 @@ def delete_user(uid: int) -> tuple:
     with get_db() as conn:
         # Their Recently deleted is nobody else's to restore.
         conn.execute("DELETE FROM deleted_leads WHERE owner_id=?", (uid,))
+        conn.execute("DELETE FROM hidden_choices WHERE owner_id=?", (uid,))
         conn.execute("DELETE FROM users WHERE id=?", (uid,))
     return True, None
 

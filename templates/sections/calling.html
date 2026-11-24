@@ -14,7 +14,7 @@
     <button class="tab active" data-tab="todo" onclick="setTab('calling','todo')">To do <span class="count">0</span></button>
     <button class="tab" data-tab="leads" onclick="setTab('calling','leads')">Leads <span class="count">0</span></button>
     <button class="tab" data-tab="campaigns" onclick="setTab('calling','campaigns')">Campaigns <span class="count">0</span></button>
-    <button class="tab" data-tab="script" onclick="setTab('calling','script')">Script &amp; outcomes</button>
+    <button class="tab" data-tab="script" onclick="setTab('calling','script')">Script</button>
   </div>
 
   <!-- ── To do: the dialler ─────────────────────────────────────────────── -->
@@ -149,9 +149,16 @@
     <div id="cq-campaign-cards" style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))"></div>
   </div>
 
-  <!-- ── Script & outcomes ──────────────────────────────────────────────── -->
+  <!-- ── Script ─────────────────────────────────────────────────────────────
+       Call outcomes used to be edited here too; they moved to Settings →
+       Stages & outcomes, next to the deal stages. -->
   <div class="tab-pane" data-pane-group="calling" data-pane="script">
     <div id="cq-script-editor" style="margin-bottom:20px"></div>
-    <div id="cq-outcome-editor"></div>
+    <div class="card" style="padding:20px">
+      <div class="card-title" style="margin-bottom:4px">Call outcomes</div>
+      <div class="form-hint" style="margin-bottom:12px">Add, rename, hide or re-order the outcomes you log calls with
+        in Settings, next to the deal stages.</div>
+      <button class="btn btn-ghost btn-sm" onclick="openSettingsTab('stages')">Edit call outcomes</button>
+    </div>
   </div>
 </div>

@@ -2373,6 +2373,10 @@ def api_call_queue():
              "tone": o["tone"], "builtin": bool(o["is_builtin"])}
             for o in db.get_call_outcomes(owner_id=me()).values()
         ],
+        # Every label, hidden and archived ones too, so a past call logged
+        # under an outcome you've since hidden still reads by name.
+        "outcome_labels": {k: o["label"] for k, o in
+                           db.get_call_outcomes(include_archived=True, owner_id=me()).items()},
         "attempt_limit": db.CALL_ATTEMPT_LIMIT,
     })
 
@@ -2422,11 +2426,35 @@ def api_update_pipeline_stage(key):
 @app.route("/api/pipeline-stages/<key>", methods=["DELETE"])
 @login_required
 def api_delete_pipeline_stage(key):
-    if not db.delete_pipeline_stage(key, owner_id=me()):
+    # Archived rather than deleted while any of your businesses is on it, so
+    # where those deals are up to isn't erased (db.delete_pipeline_stage).
+    result = db.delete_pipeline_stage(key, owner_id=me())
+    if result == "refused":
         return jsonify({"ok": False,
-                        "error": "Built-in stages can't be removed, and you can only "
-                                 "remove stages you added"}), 400
-    return jsonify({"ok": True})
+                        "error": "Built-in stages can't be removed — hide them instead. "
+                                 "You can only remove stages you added"}), 400
+    return jsonify({"ok": True, "result": result})
+
+
+def _set_hidden(kind, key):
+    """Hide a stage or outcome from your own pickers, or bring it back. Any
+    operator, for built-ins too: it changes nothing anyone else sees."""
+    hidden = bool((request.json or {}).get("hidden", True))
+    if not db.set_choice_hidden(kind, key, hidden, owner_id=me()):
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    return jsonify({"ok": True, "hidden": hidden})
+
+
+@app.route("/api/pipeline-stages/<key>/hidden", methods=["POST"])
+@login_required
+def api_hide_pipeline_stage(key):
+    return _set_hidden("stage", key)
+
+
+@app.route("/api/call-outcomes/<key>/hidden", methods=["POST"])
+@login_required
+def api_hide_call_outcome(key):
+    return _set_hidden("outcome", key)
 
 
 @app.route("/api/businesses/<int:bid>/pipeline", methods=["PUT"])
@@ -3477,6 +3505,23 @@ def api_wa_summary():
                                      since=request.args.get("since") or None))
 
 
+@app.route("/api/wa/reply-stats", methods=["GET"])
+@login_required
+def api_wa_reply_stats():
+    """The reply checklist's numbers. `days` (optional) narrows them to leads
+    first messaged in the last N days. The campaign filter needs no ownership
+    check: every row is filtered to the caller's own leads anyway."""
+    days = request.args.get("days") or None
+    if days is not None:
+        try:
+            days = max(1, min(int(days), 3650))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "days must be a number"}), 400
+    return jsonify(db.get_wa_reply_stats(owner_id=me(),
+                                         wa_campaign_id=request.args.get("wa_campaign_id") or None,
+                                         days=days))
+
+
 def _campaign_cache():
     """Campaigns looked up once per request, not once per lead."""
     cache = {}
@@ -3696,6 +3741,7 @@ def api_wa_leads_bulk():
       move            -- off WhatsApp for good: `destination` 'call', 'email' or
                          'none', optionally into `campaign_id` on that channel
       pipeline        -- set `stage` on each lead's business (''  clears it)
+      replied / unreplied -- the reply checklist's tick, or taking it off
     Ids come from the body, so each is checked against the caller's own leads
     inside the db call rather than trusted.
     """
@@ -3715,6 +3761,8 @@ def api_wa_leads_bulk():
         n = db.set_wa_leads_campaign(ids, cid, owner_id=me())
     elif action in ("no_whatsapp", "on_whatsapp"):
         n = db.set_wa_no_whatsapp(ids, action == "no_whatsapp", owner_id=me())
+    elif action in ("replied", "unreplied"):
+        n = db.set_wa_replied_bulk(ids, action == "replied", owner_id=me())
     elif action == "move":
         destination = (d.get("destination") or "").strip()
         if destination not in db.WA_MOVE_DESTINATIONS:

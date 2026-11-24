@@ -1,6 +1,6 @@
 # ShoutReach Handover
 
-**Last updated:** 2026-11-23 (Plans 1, 2 and 3 deployed; Plan 3 · Redesign phase 1 is `a3d188e` — [plans/README.md](plans/README.md)) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
+**Last updated:** 2026-11-24 (Plans 1, 2 and 3 deployed; Plan 3 · Redesign phase 1 is `a3d188e` — [plans/README.md](plans/README.md). Built, not deployed: the WhatsApp reply checklist and Settings → Stages & outcomes, §5g) · **Branch:** `master` · **Live:** https://shoutreach.hexiv.co
 
 Read this before touching code. It's written for a session with no memory of
 how the app got here. Where it and the code disagree, trust the code — and
@@ -10,6 +10,12 @@ fix this file.
 
 ## 0. Read this first
 
+- **Built 2026-11-24, not deployed** (branch `claude/bold-pascal-ntgjo8`):
+  **WhatsApp → Replies**, a checklist for ticking off who wrote back, with
+  the reply rate above it; and **Settings → Stages & outcomes**, where each
+  operator adds, hides, re-orders and removes deal stages and call
+  outcomes. One new column (`wa_leads.replied_at`, nullable) and one new
+  table (`hidden_choices`); no data changed, no migration to run. §5g.
 - **Where things stand on 2026-11-22:** Plans 1 and 2 from the full audit
   are deployed (`bea9be1`, `3eed5be`, `4f5b303`; §1, §9). The status of
   every plan, what Plan 2 left open and what the operator still has to set
@@ -170,15 +176,15 @@ wasn't explicitly confirmed back in the session.
   addresses. `/api/contacts/*` still serves email leads; the URLs were kept
   because the scrape worker posts to `/api/contacts/import`.
 - **Calling** — tabs: To do (the dialler: buckets, lead card, script), Leads
-  (`/api/calls/leads`), Campaigns, Script & outcomes. `.ics` invites for booked
-  meetings.
+  (`/api/calls/leads`), Campaigns, Script. Call outcomes are edited in
+  Settings → Stages & outcomes (§5g). `.ics` invites for booked meetings.
 - **WhatsApp** — import into a **campaign** → the lead lands in **Ready to
   send**, its message read live from the campaign's template → the operator
   taps *Open in WhatsApp*, sends it themselves, and comes back to say *Sent*,
   *Not on WhatsApp* or *Didn't send* → follow-ups at the
   campaign's gap, forever, until replied or paused. The audit is optional and
   never in the way. Tabs: To do (Ready to send, Follow-up due, "sent today"),
-  Leads, Campaigns, Templates. Design history:
+  Replies (the reply checklist, §5g), Leads, Campaigns, Messages. Design history:
   `docs/WhatsApp Module Handover.md` (its booking-gap check is retired).
 - **Lead Scraper** — Google Maps, run by a worker on an operator's own laptop
   (the server has no screen to show CAPTCHAs on). Each scrape targets Email,
@@ -189,7 +195,7 @@ wasn't explicitly confirmed back in the session.
 - **Settings** — admins: email accounts, sending rules (including the automatic
   reply-check switch, moved here from the Dashboard), AI keys, the optional
   Google API key for the audit, users. Everyone: their own scrape worker key
-  and their own audit links.
+  and their own audit links, and **Stages & outcomes** (§5g).
 
 ## 2a. Channel membership — what "on a channel" means
 
@@ -811,7 +817,7 @@ built this myself I myself forget where to find certain options").
 - **Sidebar:** Dashboard, Contacts · Channels (Email, Calling, WhatsApp) ·
   Leads (Get leads) · Setup (Settings, Help).
 - **Channel tabs line up:** Email To do · Leads · Campaigns · Unsubscribed;
-  Calling To do · Leads · Campaigns · Script & outcomes; WhatsApp To do ·
+  Calling To do · Leads · Campaigns · Script (was Script & outcomes, §5g); WhatsApp To do ·
   Leads · Campaigns · Messages (was Templates; tab key still `templates`) ·
   Booked.
 - **Python 3.11 on the server:** a backslash inside an f-string's `{}` is a
@@ -930,6 +936,98 @@ back) but leaves the event on Zoho — cancel first if it's off. Disconnecting
 leaves events where they are. `tests/test_zoho_calendar.py` (15 sections) is
 the precise statement of all of this; the screens were driven in a browser
 at computer and phone size against the same fake Zoho.
+
+## 5g. The reply checklist, and Stages & outcomes — built 2026-11-24, not deployed
+
+Two pieces, built together on `claude/bold-pascal-ntgjo8`.
+`tests/test_replies_and_stages.py` is the precise statement of both.
+
+**WhatsApp → Replies.** Asked for by the cofounder: "a better toggle so I
+can track my reply rates — I'll see what I have and click they replied."
+WhatsApp can't tell the app who answered, so the operator goes down their
+chats and ticks. Before this the only ways to mark a reply were a button on
+the To do card at follow-up time and a row menu on Leads, one lead at a
+time, with no date kept.
+
+- **The tab** sits after To do: two lists, *Waiting for a reply* (newest
+  sent first, roughly WhatsApp's own chat order) and *Replied* (newest reply
+  first), with search and a *Replied?* toggle on every row. A tick leaves
+  the row where it is, ticked, until the list reloads, so a mis-tap is one
+  more tap. Bulk: select, *They replied* / *Not replied after all*, or *Set a
+  stage…*. The tab badge counts Waiting. Scoped by the campaign picker like
+  every other tab.
+- **Waiting is stage `awaiting`** in `get_wa_leads_page`: `waiting` + `due`,
+  plus `paused` with a `sent_date` (pausing follow-ups doesn't stop someone
+  answering the last one). `get_wa_summary`'s `awaiting_reply` counts the
+  same leads in SQL for the badge.
+- **`wa_leads.replied_at`** (UTC, nullable). Written by
+  `mark_wa_replied` (the first time only; a second tick doesn't move it),
+  `set_wa_replied_bulk`, and `set_business_pipeline`'s mark-replied. Cleared
+  on undo. NULL on replies marked before it existed: nobody knows when those
+  were, so nothing guesses.
+- **`set_wa_replied_bulk`** (`/api/wa/leads/bulk` actions `replied` /
+  `unreplied`): own leads only (`_own_wa_lead_ids`), and only a lead that was
+  messaged (`sent_date IS NOT NULL`) and is still on WhatsApp.
+- **The reply rate** (`GET /api/wa/reply-stats`, `get_wa_reply_stats`):
+  messaged, replied, still waiting, the rate, and how many replies came after
+  the first message / follow-up 1 / 2 / 3 or later (`followup_count` on a
+  replied lead, since a reply stops the cadence). Counted from the same
+  stages as the two lists, so the numbers always match the screen — which
+  leaves out leads taken off WhatsApp or marked not on it. **The Campaigns
+  table's rate counts every lead ever sent to**, so the two can differ by
+  those. The period (7 / 30 / 90 days, remembered per browser) is a **cohort
+  by first message** (earliest `wa_log` row, else `sent_date`), not by
+  reply: a period's rate can't pass 100% and doesn't move because you caught
+  up on ticking.
+- **Nothing tracks AI-reworded versus as-written here**, on purpose: AI
+  rewording isn't in use (operator, 2026-11-24). The Messages tab's existing
+  per-version stats are unchanged.
+- **Fixed along the way:** un-ticking (`mark_wa_replied(..., False)`) used
+  to set *any* lead's status to `sent`, which would have pushed an unsent one
+  out of Ready to send; it now only touches a replied lead.
+
+**Settings → Stages & outcomes.** The operator's own observation: the stage
+picker was getting cluttered and there was nowhere to change it. The API
+for custom stages existed (§5a) with no screen; the call outcome editor was
+tucked under Calling → Script & outcomes. Both are now one tab in Settings,
+for everyone (`stages.js`, one editor with a config per list).
+
+- **Hide** takes a stage or outcome out of *your* pickers. A built-in is
+  hidden per operator in the new **`hidden_choices`** table (owner, kind
+  `stage`|`outcome`, key) — the built-in row's own `archived` would hide it
+  from the other operator too. Your own is archived, as before.
+  `POST /api/pipeline-stages/<key>/hidden` and
+  `/api/call-outcomes/<key>/hidden`, any operator; someone else's custom one
+  is a 404. Anything already on a hidden stage keeps it, it still reads by
+  name, and code can still set it (the website, a booked call). Call history
+  still names a hidden outcome (`outcome_labels` on `/api/calls/queue`).
+- **`archived` in the list APIs now means "left out of this viewer's
+  pickers"** (`_choices` in `db.py`): the row's own flag, or, for a
+  built-in, whether this viewer hid it. Pickers need no change; the editor
+  tells the two apart by `is_builtin`. Each row also carries `in_use` — your
+  own businesses on the stage, or your own calls logged with the outcome.
+- **Delete** is only for your own, and **a stage in use is archived instead**
+  (`delete_pipeline_stage` now returns `deleted`/`archived`/`refused`, like
+  `delete_call_outcome`). It used to clear the stage off every business on
+  it. The editor says which will happen before you confirm.
+- **Re-order** with up/down: only the moved row's `sort_order` changes, to
+  the midpoint between its new neighbours (so it can be fractional), which
+  is how your own stage moves between built-ins without touching them.
+  Built-ins: only an admin renames, recolours or re-orders one (unchanged
+  rule), and **nobody changes what a built-in does** in this screen — the
+  code relies on `booked`, `do_not_call` and the website stages behaving as
+  they do. Your own stage's or outcome's flags are editable.
+- **The website's stages** (`SYSTEM_PIPELINE_STAGES`: `enquired`,
+  `booked_elsewhere`, `enquired_elsewhere`) come back with `system: 1`, and
+  the *Set a stage* pickers (`pickableStages` in `lead_panel.js`) leave them
+  out. They stay in the Leads filter. **The single-lead picker always
+  includes the business's current stage**, hidden or not: leaving it out
+  would open the picker on "Nothing yet", and Save would clear it.
+- Every stage picker ends with **Edit stages…**, which opens this tab.
+- **Fixed along the way:** creating a stage over HTTP without
+  `is_terminal` was a 500 (`int(None)`); stage tones are now checked against
+  `PIPELINE_TONES` on create and edit; a deleted user's `hidden_choices`
+  rows go with them.
 
 ## 6. Deploys and operations
 
@@ -1061,7 +1159,8 @@ pass.
 for f in tests/test_*.py; do python "$f"; done
 ```
 
-34 files, all passing as of the Plan 3 review fixes (Plan 3 added
+35 files, all passing as of 2026-11-24 (§5g added
+`test_replies_and_stages.py`; Plan 3 added
 `test_icons.py` and `test_css.py`; Plan 2 package 8 deleted
 `test_zoho_calendar.py`). `test_rendering.py` once
 failed with "database is locked" mid-suite and passed on its own and on a

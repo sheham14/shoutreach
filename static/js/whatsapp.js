@@ -32,6 +32,7 @@ function startOfLocalDay() {
 onTab('whatsapp', name => {
   if (name === 'todo') loadWaTodo();
   if (name === 'leads') { closeLeadPanel('wl-panel'); fillSourceSelect('wl-source'); LT.wl.load({ resetPage: true }); }
+  if (name === 'replies') { closeLeadPanel('wr-panel'); loadWaReplies(); }
   if (name === 'campaigns') renderWaCampaigns();
   if (name === 'templates') renderWaTemplateEditor(_waFilter() || (_waCampaigns[0] && _waCampaigns[0].id));
 });
@@ -260,6 +261,7 @@ function waCampaignFilterChanged() {
     fillSourceSelect('wl-source');
     LT.wl.load({ resetPage: true, keepSelection: false });
   }
+  else if (tab === 'replies') { closeLeadPanel('wr-panel'); loadWaReplies(); refreshWaCounts(); }
   else if (tab === 'templates') renderWaTemplateEditor(_waFilter() || (_waCampaigns[0] && _waCampaigns[0].id));
 }
 
@@ -296,6 +298,7 @@ async function refreshWaCounts() {
   marked.textContent = `${s.no_whatsapp || 0} marked not on WhatsApp →`;
   const work = (s.ready_to_send || 0) + (s.due || 0);
   setTabCount('whatsapp', 'todo', work, true);
+  setTabCount('whatsapp', 'replies', s.awaiting_reply || 0);
   if (!_waFilter()) {
     const nav = document.getElementById('nav-count-whatsapp');
     if (nav) nav.textContent = work ? work : '';
@@ -761,6 +764,7 @@ function _reloadWaView() {
   const tab = currentTab('whatsapp', 'todo');
   if (tab === 'todo') loadWaTodo();
   if (tab === 'leads') { LT.wl.load(); refreshLeadPanel('wl-panel'); refreshWaCounts(); }
+  if (tab === 'replies') { loadWaReplies({ resetPage: false }); refreshLeadPanel('wr-panel'); refreshWaCounts(); }
   if (tab === 'campaigns') renderWaCampaigns();
 }
 
@@ -854,7 +858,7 @@ async function removeWaLeads(ids) {
 // worse than making you set them one at a time.
 async function setWaLeadsStage(ids) {
   if (!ids || !ids.length) { toast('Select some leads first', 'err'); return; }
-  const live = (await loadPipelineStages()).filter(s => !s.archived);
+  const live = pickableStages(await loadPipelineStages());
   const values = await chooseDialog({
     title: `Set a stage for ${ids.length} lead${ids.length === 1 ? '' : 's'}`,
     body: `<label class="field-label">Stage</label>
@@ -864,7 +868,7 @@ async function setWaLeadsStage(ids) {
       </select>
       <div class="form-hint" style="margin-top:8px">Stages belong to the business, so this
         shows on Calling and Email too. Setting one stops their WhatsApp follow-ups; clearing
-        one doesn't start them again.</div>`,
+        one doesn't start them again.</div>${stageEditorLinkHtml()}`,
     confirm: 'Save',
     collect: () => ({ stage: document.getElementById('wbs-stage').value }),
   });
@@ -873,7 +877,7 @@ async function setWaLeadsStage(ids) {
                         { action: 'pipeline', wa_lead_ids: ids, stage: values.stage });
   if (!res || res.error) { toast((res && res.error) || 'Could not set that', 'err'); return; }
   toast(`Updated ${res.updated}`);
-  LT.wl.load();
+  _reloadWaView();
 }
 
 async function moveWaLeadsToCampaign(ids) {
@@ -981,6 +985,174 @@ function openWaLeadFromTable(r) {
   _waCurrent = r.id;
   setTab('whatsapp', 'todo');
 }
+
+// ── Replies: the checklist ───────────────────────────────────────────────────
+//
+// WhatsApp can't tell the app who answered, so the operator goes down their
+// chats and ticks off who wrote back. Waiting is newest-sent first, which is
+// roughly the order WhatsApp's own chat list is in.
+//
+// A tick doesn't drop the row: it stays, ticked, until the list is next
+// loaded, so a mis-tap is one more tap rather than a hunt through Replied.
+// The numbers above are the reply rate the ticks add up to -- for leads
+// first messaged in the chosen period, so catching up on ticks never pushes
+// a period past 100%.
+
+let _waReplyView = 'awaiting';
+const WA_REPLY_PERIODS = [['', 'All time'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days']];
+
+function _waReplyDays() {
+  try { return localStorage.getItem('wa-reply-days') || ''; } catch (_) { return ''; }
+}
+
+function setWaReplyView(view) {
+  _waReplyView = view === 'replied' ? 'replied' : 'awaiting';
+  // Waiting: who you messaged most recently. Replied: who answered most recently.
+  LT.wr.sortCol = _waReplyView === 'replied' ? 'replied_at' : 'sent_date';
+  LT.wr.sortDir = 'desc';
+  closeLeadPanel('wr-panel');
+  loadWaReplies();
+}
+
+function setWaReplyPeriod(days) {
+  try { localStorage.setItem('wa-reply-days', days); } catch (_) { /* private mode */ }
+  renderWaReplyStats();
+}
+
+async function loadWaReplies({ resetPage = true } = {}) {
+  ['awaiting', 'replied'].forEach(v =>
+    document.getElementById(`wr-chip-${v}`).classList.toggle('active', v === _waReplyView));
+  document.getElementById('wr-hint').textContent = _waReplyView === 'awaiting'
+    ? 'Open WhatsApp, go down your chats and tick everyone who wrote back. Ticking stops their follow-ups.'
+    : 'Everyone marked as replied. Untick one and it goes back to waiting, and its follow-ups start again.';
+  await Promise.all([LT.wr.load({ resetPage, keepSelection: false }), renderWaReplyStats()]);
+}
+
+async function renderWaReplyStats() {
+  const box = document.getElementById('wr-stats');
+  if (!box) return;
+  const days = _waReplyDays();
+  const base = {};
+  if (_waFilter()) base.wa_campaign_id = _waFilter();
+  // The chips count the lists, which have no period. The rate may have one.
+  const [all, period] = await Promise.all([
+    api(`/api/wa/reply-stats?${new URLSearchParams(base)}`),
+    days ? api(`/api/wa/reply-stats?${new URLSearchParams({ ...base, days })}`) : null,
+  ]);
+  if (!all || all.error) { box.innerHTML = ''; return; }
+  document.getElementById('wr-count-awaiting').textContent = all.waiting;
+  document.getElementById('wr-count-replied').textContent = all.replied;
+  setTabCount('whatsapp', 'replies', all.waiting);
+  const s = days && period && !period.error ? period : all;
+  const after = s.after || [];
+  const afterBits = after.map((n, i) => {
+    const what = i === 0 ? 'the first message'
+      : i === after.length - 1 ? `follow-up ${i} or later` : `follow-up ${i}`;
+    return `${what}: <b class="tnum">${n}</b>`;
+  });
+  const periods = WA_REPLY_PERIODS.map(([d, label]) =>
+    `<button class="chip ${d === days ? 'active' : ''}" onclick="setWaReplyPeriod('${d}')">${label}</button>`).join('');
+  box.innerHTML = `
+    <div class="flex items-center gap-2" style="margin-bottom:10px;flex-wrap:wrap">
+      <div class="chips seg">${periods}</div>
+      <span class="text-muted text-small">${days ? `Leads first messaged in the last ${days} days` : 'Every lead you’ve messaged'}${
+        _waFilter() ? ' in this campaign' : ''}</span>
+    </div>
+    <div class="stat-grid" style="margin-bottom:8px">
+      <div class="stat-card"><div class="stat-label">Messaged</div><div class="stat-value">${s.messaged}</div></div>
+      <div class="stat-card"><div class="stat-label">Replied</div><div class="stat-value green">${s.replied}</div></div>
+      <div class="stat-card"><div class="stat-label">Reply rate</div><div class="stat-value">${s.reply_rate}%</div></div>
+      <div class="stat-card"><div class="stat-label">Still waiting</div><div class="stat-value">${s.waiting}</div></div>
+    </div>
+    ${s.replied ? `<div class="text-muted text-small">Replied after ${afterBits.join(' · ')}</div>` : ''}`;
+}
+
+// The tick itself. A real button, so it works from the keyboard and reads
+// as on/off to a screen reader.
+function waReplyToggleHtml(r) {
+  const on = !!r.replied;
+  const when = on && r.replied_at ? `<span class="sub">${esc(shortDate(r.replied_at))}</span>` : '';
+  return `<button class="reply-toggle ${on ? 'on' : ''}" aria-pressed="${on}"
+      title="${on ? 'Marked as replied. Click to undo' : 'Mark as replied: stops their follow-ups'}"
+      onclick="event.stopPropagation();waToggleReply(${r.id})">${icon('check', { size: 14 })}<span>${on ? 'Replied' : 'Replied?'}</span></button>${when}`;
+}
+
+async function waToggleReply(id) {
+  const r = LT.wr.rowById(id);
+  if (!r || r._busy) return;
+  const to = !r.replied;
+  r._busy = true;
+  const res = await api('/api/wa/leads/bulk', 'POST', { action: to ? 'replied' : 'unreplied', wa_lead_ids: [id] });
+  r._busy = false;
+  if (!res || res.error) { toast((res && res.error) || 'Could not update', 'err'); return; }
+  if (!res.updated) {
+    // Changed somewhere else since the list loaded (taken off WhatsApp, say).
+    toast('That lead has changed. Reloading the list', 'err');
+    loadWaReplies({ resetPage: false });
+    return;
+  }
+  r.replied = to ? 1 : 0;
+  r.replied_at = to ? new Date().toISOString().replace('T', ' ').substring(0, 19) : null;
+  LT.wr.render();
+  renderWaReplyStats();
+  refreshWaCounts();
+  if (LT.wr.currentId === id) refreshLeadPanel('wr-panel');
+}
+
+async function waBulkReplied(on) {
+  const ids = LT.wr.selectedIds();
+  if (!ids.length) return;
+  const res = await api('/api/wa/leads/bulk', 'POST', { action: on ? 'replied' : 'unreplied', wa_lead_ids: ids });
+  if (!res || res.error) { toast((res && res.error) || 'Could not update', 'err'); return; }
+  const n = res.updated;
+  toast(on ? `Marked ${n} as replied. Their follow-ups have stopped`
+           : `Put ${n} back to waiting. Their follow-ups start again`);
+  loadWaReplies({ resetPage: false });
+  refreshWaCounts();
+}
+
+createLeadTable({
+  id: 'wr',
+  url: '/api/wa/leads/page',
+  idsUrl: '/api/wa/leads/ids',
+  empty: 'Nobody here. Leads show up once you’ve messaged them.',
+  params: () => ({
+    q: document.getElementById('wr-search')?.value.trim(),
+    stage: _waReplyView,
+    wa_campaign_id: _waFilter(),
+  }),
+  columns: [
+    { key: 'company', label: 'Business', sort: true,
+      render: r => `<span class="biz-name">${esc(r.company || 'Unnamed business')}</span><span class="sub tnum">${esc(prettyWaNumber(r.wa_number) || 'no number')}</span>` },
+    { key: 'campaign_name', label: 'Campaign', sort: true,
+      render: r => r.campaign_name ? esc(r.campaign_name) : pill('No campaign', 'amber') },
+    { key: 'sent_date', label: 'Last sent', sort: true, cls: 'num', render: r => esc(shortDate(r.sent_date)) },
+    { key: 'followup_count', label: 'Messages sent', sort: true, cls: 'num',
+      render: r => `${1 + (r.followup_count || 0)}${r.paused && !r.replied ? ` ${pill('paused')}` : ''}` },
+    { key: 'pipeline_stage', label: 'Deal', sort: true,
+      render: r => r.pipeline_stage ? pipelinePill(r) : '<span class="text-muted">—</span>' },
+    { key: 'replied_at', label: 'Replied?', sort: true, render: waReplyToggleHtml },
+  ],
+  mobile: r => mCard(`<span class="biz-name">${esc(r.company || 'Unnamed business')}</span>`,
+    `<span class="tnum">${esc(prettyWaNumber(r.wa_number) || 'no number')}</span>`,
+    `Last sent ${esc(shortDate(r.sent_date))}`,
+    waReplyToggleHtml(r)),
+  onRowClick: r => openLeadPanel(r.business_id, {
+    channel: 'whatsapp', panelId: 'wr-panel', splitId: 'wr-split',
+    onClose: () => { LT.wr.currentId = null; LT.wr.render(); },
+  }),
+  bulk: () => (_waReplyView === 'awaiting'
+    ? `<button class="btn btn-primary btn-sm" onclick="waBulkReplied(true)">They replied</button>`
+    : `<button class="btn btn-ghost btn-sm" onclick="waBulkReplied(false)">Not replied after all</button>`)
+    + `<button class="btn btn-ghost btn-sm" onclick="setWaLeadsStage(LT.wr.selectedIds())">Set a stage…</button>`,
+  menu: r => [
+    { label: r.replied ? "Undo 'replied'" : 'They replied', run: `waToggleReply(${r.id})` },
+    { label: r.pipeline_stage ? 'Change the stage…' : 'Set a stage…',
+      run: `setPipelineStage(${r.business_id}, 'whatsapp', () => _reloadWaView())` },
+    !r.replied && r.stage === 'due' && { label: 'Send the follow-up in To do', run: `openWaLeadFromTable(LT.wr.rowById(${r.id}))` },
+  ],
+});
+LT.wr.sortCol = 'sent_date';
 
 // The Booked tab that lived here is gone (Plan 2, audit F-19/F-23/F-24):
 // every meeting, from any channel or the website, is on the Meetings page

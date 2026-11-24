@@ -168,11 +168,26 @@ function _pipeInputValue(stored, wantsTime) {
  * the other channels can say "booked — via whatsapp" instead of leaving you
  * to guess. `after` runs on success.
  */
+// What a "Set a stage" picker offers: what you haven't hidden, minus the
+// stages only the website sets -- plus whatever the business is on now,
+// whatever it is. Leaving the current one out would make the picker open on
+// "Nothing yet", and Save would quietly clear it.
+function pickableStages(stages, current = '') {
+  return stages.filter(s => (!s.archived && !s.system) || (current && s.key === current));
+}
+
+// Under every stage picker: the stage list is yours to change.
+function stageEditorLinkHtml() {
+  return `<div class="text-small" style="margin-top:10px">
+    <a style="color:var(--accent);cursor:pointer" onclick="openStageEditor()">Edit stages…</a>
+    <span class="text-muted">Add your own, or hide ones you don't use.</span></div>`;
+}
+
 async function setPipelineStage(businessId, channel, after) {
   const stages = await loadPipelineStages();
-  const live = stages.filter(s => !s.archived);
   const current = await api(`/api/businesses/${businessId}`);
   const now = (current && current.pipeline_stage) || '';
+  const live = pickableStages(stages, now);
   const nowStage = pipelineStage(now);
   const asked = chooseDialog({
     title: 'Where is this one up to?',
@@ -197,7 +212,7 @@ async function setPipelineStage(businessId, channel, after) {
       </div>
       <div class="form-hint" style="margin-top:8px">This is the business, not just this
         channel — it shows the same wherever you open them. Setting a stage stops their
-        WhatsApp follow-ups.</div>`,
+        WhatsApp follow-ups.</div>${stageEditorLinkHtml()}`,
     confirm: 'Save',
     collect: () => {
       const stage = document.getElementById('pl-stage').value;
